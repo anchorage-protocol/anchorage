@@ -24,7 +24,7 @@ Within a sub-topic, the structure is a **claim graph**:
 
 Edges are minimal: `derives` (parent supports child) and `supersedes` (this replaces that). Lineage walks backward along `derives` until it hits anchors. Every non-trivial assertion in the projected manuscript traces to nodes in the graph, or it gains nodes before it ships.
 
-Contributors propose nodes and edges through tools that enforce verifiability at the write path. Proposals are reviewed by randomly assigned peers, salted with calibration items drawn from the graph's own validated history. Reputation is per-topic, refined by the sub-topics a contributor has actually worked in. Hard syntheses get redundant attempts; convergence is signal, divergence becomes an `open_question`.
+Contributors and agents connect via **MCP** (the primary write-path interface — Claude Desktop, Cursor, custom agents, lab-internal tooling all work out of the box); humans browse the same backend through a web UI. Contributors propose nodes and edges through tools that enforce verifiability at the write path. Proposals are reviewed by randomly assigned peers, salted with calibration items drawn from the graph's own validated history. Reputation is per-topic, refined by the sub-topics a contributor has actually worked in. Hard syntheses get redundant attempts; convergence is signal, divergence becomes an `open_question`.
 
 The output, when a sub-topic matures, is a **manuscript-shaped projection** of its graph: a publishable review or perspective where every claim is auditable and every contributor's stake is computable from their place in the graph that gave rise to the document. A topic doesn't produce a single manuscript; it produces a steady stream of sub-topic syntheses over years.
 
