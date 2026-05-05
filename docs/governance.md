@@ -26,15 +26,23 @@ Anchorage supports stable pseudonymous participation while retaining bounded ide
 
 ## The contribution flow
 
-1. **Propose.** A contributor uses the write-path tools to propose a node and its parent edges. Tool-level validation enforces verifiability (anchors must resolve to fetchable sources; excerpts must include a quoted span the system can match against the source).
+The default flow is *assignment-driven*: contributors declare cause-level capacity, the system assigns work from the frontier, and reputation accrues on assigned work. A contributor-initiated path exists for genuinely novel proposals but with weaker rep weighting. The shape:
 
-2. **Stage.** The proposal lands in a staging layer attached to the canonical graph. It is visible, queryable, and citable as a proposal — but not yet part of the canonical graph.
+0. **Capacity.** Contributor declares, at the cause level (not sub-topic), how often they want assignments and what kinds they'll accept. Capacity is the system's only signal of availability; sub-topic selection is the system's choice. (This is what closes the rep-laundering vector — there is no shopping list.)
 
-3. **Review.** The proposal is assigned to N randomly selected reviewers from the eligible pool, with the assignment salted by calibration items drawn from the graph's own validated history. Reviewers vote with reasons; reasons themselves can become graph nodes (typically `open_question` or rejection rationale).
+1. **Assignment.** The system draws a frontier task across all sub-topics in the cause, matched to capacity and prior expertise (where measurable). Contributor accepts or declines. Declining individual assignments is not punitive — narrow specialists legitimately decline outside their wheelhouse — but decline patterns are tracked and sustained selectivity is an abuse signal.
 
-4. **Resolve.** If reviewers converge, the proposal merges. If they diverge, the divergence becomes signal: either the proposal is reformulated (often by adding a hidden assumption as an explicit parent), or the system carries it forward as two parallel synthesis nodes that coexist until evidence resolves them, or the contested point becomes an `open_question`.
+2. **Submit.** The contributor submits work via the assigned-proposal tool; verification (grounding, lineage, rate) gates the submission synchronously.
 
-5. **Settle.** Once merged, the proposal accrues reputation to its contributor and to reviewers who evaluated it correctly. Later supersedes events update reputation in both directions.
+3. **Stage.** The proposal lands in a staging layer attached to the canonical graph. It is visible, queryable, and citable as a proposal — but not yet part of the canonical graph.
+
+4. **Review.** The proposal is assigned to N reviewers drawn from the eligible pool of the proposal's home sub-topic (or target sub-topic, for membership claims), with the assignment salted by calibration items drawn from the graph's own validated history. Reviewers vote with reasons; reasons themselves can become graph nodes (typically `open_question` or rejection rationale).
+
+5. **Resolve.** If reviewers converge, the proposal merges. If they diverge, the divergence becomes signal: either the proposal is reformulated (often by adding a hidden assumption as an explicit parent), or the system carries it forward as two parallel synthesis nodes that coexist until evidence resolves them, or the contested point becomes an `open_question`. Long-unresolved divergences archive rather than re-route indefinitely.
+
+6. **Settle.** Once merged, the proposal accrues reputation to its contributor and to reviewers who evaluated it correctly. Reputation gain is weighted by claim difficulty and by whether the work was assignment-driven (full weight) or contributor-initiated (reduced weight, conditional on independent confirmation). Later supersedes events update reputation in both directions.
+
+The contributor-initiated path skips steps 0–1 and weights step 6 lower. It exists so genuine novel synthesis is not bottlenecked by the system's frontier model — but it is not the default.
 
 ---
 
@@ -77,7 +85,7 @@ This avoids the failure mode where bad sub-topics fragment effort.
 
 Most disputes resolve at the proposal level: redundant review, divergence-as-signal, parallel synthesis nodes for genuine disagreement. The cases that escalate:
 
-- **Bad-faith behavior** (sybil farms, coordinated reputation farming, persistent ungrounded citation): handled by curator review with documented action; specific moderation actions are logged in the tamper-evident audit log, with affected contributors notified of the action category and specific signals redacted only where exposure would aid evasion. Aggregate moderation reporting (counts and categories per period) is published.
+- **Bad-faith behavior** (sybil farms, coordinated reputation farming, persistent ungrounded citation, sustained decline-pattern selectivity that proxies for sub-topic shopping): handled by curator review with documented action; specific moderation actions are logged in the tamper-evident audit log, with affected contributors notified of the action category and specific signals redacted only where exposure would aid evasion. Aggregate moderation reporting (counts and categories per period) is published.
 - **Governance disagreement** (a contributor or reviewer disagrees with how the regime itself works): handled through the governance-change process below, not through individual disputes.
 
 ---

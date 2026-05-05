@@ -46,11 +46,13 @@ Around the claim-graph substrate we add:
 
 - **Verifiable anchors.** Excerpts must include a quoted span the backend can match against the cited source. The graph cannot cite a paper it cannot fetch. This eliminates a whole class of hallucinated citation in one move.
 
-- **Redundant peer review.** Each proposal goes to multiple randomly assigned reviewers. Convergence is signal; divergence routes the proposal to a richer review path or surfaces it as an `open_question`.
+- **Assignment-driven contribution.** Contributors join a cause and declare cause-level capacity (rate, kinds of work). The system routes specific tasks to them from the frontier; sub-topic selection is the system's choice, not the contributor's. This is the unit-of-belonging working as designed: a contributor is *helping with the cause*, not assembling a portfolio in their preferred narrow corner. It also closes several attack surfaces by construction — there is no easy-sub-topic shopping list to launder reputation through, no way for coalitions to pre-arrange the queue. A contributor-initiated path exists for genuine novel synthesis, with reduced rep weighting.
 
-- **Calibration batches.** Reviewer assignments include items the system already knows the answer to — drawn from the graph's own validated history, indistinguishable from real frontier work. Reviewers who fail calibration lose reputation; the calibration corpus grows as the graph grows.
+- **Redundant peer review.** Each proposal goes to multiple system-assigned reviewers. Convergence is signal; divergence routes the proposal to a richer review path or surfaces it as an `open_question`.
 
-- **Staked reputation, per topic and refined by sub-topic.** Reviewers and contributors gain reputation for contributions that survive and reviews that prove correct; they lose reputation when their accepted claims are later superseded or when they accept claims that get reverted. Reputation is anchored at the cause level, but the system tracks which sub-topics each contributor has actually worked in, because expertise within a cause is not uniform — a colon-screening expert is not interchangeable with a CRC microbiome researcher.
+- **Calibration batches.** Reviewer assignments include items the system already knows the answer to — drawn from the graph's own validated history, indistinguishable from real frontier work to a single-batch reviewer. Reviewers who fail calibration lose reputation; the calibration corpus grows as the graph grows.
+
+- **Staked reputation, emergent across sub-topics.** Reviewers and contributors gain reputation for assigned work that survives and for reviews that prove correct; they lose reputation when their accepted claims are later superseded or when they accept claims that get reverted. Reputation is anchored at the cause level, but the system tracks which sub-topics each contributor's assigned work has actually landed in, because expertise within a cause is not uniform — a colon-screening expert is not interchangeable with a CRC microbiome researcher. Sub-topic rep is therefore a record of where the system has routed someone, not a self-declared specialty.
 
 - **Credit derived from the graph.** When a sub-topic matures into a manuscript projection, contributor credit is computable directly from the graph: which nodes survived to the export, who proposed them, who reviewed them, which were load-bearing for the final argument. Authorship isn't a governance fight; it's a query.
 
@@ -82,6 +84,7 @@ What survives all of this is the core claim: a system that can be tested exhaust
 - **Not a substitute for primary research.** It does not run experiments, it does not collect data, it does not replace the journal system. Its endgame is publishable synthesis from existing literature, with every step auditable. That is a real contribution, but it is not the same contribution as a new RCT.
 - **Not a guarantee of truth.** It is a structured argument map. Quality follows from sources, discipline, and the curation regime — not from the existence of the graph.
 - **Not a token, a DAO, or a marketplace.** Reputation is non-transferable, non-monetizable, and per-topic. Credit on projected manuscripts is the incentive. We are not reinventing economics; we are using authorship.
+- **Not an open shopping list.** Contributors join a cause; the system assigns specific work. There is no browse-and-claim queue at the sub-topic or claim level. The contributor-initiated path exists for novel synthesis but is not the default route to reputation.
 
 ## Prior art and what we owe
 

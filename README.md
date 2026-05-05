@@ -15,16 +15,16 @@ The project is **multi-scale by design**:
 
 Sub-topics are first-class objects discovered through the system, not chosen up front. Contributors propose sub-topics; the graph state tells the system which proposals are tractable (corpus density, anchor coverage, projected closure distance); good ones attract effort and produce manuscripts; bad ones quietly fade.
 
-Within a sub-topic, the structure is a **claim graph**:
+Within a cause, the structure is a **claim graph** partitioned across sub-topics:
 
 - **Anchors** are external sources (papers, datasets, definitions) with verifiable identifiers (PMID, DOI, URL).
 - **Excerpts** are tight claims tied to a specific anchor, with a quoted span the system can verify against the source.
 - **Synthesis** nodes are explicit inferential steps derived from multiple parents — the bridges, contrasts, and consolidations that turn a pile of citations into an argument.
 - **Open questions** are scoped uncertainties with edges to what they depend on.
 
-Edges are minimal: `derives` (parent supports child) and `supersedes` (this replaces that). Lineage walks backward along `derives` until it hits anchors. Every non-trivial assertion in the projected manuscript traces to nodes in the graph, or it gains nodes before it ships.
+Each node has one **home sub-topic** (where it's reviewed and where its contributor's per-sub-topic reputation accrues) and zero or more **scope memberships** (other sub-topics it is legitimately in scope for). Memberships are themselves reviewable claims, so a definition or a landmark trial excerpt can serve several sub-topics without duplication. Edges are minimal: `derives` (parent supports child) and `supersedes` (this replaces that). Lineage walks backward along `derives` until it hits anchors. Every non-trivial assertion in the projected manuscript traces to nodes in the graph, or it gains nodes before it ships.
 
-Contributors and agents connect via **MCP** (the primary write-path interface — Claude Desktop, Cursor, custom agents, lab-internal tooling all work out of the box); humans browse the same backend through a web UI. Contributors propose nodes and edges through tools that enforce verifiability at the write path. Proposals are reviewed by randomly assigned peers, salted with calibration items drawn from the graph's own validated history. Reputation is per-topic, refined by the sub-topics a contributor has actually worked in. Hard syntheses get redundant attempts; convergence is signal, divergence becomes an `open_question`.
+Contributors and agents connect via **MCP** (the primary write-path interface — Claude Desktop, Cursor, custom agents, lab-internal tooling all work out of the box); humans browse the same backend through a web UI. Contribution is *assignment-driven* by default: contributors declare cause-level capacity (rate, kinds of work) and the system routes specific tasks from the frontier; sub-topic selection is the system's choice, not the contributor's. This closes the easy-sub-topic-shopping vector that would otherwise let reputation be laundered. A contributor-initiated path exists for genuinely novel synthesis but accrues reputation at a reduced weight. Proposals are reviewed by system-assigned peers, salted with calibration items drawn from the graph's own validated history. Reputation is per-topic, emerging from where the system has routed each contributor. Hard syntheses get redundant attempts; convergence is signal, divergence becomes an `open_question`.
 
 The output, when a sub-topic matures, is a **manuscript-shaped projection** of its graph: a publishable review or perspective where every claim is auditable and every contributor's stake is computable from their place in the graph that gave rise to the document. A topic doesn't produce a single manuscript; it produces a steady stream of sub-topic syntheses over years.
 

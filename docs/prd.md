@@ -38,16 +38,22 @@ Three layers, each with the shape suited to its job:
 
 - **Cause** — the umbrella unit of belonging ("colon cancer"). Causes are created by maintainers; they are not user-creatable in v0.
 - **Sub-topic** — scope envelope within a cause ("ctDNA-MRD in stage II resected CRC"). Sub-topics are first-class objects: they have IDs, descriptions, scope-envelope queries (e.g. PubMed search definition), creation status (proposed / active / archived), and curator approval state. In v0 sub-topic creation requires curator approval; later phases admit auto-discovery from graph state.
-- **Claim graph** — the per-sub-topic structure where work happens.
+- **Claim graph** — the per-cause structure where work happens, partitioned across sub-topics by node *home* and connected across them by *scope memberships*.
 
-A claim node belongs to exactly one sub-topic. Cross-sub-topic relationships are expressed via designated *cross-link edges* (see Edges).
+A node has **exactly one home sub-topic** and **zero or more scope memberships** in other sub-topics within the same cause. The two are different jobs:
+
+- The **home** sub-topic owns the node for review purposes: it determines which reviewer pool evaluates the proposal and where the contributor's per-sub-topic reputation accrues.
+- A **scope membership** is a (node, sub-topic) edge stating "this node is in scope for this sub-topic." Memberships are themselves proposable, reviewable claims — small, atomic, and decomposable. A landmark trial excerpt or a definition node ("MSI-high CRC") can legitimately be in scope for several sub-topics simultaneously without being duplicated, re-fetched, or forked across supersedes chains.
+
+This single structure replaces the older "exactly one sub-topic, with cross-links between" rule. Cross-links as a separate edge type are gone; their use case is subsumed by memberships, with stricter semantics (memberships are reviewable assertions about scope; they do not propagate `derives` lineage across sub-topics by themselves).
 
 ### Nodes
 
 Every node has:
 
 - `id` — opaque identifier
-- `sub_topic_id` — the sub-topic this node belongs to
+- `home_sub_topic_id` — the sub-topic that owns the node for review and reputation purposes
+- `scope_memberships` — set of additional sub-topic IDs (within the same cause) this node is in scope for; each membership is an independently reviewable assertion
 - `kind` — one of:
   - `anchor` — external source (paper, dataset, definition). Has `external_ref` (PMID, DOI, URL) that must resolve.
   - `excerpt` — tight claim tied to a specific anchor parent. Has a `quoted_span` field; the verification engine matches it against the resolved source. Excerpts cannot exist without a verified span. The `content` is the atomic claim; the `quoted_span` is the verbatim slice that anchors verification. They are not required to be identical — `content` may paraphrase to atomize a claim the span supports — but `content` must be an assertion the span supports under a charitable reading. The verification engine confirms the span resolves; the reviewer confirms `content` follows from it. Span verification is necessary but not sufficient: cherry-picking a true span out of context (negation-stripping, hedge-stripping) is a known attack and is part of the reviewer's responsibility to catch.
@@ -63,15 +69,22 @@ The **active node rule** (matching Galleon's contract): a node is *inactive* if 
 
 ### Edges
 
-- `derives` — parent (support) → child (derived claim). Direction matches storage. Lineage walks backward along `derives` until it hits anchors. `derives` parents must be `active` at the moment of acceptance: a child cannot be merged with a `staged` or `rejected` parent.
+- `derives` — parent (support) → child (derived claim). Direction matches storage. Lineage walks backward along `derives` until it hits anchors. `derives` parents must be `active` at the moment of acceptance: a child cannot be merged with a `staged` or `rejected` parent. A `derives` edge is valid when the parent and child share at least one sub-topic — either both home there, or one home and the other a scope-member, or both scope-members. Lineage chains can therefore cross sub-topic boundaries through *shared scope memberships* without being separate edges.
 - `supersedes` — old → replacement. Marks the old node inactive. The `to` end (the replacement) must be `active` at the time the supersedes is proposed. Supersedes cycles (A → B → C → A) are forbidden by the verification engine.
-- `cross_link` — explicit reference between sub-topics within the same cause. Used sparingly to express that a claim in one sub-topic relates to a claim in another. Cross-links are *navigation*, not *load-bearing structure*: they do not propagate `derives` lineage across sub-topic boundaries, and they cannot appear in the lineage chain a manuscript projection walks for credit or argument structure. If a projection in sub-topic A genuinely depends on a claim from sub-topic B, the corresponding excerpt or synthesis must be materialized as a node in A with its own `derives` chain. This closes the seam where cross-links could be smuggled `derives` that escape sub-topic-scoped review and credit.
 
-Other edge types are rejected. The minimal vocabulary is load-bearing: more edge types create more places for governance disputes without proportionally more expressive power.
+Other edge types are rejected. The minimal vocabulary is load-bearing: more edge types create more places for governance disputes without proportionally more expressive power. Note that *scope membership* is a property of the node, not a separate edge type — a node carries its set of sub-topic memberships directly.
 
-### Sub-topic relocation
+### Scope membership
 
-A node belongs to exactly one sub-topic, but scope envelopes overlap and contributors will sometimes propose nodes in the wrong place. A `propose_relocate` operation moves a node (and its sub-topic-internal edges) from one sub-topic to another within the same cause, subject to curator approval. Relocation is not a free action: it touches credit, review eligibility, and projection scope, all of which depend on which sub-topic a node lives in. Genuinely cross-relevant nodes use cross-links rather than relocation, with the constraint above (cross-links cannot be projection lineage).
+A scope membership says: "node X is in scope for sub-topic S." It is proposable (`propose_membership`), reviewable, and revocable through the same governance machinery as any other claim — because it *is* a claim. Memberships are evaluated by reviewers from the *target* sub-topic S (the one the node is being claimed to be in scope for), since they are the ones with the expertise to judge the scope claim.
+
+Memberships are how cross-sub-topic concerns compose without duplication, without forking supersedes chains, and without smuggling lineage. A definition node ("MSI-high CRC") homed in a screening sub-topic can be a member of Lynch-surveillance, ctDNA-MRD, and immunotherapy-eligibility sub-topics — one node, one verification, one supersedes chain, four sub-topics that all see and review it.
+
+**Credit accrues to the proposer at the home sub-topic only**; downstream memberships do not multiply credit. Contributors who propose memberships (claiming a node is in scope for a sub-topic they work in) accrue a separate, smaller credit on those memberships.
+
+### Change of home
+
+Sometimes a node is initially homed in the wrong sub-topic. `propose_change_of_home` moves the home sub-topic to a different one within the same cause, subject to curator approval. Memberships are unaffected. This is a real but rare operation; most apparent "wrong sub-topic" cases turn out to be membership-needed cases instead.
 
 ### Manuscript projection
 
@@ -87,18 +100,35 @@ The MCP server exposes a small, verification-heavy set of tools. The minimum wri
 
 ### Write-path tools
 
-- **`propose_anchor`** `{ cause_id, sub_topic_id, content, external_ref }` → `{ proposal_id }`
-  - Creates a staged anchor node. Server fetches `external_ref`, confirms resolution, and rejects on failure.
-- **`propose_excerpt`** `{ cause_id, sub_topic_id, parent_anchor_id, content, quoted_span }` → `{ proposal_id }`
+The default contribution path is *assignment-driven*: contributors declare capacity at the **cause** level (not the sub-topic level — sub-topic granularity would reopen the laundering vector by letting contributors cherry-pick easy sub-topics), the system draws assignments from the frontier across all sub-topics in the cause (gap-closing tasks: orphan anchors needing excerpts, syntheses needing parents, contested claims needing review), and reputation accrues on assigned work. A contributor-initiated path exists but with weaker rep weighting (see [Reputation](#reputation)).
+
+**Capacity and assignment**
+
+- **`set_capacity`** `{ cause_id, rate, kinds }` → `{ ok }`
+  - Contributor declares availability at the cause level: how often they want to be assigned (rate) and which kinds of work they will accept (`propose_excerpt`, `review`, `propose_synthesis`, etc.). Sub-topic is the system's choice, not the contributor's. Capacity is the only way the system learns availability.
+- **`request_assignment`** `{ cause_id, kind? }` → `{ assignment_id, task }`
+  - Pull a task from the frontier within declared capacity. The system selects across all sub-topics in the cause based on frontier priority (gap urgency, sub-topic activity), expertise fit (where measurable from history), and capacity-balancing. The task is concrete: a specific node-shape to propose, or a specific proposal to review, in a specific sub-topic.
+- **`accept_assignment`** `{ assignment_id }` → `{ ok }` and **`decline_assignment`** `{ assignment_id, reason }` → `{ ok }`
+  - Declining individual assignments is non-punitive on its own — a legitimate narrow specialist (e.g., a genetic counselor who works only on Lynch-syndrome questions) declines outside their wheelhouse, and that's fine. What is *not* allowed is opt-in selectivity: capacity is cause-level, not sub-topic-level. Decline patterns are tracked; sustained pattern-declining of specific sub-topics, contributors, or claim classes is an abuse signal handled at the curator layer.
+- **`submit_assigned_proposal`** `{ assignment_id, payload }` → `{ proposal_id }`
+  - Submit work for an assignment. Payload shape matches the task kind (anchor / excerpt / synthesis / supersedes / membership). Verification engine applies as for any proposal.
+
+**Contributor-initiated proposals** (allowed but weighted lower for reputation):
+
+- **`propose_anchor`** `{ cause_id, home_sub_topic_id, memberships?, content, external_ref }` → `{ proposal_id }`
+  - Creates a staged anchor node. Server fetches `external_ref`, confirms resolution, and rejects on failure. `memberships` is an optional list of additional sub-topic IDs in the same cause; each becomes a separately-reviewable membership claim.
+- **`propose_excerpt`** `{ cause_id, home_sub_topic_id, memberships?, parent_anchor_id, content, quoted_span }` → `{ proposal_id }`
   - Creates a staged excerpt node. Server matches `quoted_span` against the resolved source. Mismatch → rejection. No exceptions.
-- **`propose_synthesis`** `{ cause_id, sub_topic_id, parent_ids, content, kind }` → `{ proposal_id }`
+- **`propose_synthesis`** `{ cause_id, home_sub_topic_id, memberships?, parent_ids, content, kind }` → `{ proposal_id }`
   - Creates a staged synthesis or open_question node with `derives` edges from each parent. Atomic — either all edges create or none do. `kind` is `synthesis` or `open_question`.
 - **`propose_supersedes`** `{ from_node_id, to_node_id, rationale }` → `{ proposal_id }`
   - Stages a supersedes edge with the reasoning attached.
-- **`propose_cross_link`** `{ from_node_id, to_node_id, kind }` → `{ proposal_id }`
-  - For cross-sub-topic references within the same cause.
+- **`propose_membership`** `{ node_id, sub_topic_id }` → `{ proposal_id }`
+  - Stages a scope-membership claim that `node_id` is in scope for `sub_topic_id`. Reviewed by the *target* sub-topic's reviewer pool.
+- **`propose_change_of_home`** `{ node_id, new_home_sub_topic_id, rationale }` → `{ proposal_id }`
+  - Curator-approved.
 - **`cast_review_vote`** `{ proposal_id, decision, rationale }` → `{ vote_id }`
-  - `decision` is `accept`, `reject`, or `revise`. `rationale` is required and may itself be promoted to a graph node (typically `open_question`) by curators.
+  - `decision` is `accept`, `reject`, or `revise`. `rationale` is required and may itself be promoted to a graph node (typically `open_question`) by curators; promoted rationale-nodes pass standard review.
 - **`propose_sub_topic`** `{ cause_id, name, description, scope_query }` → `{ proposal_id }`
   - Subject to curator approval in v0.
 
@@ -112,7 +142,7 @@ Read-path is largely MCP *resources* (passive), with a few active tools for quer
 - **Resource: `subgraph://{sub-topic-id}`** — full or filtered subgraph in a structured form.
 - **Tool: `query_frontier`** `{ cause_id?, sub_topic_id?, frontier_kind? }` → ordered list of frontier items (work to be done).
 - **Tool: `query_proposals`** `{ status?, sub_topic_id?, assigned_to_me? }` → list of proposals matching filter.
-- **Tool: `fetch_calibration_batch`** `{ sub_topic_id }` → reviewer's review batch (real items + calibration items, indistinguishable from each other).
+- **Tool: `fetch_calibration_batch`** `{ sub_topic_id }` → reviewer's review batch (real items + calibration items; indistinguishable to a single-batch reviewer, with batch-level correlation defenses described in [Calibration batches](#calibration-batches)).
 
 Tool surface is intentionally small. Each tool has tight typing, server-side validation, and clear failure modes.
 
@@ -124,7 +154,7 @@ The verification engine is the security boundary. Every write tool routes throug
 
 - **Anchor verification.** External references must resolve. PMIDs hit NCBI E-utilities; DOIs resolve via Crossref; URLs must return 200 with substantive content. Anchors are *content-addressed*: the hash of the fetched content is stored alongside the `external_ref`, and re-verification compares against the stored hash rather than only against a live fetch. URL-anchors are second-class — metadata-unstable and cloaking-prone — and may be subject to stricter regimes (or refused entirely in v0). When re-verification fails (retraction, content drift, host gone), the anchor moves to an `unresolvable` status and surfaces as a frontier item rather than silently rotting.
 - **Span verification.** For excerpts, the `quoted_span` must be a substring of the fetched source after normalization (whitespace, quote-style, and a small set of typographic equivalences specified in the verification spec, not left to "light normalization" hand-waving). Failure rejects the proposal at write time, not at review time. Span verification confirms the quote exists; it does not confirm the proposed `content` follows from it — that is the reviewer's job.
-- **Lineage validation.** `derives` edges must connect nodes within the same sub-topic; `cross_link` edges may cross sub-topics within the same cause. At acceptance, every `derives` parent must be `active` (not `staged`, `rejected`, or `superseded`); the `to` end of a `supersedes` must be `active` at proposal time; supersedes cycles are rejected. Cross-links cannot appear in the lineage chain a manuscript projection walks.
+- **Lineage validation.** A `derives` edge is valid when its parent and child share at least one sub-topic membership (home or scope). At acceptance, every `derives` parent must be `active` (not `staged`, `rejected`, or `superseded`); the `to` end of a `supersedes` must be `active` at proposal time; supersedes cycles are rejected. A manuscript projection in sub-topic S walks `derives` lineage that stays within S's home + scope-member graph.
 - **Reputation gates.** Some operations require minimum reputation (per-(cause, sub-topic) or per-cause). Below the threshold, proposals land staged but are not advanced into the review queue without curator action. Specific thresholds are tuned in the testbed.
 - **Rate limits and abuse signals.** Per-identity rate limits on proposals; suspicious patterns (sudden burst of proposals, calibration-failure clustering) flag for curator review. Specific signals are operationally private.
 
@@ -134,23 +164,28 @@ The verification engine is the security boundary. Every write tool routes throug
 
 ### The contribution flow
 
-1. **Propose** — write-path tool creates a *staged* node or edge.
+The default flow is assignment-driven. The contributor-initiated flow is a special case (steps 0a/0b are skipped; rep weighting is reduced).
+
+0a. **Capacity** — contributor declares which sub-topics they're available for and at what rate (`set_capacity`).
+0b. **Assignment** — system draws a frontier task matching capacity and assigns it (`request_assignment`); contributor accepts or declines.
+1. **Submit / Propose** — assigned contributor submits work via `submit_assigned_proposal`; contributor-initiated path uses the `propose_*` tools directly.
 2. **Verify** — verification engine accepts or rejects synchronously based on grounding/lineage/rate.
 3. **Stage** — accepted proposals enter the review queue. Visible and citable as proposals; not part of the canonical graph.
-4. **Assign** — N reviewers are randomly selected from the eligible pool, salted with calibration items drawn from the graph's own validated history.
+4. **Assign reviewers** — N reviewers are drawn from the eligible pool of the home sub-topic (or the target sub-topic, for membership proposals), with calibration items mixed in.
 5. **Review** — reviewers vote with rationale via `cast_review_vote`.
-6. **Resolve** — convergent vote merges; divergent vote routes to a richer review path (more reviewers, curator escalation, or carrying the divergence forward as parallel synthesis nodes / `open_question`).
-7. **Settle** — reputation updates for the contributor and the reviewers, weighted by outcome correctness.
+6. **Resolve** — convergent vote merges; divergent vote routes to a richer review path (more reviewers, curator escalation, or carrying the divergence forward as parallel synthesis nodes / `open_question`); long-unresolved divergences archive (status `unresolved-archived`).
+7. **Settle** — reputation updates for the contributor and the reviewers, weighted by outcome correctness, by claim difficulty, and by whether the work was assignment-driven or contributor-initiated.
 
 ### Reviewer assignment
 
-Reviewers are drawn from the eligible pool — contributors with sufficient per-(cause, sub-topic) reputation — by stratified random sampling. Stratification balances reviewer expertise (where measurable) and reduces collusion risk. Specific stratification weights are tuned in the testbed.
+Reviewers are drawn from the eligible pool — contributors with cause-level capacity declared and sufficient per-(cause, sub-topic) reputation — by stratified random sampling. Stratification balances reviewer expertise (where measurable from history) and reduces collusion risk. Specific stratification weights are tuned in the testbed. Capacity is at the cause, not the sub-topic; reviewers do not pre-select which sub-topics they will be drawn for.
 
-Narrow sub-topics will sometimes have a sub-topic-rep pool too small to draw N reviewers from. The fallback ladder is fixed in design even though the thresholds are tuning:
+Reviewer pools are evaluated in this fallback ladder:
 
-1. **Sub-topic-rep first.** Standard path. Reviewers with demonstrated work in this sub-topic.
-2. **Cause-rep with degraded-stratification flag.** When the sub-topic pool is exhausted, draw from cause-rep contributors and flag the proposal as "expertise-degraded" — visible to the contributor, factored into convergence-threshold logic (see below), and logged for periodic audit.
-3. **Curator escalation.** When even the cause-rep pool is insufficient or when prior steps have produced sustained divergence, escalate to curator review.
+1. **Home-sub-topic rep.** Standard path. Reviewers homed in this sub-topic.
+2. **Membership-sub-topic rep.** When the home pool is exhausted, draw from contributors whose work is *scope-member* of this sub-topic — they have proven legitimate stake without being homed here.
+3. **Cause-rep with degraded-stratification flag.** When 1 + 2 are exhausted, draw from cause-rep contributors and flag the proposal as "expertise-degraded" — visible to the contributor, factored into convergence-threshold logic (see below), and logged for periodic audit.
+4. **Curator escalation.** When even the cause-rep pool is insufficient or when prior steps have produced sustained divergence, escalate to curator review.
 
 At sub-topic launch, expertise stratification is degraded by construction (no history exists), and calibration items are drawn from the cause's validated history rather than from the sub-topic's. The doc states this explicitly so it is not mistaken for a vulnerability when reviewers notice it.
 
@@ -202,7 +237,7 @@ The identity model is the foundation that sybil-resistance, calibration integrit
 Reputation is structured to resolve a real trilemma the design cannot wave away: *slow* decay rewards consistency (the design goal) but lets patient adversaries stockpile; *fast* decay neutralizes stockpiles but disenfranchises episodic experts (the part-time clinician is exactly the contributor we want); *review-as-staking* punishes lazy review but selects against accepting hard syntheses (which are riskier to stand behind). Acknowledging this directly:
 
 - **Two-component reputation.** A *demonstrated-competence* component, slow-decay, gates eligibility tiers (who is in the reviewer pool at all). A *recent-activity* component, fast-decay, gates assignment (who is drawn for a given proposal). A patient adversary can stockpile competence but must remain currently active to be assigned — and visible activity is detectable.
-- **Per-(cause, sub-topic).** Anchored at the cause level (the unit of belonging), refined by sub-topics actually worked in (the unit of expertise). Cause-level reputation gets a contributor in the door to *propose* in any sub-topic; review-eligibility in a contested sub-topic requires demonstrated work *in that sub-topic*. This closes the rep-laundering path where easy-sub-topic credibility is parlayed into reviewer authority over contested ones.
+- **Per-(cause, sub-topic), accrued from assigned work.** Anchored at the cause level (the unit of belonging), refined by which sub-topics a contributor's *assigned* work has actually landed in. Sub-topic rep is therefore an emergent record of where the system has routed someone, not a self-declared specialty. This closes both the rep-laundering vector (no easy-sub-topic shopping) and the coalition vector (contributors can't pre-arrange to land on each other's proposals). Contributor-initiated work earns sub-topic rep at a substantially reduced weight, conditional on independent confirmation, to preserve a genuine novel-synthesis path without making it the laundering route.
 - **Earned through confirmed contributions and accurate reviews.** Both contributing nodes that survive *and* reviewing accurately count.
 - **Lost through reverted contributions and inaccurate reviews.** Supersedes and rejected calibration items both decrease reputation. Self-supersedes (a contributor superseding their own node) do not count toward survivorship — only supersedes by other contributors do.
 - **Review-credit normalized by claim difficulty.** Without normalization, the regime selects for reviewers who accept easy proposals. Difficulty proxies — review effort, prior divergence, sub-topic frontier-distance — weight review-credit so that engaging hard syntheses is not dominated by rubber-stamping easy ones.
@@ -239,6 +274,22 @@ The testbed is the project's continuous-integration story for governance — and
 - **Simulated contributor population.** Synthetic contributors connect via the same MCP protocol, salted with the adversary taxonomy below.
 - **Parameter sweeps.** Calibration ratios, reviewer-pool sizes, reputation decay rates, vote thresholds — swept over reasonable ranges, attack-success rates measured.
 - **Public results.** Methodology and results published. Adversary populations and harness code open. Specific calibration items remain private.
+
+### Why assignment-driven contribution closes several attack surfaces
+
+Several adversary vectors that previously needed elaborate defenses collapse under assignment-driven contribution:
+
+- **Reputation laundering** (build rep on easy sub-topics, parlay into contested ones) — closed by construction. Capacity is cause-level; sub-topic is the system's choice; sub-topic rep is an emergent record of routing.
+- **Coalition pre-arrangement** (multiple identities landing on each other's proposals) — closed by construction. Reviewer assignment is system-driven; coalitions cannot pre-arrange the queue.
+- **Calibration distinguishability via batch-level signatures** — narrowed substantially. Calibration items already arrive via assignment; with proposals also arriving via assignment, calibration is structurally indistinguishable from "the rest of the work" — it is just another assigned task.
+- **Cherry-picking proposals to review** — closed. Reviewers do not select proposals; the system assigns them.
+
+What remains, and what the testbed continues to exercise:
+
+- **Patient adversary accepting clean assignments** to build rep over time, then drifting on a contested assigned proposal. Decay + two-component reputation + class-aware thresholds are the defenses.
+- **Decline-pattern abuse** — declining everything outside the adversary's preferred sub-topic to approximate selectivity. Decline-tracking + curator escalation handle this.
+- **Sybil farms providing capacity to absorb assignments** — global anti-abuse signals, identity-cost.
+- **Hallucinated submissions on assigned tasks** — verification engine + reviewer responsibility.
 
 ### Adversary taxonomy
 
