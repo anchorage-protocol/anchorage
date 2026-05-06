@@ -19,3 +19,12 @@ export type NodeId = z.infer<typeof NodeId>;
 
 export const EdgeId = idShape.brand<'EdgeId'>();
 export type EdgeId = z.infer<typeof EdgeId>;
+
+export const ProposalId = idShape.brand<'ProposalId'>();
+export type ProposalId = z.infer<typeof ProposalId>;
+
+export const MembershipId = idShape.brand<'MembershipId'>();
+export type MembershipId = z.infer<typeof MembershipId>;
+
+export const AssignmentId = idShape.brand<'AssignmentId'>();
+export type AssignmentId = z.infer<typeof AssignmentId>;

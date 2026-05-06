@@ -6,3 +6,5 @@ export * from './identity.js';
 export * from './cause.js';
 export * from './nodes.js';
 export * from './edges.js';
+export * from './memberships.js';
+export * from './proposals.js';
