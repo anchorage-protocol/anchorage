@@ -17,6 +17,9 @@ A protocol and public instance for **cooperative open research with auditable li
 | [docs/seed-topic.md](./docs/seed-topic.md) | Locked umbrella cause + starter sub-topic candidates + elimination rationale | When the seed cause or starter sub-topics are re-evaluated (rare; this is supposed to be stable) |
 | [ROADMAP.md](./ROADMAP.md) | Phase plan and exit criteria for each | When a phase finishes or a new phase opens |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | How to contribute, contribution priorities, DCO requirement | When the contribution flow changes |
+| [packages/contracts](./packages/contracts) | Executable spec: zod schemas + types for nodes, edges, identity, causes, sub-topics, proposals, assignments, MCP tool I/O. The field-level source of truth. | Whenever a contract changes — and update the matching PRD section in the same commit (docs-never-drift). |
+| [packages/server](./packages/server) | The MCP server: graph store, verification, governance machinery, identity. The trust boundary. | When server-internal behavior changes. Public surface changes go through `contracts`. |
+| [packages/testbed](./packages/testbed) | Adversary harness + synthetic contributor archetypes. Talks to the server over MCP only — by build-system construction, no path to server internals. | When archetypes, harness behavior, or parameter sweeps change. |
 | [LICENSE](./LICENSE) | AGPL-3.0 (code) | Don't |
 | [LICENSE-DATA](./LICENSE-DATA) | CC BY-SA 4.0 (data and documents) | Don't |
 

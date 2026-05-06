@@ -2,7 +2,7 @@
 
 > The technical north star: data model, interfaces, governance machinery, calibration, credit, adversary testbed. Where the [manifesto](./manifesto.md) explains *why* and [governance](./governance.md) sketches *who decides what*, this document specifies *how*.
 
-This is a **design document**, not implementation specification. It captures commitments precise enough to build from, with parameters deliberately deferred to the adversary-testbed phase where they will be tuned against simulation rather than guessed.
+This document captures design intent. **Field-level contracts** (zod schemas, MCP tool I/O shapes, lifecycle states) live in [`@anchorage/contracts`](../packages/contracts/src) and are the executable spec. The two stay in lockstep under the docs-never-drift discipline (see [CLAUDE.md](../CLAUDE.md)) — a contract change without a doc change, or vice versa, is a bug. Parameters deliberately deferred to the adversary-testbed phase — calibration ratios, reputation decay rates, vote thresholds — remain unspecified here; they will be tuned against simulation rather than guessed.
 
 ---
 
