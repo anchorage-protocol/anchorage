@@ -2,6 +2,7 @@ import {
   AnchorageClient,
   type ContentProvider,
   acceptAllDecider,
+  rejectAllDecider,
   runHonestReviewer,
   runHonestStrong,
 } from '@anchorage/testbed';
@@ -258,6 +259,82 @@ describe('testbed: honest-strong archetype', () => {
     expect(excerptNodes).toHaveLength(2);
     const derivesEdges = [...server.store.edges.values()].filter((e) => e.kind === 'derives');
     expect(derivesEdges).toHaveLength(2);
+  });
+
+  it('drives the rejection path: reject-all reviewers force auto-rejection', async () => {
+    // The contrast scenario for the convergent-merge test above:
+    // honest proposers, reject-all reviewers. The proposed excerpts
+    // converge to *rejected*, not accepted, and no nodes materialize.
+    // This is the rep-laundering wedge PRD's adversary taxonomy
+    // describes — reject-everything reviewers prevent merge — and
+    // demonstrates the testbed can express adversarial shapes
+    // through the same decider seam honest variants use.
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'st',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const a = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    server.curator.acceptProposal(a.proposal_id);
+
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) => ({
+        content: `claim from ${anchorId}`,
+        quoted_span: { text: 'span', offset: 0 },
+      }),
+    };
+
+    await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    // Both reviewers reject. With threshold 2, the excerpt converges
+    // to rejected on the second reject vote.
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: rejectAllDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: rejectAllDecider,
+    });
+
+    const excerptProposals = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    expect(excerptProposals).toHaveLength(1);
+    expect(excerptProposals[0]?.status).toBe('rejected');
+    // No excerpt node materialized on the rejection path.
+    const excerptNodes = [...server.store.nodes.values()].filter((n) => n.kind === 'excerpt');
+    expect(excerptNodes).toHaveLength(0);
   });
 
   it('surfaces typed error codes through AnchorageClientError', async () => {

@@ -16,6 +16,7 @@ export {
   type HonestReviewerAction,
   type HonestReviewerConfig,
   type HonestReviewerResult,
+  rejectAllDecider,
   type ReviewDecider,
   type ReviewDecisionWithRationale,
   runHonestReviewer,

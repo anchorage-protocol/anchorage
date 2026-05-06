@@ -55,6 +55,15 @@ export const acceptAllDecider: ReviewDecider = {
   decide: () => ({ decision: 'accept', rationale: 'spot-checked, looks correct' }),
 };
 
+// A common decider: reject everything. The "principled adversary"
+// shape is "accept everything," but reject-all is useful as the
+// counterpart for testing the rejection-convergence path. PRD's
+// adversary taxonomy (line 303 area) includes the lazy-reject
+// pattern as a wedge against productive consensus.
+export const rejectAllDecider: ReviewDecider = {
+  decide: () => ({ decision: 'reject', rationale: 'declined as out of scope' }),
+};
+
 export async function runHonestReviewer(
   client: AnchorageClient,
   config: HonestReviewerConfig,
