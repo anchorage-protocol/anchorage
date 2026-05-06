@@ -13,3 +13,9 @@ export type CauseId = z.infer<typeof CauseId>;
 
 export const SubTopicId = idShape.brand<'SubTopicId'>();
 export type SubTopicId = z.infer<typeof SubTopicId>;
+
+export const NodeId = idShape.brand<'NodeId'>();
+export type NodeId = z.infer<typeof NodeId>;
+
+export const EdgeId = idShape.brand<'EdgeId'>();
+export type EdgeId = z.infer<typeof EdgeId>;

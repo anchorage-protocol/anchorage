@@ -60,9 +60,10 @@ Every node has:
   - `synthesis` — explicit inferential step derived from multiple parents. The agent or contributor sets `kind=synthesis` when the content is not a straight excerpt.
   - `open_question` — scoped uncertainty with edges to what it depends on. Surfaces as a frontier item.
 - `content` — the claim text (single atomic claim per node)
-- `external_ref` — for anchors, structured pointer (PMID/DOI/URL); for excerpts, references the parent anchor's external_ref
+- `external_ref` — for anchors only, structured pointer (PMID/DOI/URL). Excerpts do not carry an `external_ref`; their grounding flows through the `derives` edge to the parent anchor, where verification rests. Duplicating the field on excerpts would create two places for it to drift.
+- `content_hash` — for anchors only, hash of the fetched source content; set by the server post-fetch and used for re-verification (see [Verification engine](#verification-engine)).
 - `quoted_span` — for excerpts, the verifiable span text + offset within the source
-- `status` — `staged` (under review), `active` (merged), `superseded` (replaced), `rejected` (review failed)
+- `status` — `staged` (under review), `active` (merged), `superseded` (replaced), `rejected` (review failed), `unresolvable` (anchors only — re-verification has failed and the node surfaces as a frontier item; see [Verification engine](#verification-engine))
 - `created_by`, `created_at`, `updated_at`
 
 The **active node rule** (matching Galleon's contract): a node is *inactive* if it is the `from` end of a `supersedes` edge.
