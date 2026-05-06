@@ -9,14 +9,18 @@ import {
   type IdentityId,
   type Node,
   type NodeId,
+  type OpenQuestionNode,
   type Proposal,
   type ProposalId,
   ProposeAnchorInput,
   type ProposeAnchorOutput,
   ProposeExcerptInput,
   type ProposeExcerptOutput,
+  ProposeSynthesisInput,
+  type ProposeSynthesisOutput,
   type SubTopic,
   type SubTopicId,
+  type SynthesisNode,
 } from '@anchorage/contracts';
 import { z } from 'zod';
 import { type Caller, resolveCaller } from './auth.js';
@@ -120,27 +124,29 @@ export class Server {
     return cause;
   }
 
-  // Resolve an active anchor node that lives in the given cause. The
-  // cause check follows the parent through its home sub-topic, since
-  // nodes don't carry a cause_id directly — they're partitioned across
-  // sub-topics, and sub-topics belong to a cause.
-  private requireActiveAnchorInCause(nodeId: NodeId, causeId: CauseId): AnchorNode {
+  // Resolve an active node that lives in the given cause. The cause
+  // check follows the node through its home sub-topic, since nodes
+  // don't carry a cause_id directly — they're partitioned across sub-
+  // topics, and sub-topics belong to a cause.
+  private requireActiveNodeInCause(nodeId: NodeId, causeId: CauseId): Node {
     const node = this.store.nodes.get(nodeId);
     if (!node) {
-      throw new ServerError('not_found', `parent node not found: ${nodeId}`);
-    }
-    if (node.kind !== 'anchor') {
-      throw new ServerError('invalid_input', `parent ${nodeId} is not an anchor`);
+      throw new ServerError('not_found', `node not found: ${nodeId}`);
     }
     if (node.status !== 'active') {
-      throw new ServerError('invalid_state', `parent anchor is ${node.status}`);
+      throw new ServerError('invalid_state', `node ${nodeId} is ${node.status}`);
     }
     const home = this.store.subTopics.get(node.home_sub_topic_id);
     if (!home || home.cause_id !== causeId) {
-      throw new ServerError(
-        'invalid_input',
-        `parent anchor ${nodeId} does not belong to cause ${causeId}`,
-      );
+      throw new ServerError('invalid_input', `node ${nodeId} does not belong to cause ${causeId}`);
+    }
+    return node;
+  }
+
+  private requireActiveAnchorInCause(nodeId: NodeId, causeId: CauseId): AnchorNode {
+    const node = this.requireActiveNodeInCause(nodeId, causeId);
+    if (node.kind !== 'anchor') {
+      throw new ServerError('invalid_input', `node ${nodeId} is not an anchor`);
     }
     return node;
   }
@@ -308,6 +314,62 @@ export class Server {
       this.store.proposals.set(proposal.id, proposal);
       return { proposal_id: proposal.id };
     },
+
+    // PRD §Write-path tools: propose_synthesis covers both `synthesis`
+    // and `open_question` via a `kind` field on the input. Internally
+    // the contracts split them into separate payloads (cleaner
+    // discriminator); this tool routes the input into the right
+    // payload variant. Parents may be any active node kind in the
+    // same cause — anchors, excerpts, prior syntheses, or open
+    // questions — because syntheses pull together evidence across
+    // node kinds (PRD §Nodes: synthesis nodes connect 2+ parents).
+    proposeSynthesis: async (
+      caller: Caller,
+      input: ProposeSynthesisInput,
+    ): Promise<ProposeSynthesisOutput> => {
+      const parsed = ProposeSynthesisInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+
+      const cause = this.requireActiveCause(parsed.cause_id);
+      this.requireActiveSubTopicInCause(parsed.home_sub_topic_id, cause.id, 'home');
+      const memberships = parsed.memberships ?? [];
+      for (const m of memberships) {
+        this.requireActiveSubTopicInCause(m, cause.id, 'membership');
+      }
+      // De-duplicate parents at the tool boundary — multiple derives
+      // edges between the same pair of nodes would be redundant and
+      // would pollute future frontier/credit calculations. The schema
+      // requires min(1) but doesn't enforce uniqueness.
+      const parent_ids = [...new Set(parsed.parent_ids)];
+      if (parent_ids.length !== parsed.parent_ids.length) {
+        throw new ServerError('invalid_input', 'parent_ids must be unique');
+      }
+      for (const p of parent_ids) {
+        this.requireActiveNodeInCause(p, cause.id);
+      }
+
+      const now = this.clock.now();
+      const common = {
+        cause_id: cause.id,
+        home_sub_topic_id: parsed.home_sub_topic_id,
+        ...(memberships.length > 0 ? { memberships } : {}),
+        parent_ids,
+        content: parsed.content,
+      };
+      const proposal: Proposal = {
+        id: this.idGen.proposalId(),
+        proposer_id: identity.id,
+        status: 'staged',
+        payload:
+          parsed.kind === 'synthesis'
+            ? { kind: 'synthesis', ...common }
+            : { kind: 'open_question', ...common },
+        created_at: now,
+        updated_at: now,
+      };
+      this.store.proposals.set(proposal.id, proposal);
+      return { proposal_id: proposal.id };
+    },
   };
 
   readonly curator = {
@@ -407,6 +469,43 @@ export class Server {
         created_at: now,
       };
       return { node, edges: [edge] };
+    }
+    if (proposal.payload.kind === 'synthesis' || proposal.payload.kind === 'open_question') {
+      // All parents must be active at acceptance time. Re-checked
+      // here for the same reason as excerpt: a parent could have been
+      // superseded between propose and accept.
+      const parents: Node[] = [];
+      for (const pid of proposal.payload.parent_ids) {
+        const p = this.store.nodes.get(pid);
+        if (!p || p.status !== 'active') {
+          throw new ServerError('invalid_state', `parent ${pid} is not active at acceptance`);
+        }
+        parents.push(p);
+      }
+      const base = {
+        id: this.idGen.nodeId(),
+        home_sub_topic_id: proposal.payload.home_sub_topic_id,
+        scope_memberships: proposal.payload.memberships ?? [],
+        content: proposal.payload.content,
+        status: 'active' as const,
+        created_by: proposal.proposer_id,
+        created_at: now,
+        updated_at: now,
+      };
+      const node: SynthesisNode | OpenQuestionNode =
+        proposal.payload.kind === 'synthesis'
+          ? { ...base, kind: 'synthesis' }
+          : { ...base, kind: 'open_question' };
+      const edges: DerivesEdge[] = parents.map((p) => ({
+        id: this.idGen.edgeId(),
+        kind: 'derives',
+        from: p.id,
+        to: node.id,
+        status: 'active',
+        created_by: proposal.proposer_id,
+        created_at: now,
+      }));
+      return { node, edges };
     }
     throw new ServerError(
       'invalid_state',

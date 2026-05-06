@@ -134,6 +134,43 @@ describe('curator.acceptProposal', () => {
     expect(() => f.server.curator.acceptProposal(excerpt_proposal)).toThrow(ServerError);
   });
 
+  it('materializes a SynthesisNode with one derives edge per parent', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'a',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const b = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'b',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    const bId = f.server.curator.acceptProposal(b.proposal_id).node_id;
+    if (!aId || !bId) throw new Error('expected anchors');
+
+    const { proposal_id } = await f.server.tools.proposeSynthesis(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_ids: [aId, bId],
+      content: 'synthesis content',
+      kind: 'synthesis',
+    });
+    const { node_id: synth_id } = f.server.curator.acceptProposal(proposal_id);
+    if (!synth_id) throw new Error('expected synthesis');
+
+    const synth = f.server.store.nodes.get(synth_id);
+    expect(synth?.kind).toBe('synthesis');
+
+    const incoming = [...f.server.store.edges.values()].filter((e) => e.to === synth_id);
+    expect(incoming).toHaveLength(2);
+    expect(new Set(incoming.map((e) => e.from))).toEqual(new Set([aId, bId]));
+    expect(incoming.every((e) => e.kind === 'derives' && e.status === 'active')).toBe(true);
+  });
+
   it('rejects an unknown proposal id', () => {
     const f = fixture();
     try {

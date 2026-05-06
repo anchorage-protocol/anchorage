@@ -186,6 +186,27 @@ describe('tools.proposeExcerpt', () => {
     ).rejects.toMatchObject({ code: 'not_found' });
   });
 
+  it('rejects an excerpt whose home sub-topic is in a different cause', async () => {
+    const f = fixture();
+    const anchor_id = await withAcceptedAnchor(f);
+    const otherCause = f.server.bootstrap.createCause({ name: 'AMR', description: 'x' });
+    const otherSt = f.server.bootstrap.seedSubTopic({
+      cause_id: otherCause.id,
+      name: 'x',
+      description: 'x',
+      scope_query: 'x',
+    });
+    await expect(
+      f.server.tools.proposeExcerpt(f.caller, {
+        cause_id: otherCause.id,
+        home_sub_topic_id: otherSt.id,
+        parent_anchor_id: anchor_id,
+        content: 'x',
+        quoted_span: { text: 'x', offset: 0 },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
   it('rejects an excerpt whose parent is staged (not yet a node)', async () => {
     const f = fixture();
     const { proposal_id: anchor_proposal } = await f.server.tools.proposeAnchor(f.caller, {
@@ -209,6 +230,85 @@ describe('tools.proposeExcerpt', () => {
         parent_anchor_id: 'nod_t_0001' as any,
         content: 'x',
         quoted_span: { text: 'x', offset: 0 },
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
+
+describe('tools.proposeSynthesis', () => {
+  async function withTwoAnchors(f: ReturnType<typeof fixture>) {
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'a',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const b = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'b',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    const bId = f.server.curator.acceptProposal(b.proposal_id).node_id;
+    if (!aId || !bId) throw new Error('expected both anchors');
+    return [aId, bId] as const;
+  }
+
+  it('stages a synthesis proposal with multiple parents', async () => {
+    const f = fixture();
+    const [a, b] = await withTwoAnchors(f);
+    const { proposal_id } = await f.server.tools.proposeSynthesis(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_ids: [a, b],
+      content: 'a and b together suggest...',
+      kind: 'synthesis',
+    });
+    const p = f.server.store.proposals.get(proposal_id);
+    if (p?.payload.kind !== 'synthesis') throw new Error('expected synthesis payload');
+    expect(p.payload.parent_ids).toEqual([a, b]);
+  });
+
+  it('routes kind:open_question into an open_question payload', async () => {
+    const f = fixture();
+    const [a, b] = await withTwoAnchors(f);
+    const { proposal_id } = await f.server.tools.proposeSynthesis(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_ids: [a, b],
+      content: 'why does a contradict b?',
+      kind: 'open_question',
+    });
+    const p = f.server.store.proposals.get(proposal_id);
+    expect(p?.payload.kind).toBe('open_question');
+  });
+
+  it('rejects duplicate parent_ids', async () => {
+    const f = fixture();
+    const [a] = await withTwoAnchors(f);
+    await expect(
+      f.server.tools.proposeSynthesis(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        parent_ids: [a, a],
+        content: 'x',
+        kind: 'synthesis',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('rejects when any parent is missing from the cause', async () => {
+    const f = fixture();
+    const [a] = await withTwoAnchors(f);
+    await expect(
+      f.server.tools.proposeSynthesis(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
+        parent_ids: [a, 'nod_missing' as any],
+        content: 'x',
+        kind: 'synthesis',
       }),
     ).rejects.toMatchObject({ code: 'not_found' });
   });
