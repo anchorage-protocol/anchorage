@@ -5,6 +5,8 @@ import type {
   CauseId,
   Identity,
   IdentityId,
+  Proposal,
+  ProposalId,
   SubTopic,
   SubTopicId,
 } from '@anchorage/contracts';
@@ -19,4 +21,5 @@ export class MemoryStore {
   readonly agentCredentials = new Map<AgentCredentialId, AgentCredential>();
   readonly causes = new Map<CauseId, Cause>();
   readonly subTopics = new Map<SubTopicId, SubTopic>();
+  readonly proposals = new Map<ProposalId, Proposal>();
 }

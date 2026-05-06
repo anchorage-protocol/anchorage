@@ -1,16 +1,22 @@
-import type {
-  AgentCredential,
-  Cause,
-  CauseId,
-  Identity,
-  IdentityId,
-  SubTopic,
+import {
+  type AgentCredential,
+  type Cause,
+  type CauseId,
+  type Identity,
+  type IdentityId,
+  type Proposal,
+  ProposeAnchorInput,
+  type ProposeAnchorOutput,
+  type SubTopic,
+  type SubTopicId,
 } from '@anchorage/contracts';
 import { z } from 'zod';
+import { type Caller, resolveCaller } from './auth.js';
 import { type Clock, SystemClock } from './clock.js';
 import { ServerError } from './errors.js';
 import { type IdGen, RandomIdGen } from './id-gen.js';
 import { MemoryStore } from './store.js';
+import { StructuralVerifier, type Verifier } from './verifier.js';
 
 // Bootstrap input schemas. These are admin-surface inputs and are
 // deliberately separate from the contributor-facing MCP tool I/O in
@@ -49,22 +55,61 @@ export interface ServerDeps {
   clock?: Clock;
   idGen?: IdGen;
   store?: MemoryStore;
+  verifier?: Verifier;
 }
 
 // Server is the trust boundary. All mutation goes through it. The
 // `bootstrap` namespace holds curator/admin operations not exposed as
 // MCP tools (cause creation, sub-topic seeding, identity issuance);
-// contributor-facing tools are added incrementally and live under
-// `tools` (TBD).
+// the `tools` namespace holds the contributor-facing MCP tools, added
+// incrementally and 1-to-1 with the I/O contracts in
+// @anchorage/contracts/tools.
 export class Server {
   readonly clock: Clock;
   readonly idGen: IdGen;
   readonly store: MemoryStore;
+  readonly verifier: Verifier;
 
   constructor(deps: ServerDeps = {}) {
     this.clock = deps.clock ?? new SystemClock();
     this.idGen = deps.idGen ?? new RandomIdGen();
     this.store = deps.store ?? new MemoryStore();
+    this.verifier = deps.verifier ?? new StructuralVerifier();
+  }
+
+  // Resolve a sub-topic that must exist, be active, and live under the
+  // expected cause. Used by every tool that takes a sub-topic id, so
+  // it lives on the Server rather than each tool re-implementing it.
+  private requireActiveSubTopicInCause(
+    subTopicId: SubTopicId,
+    causeId: CauseId,
+    label: string,
+  ): SubTopic {
+    const st = this.store.subTopics.get(subTopicId);
+    if (!st) {
+      throw new ServerError('not_found', `${label} sub-topic not found: ${subTopicId}`);
+    }
+    if (st.cause_id !== causeId) {
+      throw new ServerError(
+        'invalid_input',
+        `${label} sub-topic ${subTopicId} does not belong to cause ${causeId}`,
+      );
+    }
+    if (st.status !== 'active') {
+      throw new ServerError('invalid_state', `${label} sub-topic is ${st.status}`);
+    }
+    return st;
+  }
+
+  private requireActiveCause(causeId: CauseId): Cause {
+    const cause = this.store.causes.get(causeId);
+    if (!cause) {
+      throw new ServerError('not_found', `cause not found: ${causeId}`);
+    }
+    if (cause.status !== 'active') {
+      throw new ServerError('invalid_state', `cause is ${cause.status}`);
+    }
+    return cause;
   }
 
   readonly bootstrap = {
@@ -142,6 +187,49 @@ export class Server {
       };
       this.store.subTopics.set(subTopic.id, subTopic);
       return subTopic;
+    },
+  };
+
+  readonly tools = {
+    // PRD §Write-path tools: propose_anchor stages an anchor proposal.
+    // Synchronous verification at the tool boundary: external_ref must
+    // resolve. If verification fails, no proposal record is created
+    // (ProposalStatus comment: `rejected` means review-rejected, not
+    // verification-rejected).
+    proposeAnchor: async (
+      caller: Caller,
+      input: ProposeAnchorInput,
+    ): Promise<ProposeAnchorOutput> => {
+      const parsed = ProposeAnchorInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+
+      const cause = this.requireActiveCause(parsed.cause_id);
+      this.requireActiveSubTopicInCause(parsed.home_sub_topic_id, cause.id, 'home');
+      const memberships = parsed.memberships ?? [];
+      for (const m of memberships) {
+        this.requireActiveSubTopicInCause(m, cause.id, 'membership');
+      }
+
+      await this.verifier.verifyExternalRef(parsed.external_ref);
+
+      const now = this.clock.now();
+      const proposal: Proposal = {
+        id: this.idGen.proposalId(),
+        proposer_id: identity.id,
+        status: 'staged',
+        payload: {
+          kind: 'anchor',
+          cause_id: cause.id,
+          home_sub_topic_id: parsed.home_sub_topic_id,
+          ...(memberships.length > 0 ? { memberships } : {}),
+          content: parsed.content,
+          external_ref: parsed.external_ref,
+        },
+        created_at: now,
+        updated_at: now,
+      };
+      this.store.proposals.set(proposal.id, proposal);
+      return { proposal_id: proposal.id };
     },
   };
 }
