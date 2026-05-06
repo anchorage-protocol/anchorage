@@ -1,3 +1,13 @@
 import { PROTOCOL_VERSION } from '@anchorage/contracts';
 
 export const TESTBED_PROTOCOL_VERSION = PROTOCOL_VERSION;
+
+export { AnchorageClient, AnchorageClientError } from './client.js';
+export {
+  type ContentForExcerpt,
+  type ContentProvider,
+  type HonestStrongAction,
+  type HonestStrongConfig,
+  type HonestStrongResult,
+  runHonestStrong,
+} from './archetypes/honest-strong.js';

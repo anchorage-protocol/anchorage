@@ -1,6 +1,10 @@
-// Typed server errors. Codes are stable: the testbed and clients pattern-
-// match on `code`, never on the human-readable message.
-export type ServerErrorCode = 'not_found' | 'invalid_state' | 'invalid_input' | 'unauthorized';
+import type { ServerErrorCode } from '@anchorage/contracts';
+
+// Typed server errors. The code set lives in @anchorage/contracts
+// because it's wire-level — clients pattern-match on it across the
+// MCP boundary. The class lives here because it's a server-internal
+// concept (`throw`'s home).
+export type { ServerErrorCode };
 
 export class ServerError extends Error {
   constructor(

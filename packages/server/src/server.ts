@@ -307,12 +307,29 @@ export class Server {
         hasDerivesChild.add(e.from);
       }
     }
+    // An anchor with a *staged* excerpt proposal isn't orphan either.
+    // Re-offering it for excerpt work creates duplicate assignments
+    // for the same parent across different contributors that the
+    // loop's per-contributor double-offer guard can't deduplicate.
+    // PRD treats orphan_anchor as "needs work to be productive";
+    // staged work-in-flight already covers that need, even before
+    // acceptance materializes the derives edge.
+    const hasStagedExcerptChild = new Set<NodeId>();
+    for (const p of this.store.proposals.values()) {
+      if (p.status === 'staged' && p.payload.kind === 'excerpt') {
+        hasStagedExcerptChild.add(p.payload.parent_anchor_id);
+      }
+    }
 
     for (const node of this.store.nodes.values()) {
       if (node.kind !== 'anchor') continue;
       const home = this.store.subTopics.get(node.home_sub_topic_id);
       if (!home) continue;
-      if (node.status === 'active' && !hasDerivesChild.has(node.id)) {
+      if (
+        node.status === 'active' &&
+        !hasDerivesChild.has(node.id) &&
+        !hasStagedExcerptChild.has(node.id)
+      ) {
         items.push({
           kind: 'orphan_anchor',
           cause_id: home.cause_id,
@@ -861,14 +878,20 @@ export class Server {
         // No double-offer: skip items where the caller already holds
         // an outstanding (offered/accepted) assignment for the same
         // target. Submitted assignments are fine — that's a different
-        // proposal that will land separately.
+        // proposal that will land separately. Declined assignments
+        // also block re-offer to the same contributor: PRD line 115
+        // expects the system to respect "outside my wheelhouse" as a
+        // stable signal, not retry the same target on the same
+        // contributor in a loop. Different contributors get the
+        // target offered independently.
         const taskKey = assignmentTaskKey(task);
-        const alreadyHeld = callerAssignmentsForTarget.some(
+        const alreadySeen = callerAssignmentsForTarget.some(
           (a) =>
-            (a.status === 'offered' || a.status === 'accepted') &&
+            a.status !== 'expired' &&
+            a.status !== 'submitted' &&
             assignmentTaskKey(a.task) === taskKey,
         );
-        if (alreadyHeld) continue;
+        if (alreadySeen) continue;
 
         const now = this.clock.now();
         const assignment: Assignment = {

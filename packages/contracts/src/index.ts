@@ -1,5 +1,6 @@
 export const PROTOCOL_VERSION = '0.0.0';
 
+export * from './errors.js';
 export * from './ids.js';
 export * from './timestamps.js';
 export * from './identity.js';

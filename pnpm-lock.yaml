@@ -41,6 +41,10 @@ importers:
       zod:
         specifier: ^3.24.1
         version: 3.25.76
+    devDependencies:
+      '@anchorage/testbed':
+        specifier: workspace:*
+        version: link:../testbed
 
   packages/testbed:
     dependencies:
@@ -50,6 +54,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.4
         version: 1.29.0(zod@3.25.76)
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
 
 packages:
 
