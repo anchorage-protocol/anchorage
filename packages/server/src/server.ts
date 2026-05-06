@@ -100,11 +100,29 @@ const SeedSubTopicInput = z
   .strict();
 type SeedSubTopicInput = z.infer<typeof SeedSubTopicInput>;
 
+// Vote-aggregation thresholds (PRD line 339, testbed-tuned). Defaults
+// here are starting points for the testbed to swap as it sweeps; they
+// are deliberately small so basic walking-skeleton scenarios converge
+// inside one or two votes.
+export interface ReviewConfig {
+  // Number of `accept` votes needed before the proposal auto-accepts
+  // (without curator action). PRD line 179: convergent vote merges.
+  votes_to_accept: number;
+  // Number of `reject` votes needed before the proposal auto-rejects.
+  votes_to_reject: number;
+}
+
+const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
+  votes_to_accept: 2,
+  votes_to_reject: 2,
+};
+
 export interface ServerDeps {
   clock?: Clock;
   idGen?: IdGen;
   store?: MemoryStore;
   verifier?: Verifier;
+  review?: Partial<ReviewConfig>;
 }
 
 // v0 cap on calibration items per fetch. Small enough to keep batch
@@ -176,12 +194,14 @@ export class Server {
   readonly idGen: IdGen;
   readonly store: MemoryStore;
   readonly verifier: Verifier;
+  readonly review: ReviewConfig;
 
   constructor(deps: ServerDeps = {}) {
     this.clock = deps.clock ?? new SystemClock();
     this.idGen = deps.idGen ?? new RandomIdGen();
     this.store = deps.store ?? new MemoryStore();
     this.verifier = deps.verifier ?? new StructuralVerifier();
+    this.review = { ...DEFAULT_REVIEW_CONFIG, ...(deps.review ?? {}) };
   }
 
   // Resolve a sub-topic that must exist, be active, and live under the
@@ -1583,6 +1603,13 @@ export class Server {
         }
       }
 
+      // Convergence check: enough accept-votes auto-accepts; enough
+      // reject-votes auto-rejects. Threshold is server-config so the
+      // testbed can sweep it (PRD line 339 names this as a tuned
+      // parameter). Curator-only kinds short-circuit inside
+      // resolveByConvergence and are unaffected.
+      this.resolveByConvergence(proposal.id);
+
       return { vote_id: vote.id };
     },
 
@@ -1660,15 +1687,7 @@ export class Server {
           `cannot accept proposal in status ${proposal.status}`,
         );
       }
-
-      const result = this.materialize(proposal, 'active');
-      const now = this.clock.now();
-      this.store.proposals.set(proposal.id, { ...proposal, status: 'accepted', updated_at: now });
-      this.applyMaterialization(result);
-      if (result.node) return { node_id: result.node.id };
-      const created = result.subTopicCreates[0];
-      if (created) return { sub_topic_id: created.id };
-      return {};
+      return this.acceptStaged(proposal);
     },
 
     // PRD §Sub-topic creation line 218: "Curator accepts as `active`,
@@ -1711,6 +1730,60 @@ export class Server {
       return { sub_topic_id: created.id };
     },
   };
+
+  // Promote a staged proposal to accepted: materialize, persist the
+  // status flip, and apply the materialization. Shared between the
+  // curator's manual path (curator.acceptProposal) and the auto-
+  // convergence path that fires after enough accept-votes accumulate
+  // (PRD line 179: convergent vote merges).
+  private acceptStaged(proposal: Proposal): { node_id?: NodeId; sub_topic_id?: SubTopicId } {
+    const result = this.materialize(proposal, 'active');
+    const now = this.clock.now();
+    this.store.proposals.set(proposal.id, { ...proposal, status: 'accepted', updated_at: now });
+    this.applyMaterialization(result);
+    if (result.node) return { node_id: result.node.id };
+    const created = result.subTopicCreates[0];
+    if (created) return { sub_topic_id: created.id };
+    return {};
+  }
+
+  // After a review vote lands, check whether the proposal has reached
+  // either convergence threshold and resolve it if so. PRD line 179:
+  // convergent vote merges; divergent vote routes to a richer path.
+  // The richer-path branch — more reviewers / curator escalation /
+  // open_question carry-forward — isn't implemented in v0; this is
+  // the "convergent merges, otherwise hold" half. `revise` votes are
+  // counted toward neither threshold (revise is "needs work, not
+  // yet"); they remain available as a signal for future divergence
+  // resolution.
+  //
+  // Some proposal kinds are curator-only (sub_topic, change_of_home
+  // per PRD lines 131, 218) and are excluded from auto-resolution
+  // even if votes accumulate against them — the votes can still be
+  // recorded as a signal for the curator, but they don't move the
+  // proposal's status.
+  private resolveByConvergence(proposalId: ProposalId): void {
+    const proposal = this.store.proposals.get(proposalId);
+    if (!proposal || proposal.status !== 'staged') return;
+    if (proposal.payload.kind === 'sub_topic' || proposal.payload.kind === 'change_of_home') {
+      return;
+    }
+    let accepts = 0;
+    let rejects = 0;
+    for (const v of this.store.reviewVotes.values()) {
+      if (v.proposal_id !== proposalId) continue;
+      if (v.decision === 'accept') accepts += 1;
+      else if (v.decision === 'reject') rejects += 1;
+    }
+    if (accepts >= this.review.votes_to_accept) {
+      this.acceptStaged(proposal);
+      return;
+    }
+    if (rejects >= this.review.votes_to_reject) {
+      const now = this.clock.now();
+      this.store.proposals.set(proposal.id, { ...proposal, status: 'rejected', updated_at: now });
+    }
+  }
 
   // Apply the result of materialize() to the store. Centralized so the
   // accept and defer paths can't drift in how they persist results.

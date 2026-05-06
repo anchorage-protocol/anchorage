@@ -1567,6 +1567,131 @@ describe('tools.castReviewVote', () => {
     expect(new Set(votes.map((v) => v.decision))).toEqual(new Set(['accept', 'reject']));
   });
 
+  it('auto-accepts a staged proposal once accept votes hit threshold', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    await f.server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'accept', rationale: 'b' },
+    );
+    // Still staged after one accept (default threshold is 2).
+    expect(f.server.store.proposals.get(proposal_id)?.status).toBe('staged');
+    await f.server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id, decision: 'accept', rationale: 'c' },
+    );
+    // Two accepts triggers convergence: proposal accepted and the
+    // anchor node is materialized just like the curator path.
+    expect(f.server.store.proposals.get(proposal_id)?.status).toBe('accepted');
+    const anchors = [...f.server.store.nodes.values()].filter((n) => n.kind === 'anchor');
+    expect(anchors).toHaveLength(1);
+  });
+
+  it('auto-rejects a staged proposal once reject votes hit threshold', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    await f.server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'reject', rationale: 'no' },
+    );
+    await f.server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id, decision: 'reject', rationale: 'no' },
+    );
+    expect(f.server.store.proposals.get(proposal_id)?.status).toBe('rejected');
+    // No node materializes on reject.
+    expect(f.server.store.nodes.size).toBe(0);
+  });
+
+  it('does not count revise votes toward either threshold', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    await f.server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'revise', rationale: 'needs work' },
+    );
+    await f.server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id, decision: 'revise', rationale: 'needs work' },
+    );
+    expect(f.server.store.proposals.get(proposal_id)?.status).toBe('staged');
+  });
+
+  it('honors a custom convergence threshold from server config', async () => {
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('t'),
+      verifier: new FakeVerifier(),
+      review: { votes_to_accept: 1 },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
+    const st = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'st',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const { proposal_id } = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: st.id,
+        content: 'x',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    await server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'accept', rationale: 'sufficient at 1' },
+    );
+    expect(server.store.proposals.get(proposal_id)?.status).toBe('accepted');
+  });
+
+  it('does not auto-resolve curator-only proposal kinds', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeSubTopic(f.caller, {
+      cause_id: f.cause_id,
+      name: 'lynch',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    await f.server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'accept', rationale: 'x' },
+    );
+    await f.server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id, decision: 'accept', rationale: 'x' },
+    );
+    // Curator-only — votes don't move it (PRD lines 131, 218).
+    expect(f.server.store.proposals.get(proposal_id)?.status).toBe('staged');
+  });
+
   it('rejects an assignment_id pointing to no assignment', async () => {
     const f = fixture();
     const { bobCaller, proposal_id } = await withReviewerAndStaged(f);
