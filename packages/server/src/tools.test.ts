@@ -900,6 +900,89 @@ describe('tools.queryFrontier', () => {
   });
 });
 
+describe('tools.queryProposals', () => {
+  it('returns all proposals when no filters are given, ordered by created_at', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'a',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const b = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'b',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const { proposals } = await f.server.tools.queryProposals(f.caller, {});
+    expect(proposals.map((p) => p.id)).toEqual([a.proposal_id, b.proposal_id]);
+  });
+
+  it('filters by status', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'a',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const b = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'b',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+    const { proposals: staged } = await f.server.tools.queryProposals(f.caller, {
+      status: 'staged',
+    });
+    expect(staged.map((p) => p.id)).toEqual([b.proposal_id]);
+    const { proposals: accepted } = await f.server.tools.queryProposals(f.caller, {
+      status: 'accepted',
+    });
+    expect(accepted.map((p) => p.id)).toEqual([a.proposal_id]);
+  });
+
+  it('filters by sub-topic — including membership proposals targeting it', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+
+    // A membership proposal targeting `other_sub_topic_id`. Its
+    // payload home is the source node's home (sub_topic_id), but
+    // review pressure routes to the target, so a sub-topic query
+    // for the target should surface it.
+    const { proposal_id: membershipPid } = await f.server.tools.proposeMembership(f.caller, {
+      node_id: aId,
+      sub_topic_id: f.other_sub_topic_id,
+    });
+    // Plus an unrelated anchor in the source sub-topic.
+    const b = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'b',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const { proposals: targetStaged } = await f.server.tools.queryProposals(f.caller, {
+      sub_topic_id: f.other_sub_topic_id,
+      status: 'staged',
+    });
+    expect(targetStaged.map((p) => p.id)).toEqual([membershipPid]);
+    const { proposals: sourceStaged } = await f.server.tools.queryProposals(f.caller, {
+      sub_topic_id: f.sub_topic_id,
+      status: 'staged',
+    });
+    expect(sourceStaged.map((p) => p.id)).toEqual([b.proposal_id]);
+  });
+});
+
 describe('tools.castReviewVote', () => {
   // Two-identity fixture: alice proposes, bob reviews. The base
   // fixture only mints alice; bob is a second identity for the

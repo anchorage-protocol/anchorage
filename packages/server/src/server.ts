@@ -33,6 +33,8 @@ import {
   type ProposeSynthesisOutput,
   QueryFrontierInput,
   type QueryFrontierOutput,
+  QueryProposalsInput,
+  type QueryProposalsOutput,
   type ReviewVote,
   SetCapacityInput,
   type SetCapacityOutput,
@@ -858,6 +860,58 @@ export class Server {
         ...(parsed.frontier_kind !== undefined ? { frontier_kind: parsed.frontier_kind } : {}),
       });
       return { items };
+    },
+
+    // PRD §Read-path tools and resources line 147: query_proposals
+    // returns proposal records, optionally filtered by status, sub-
+    // topic, or assignment-to-me. The sub-topic filter routes through
+    // locateProposalForReview so the result for a given sub-topic
+    // includes membership proposals targeting that sub-topic — which
+    // matches where review pressure actually applies (PRD §Scope
+    // membership line 80: memberships are evaluated by reviewers from
+    // the target sub-topic).
+    queryProposals: async (
+      caller: Caller,
+      input: QueryProposalsInput,
+    ): Promise<QueryProposalsOutput> => {
+      const parsed = QueryProposalsInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+      const proposals = [...this.store.proposals.values()].filter((p) => {
+        if (parsed.status && p.status !== parsed.status) return false;
+        if (parsed.assigned_to_me) {
+          // assigned_to_me is true when there exists an assignment
+          // owned by the caller that fulfills *or targets* this
+          // proposal: a propose-kind assignment whose fulfilled_by
+          // matches, or a review-kind assignment whose task points
+          // at this proposal_id.
+          let mine = false;
+          for (const a of this.store.assignments.values()) {
+            if (a.contributor_id !== identity.id) continue;
+            if (a.fulfilled_by === p.id) {
+              mine = true;
+              break;
+            }
+            if (a.task.kind === 'review' && a.task.proposal_id === p.id) {
+              mine = true;
+              break;
+            }
+          }
+          if (!mine) return false;
+        }
+        if (parsed.sub_topic_id) {
+          const located = this.locateProposalForReview(p);
+          if (!located || located.sub_topic_id !== parsed.sub_topic_id) return false;
+        }
+        return true;
+      });
+      // Stable order: created_at ascending, then id alphabetical for
+      // determinism. Same rationale as queryFrontier — randomness in
+      // selection lives at the assignment layer.
+      proposals.sort((a, b) => {
+        if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+        return a.id.localeCompare(b.id);
+      });
+      return { proposals };
     },
 
     // PRD §cast_review_vote (line 133): reviewer records a vote with
