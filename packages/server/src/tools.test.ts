@@ -900,6 +900,157 @@ describe('tools.queryFrontier', () => {
   });
 });
 
+describe('tools.requestAssignment', () => {
+  it('rejects when no capacity is declared for the cause', async () => {
+    const f = fixture();
+    await expect(
+      f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it('offers an excerpt task for an orphan anchor under a different proposer', async () => {
+    const f = fixture();
+    // Alice (the base caller) seeds an orphan anchor.
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'orphan',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+
+    // Bob declares capacity for excerpts and pulls.
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['excerpt'],
+    });
+    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    if (task.kind !== 'excerpt') throw new Error('expected excerpt task');
+    expect(task.parent_anchor_id).toBe(aId);
+    expect(task.sub_topic_id).toBe(f.sub_topic_id);
+
+    const stored = f.server.store.assignments.get(assignment_id);
+    expect(stored?.contributor_id).toBe(bob.id);
+    expect(stored?.status).toBe('offered');
+  });
+
+  it("doesn't offer a review of one's own proposal", async () => {
+    const f = fixture();
+    await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'self',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    await f.server.tools.setCapacity(f.caller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['review'],
+    });
+    await expect(
+      f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('offers a review task to a non-proposer with review capacity', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['review'],
+    });
+    const { task } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    if (task.kind !== 'review') throw new Error('expected review task');
+    expect(task.proposal_id).toBe(proposal_id);
+  });
+
+  it('respects the rate cap', async () => {
+    const f = fixture();
+    // Two orphan anchors so two distinct excerpt tasks exist.
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'a',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const b = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'b',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+    f.server.curator.acceptProposal(b.proposal_id);
+
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 1,
+      kinds: ['excerpt'],
+    });
+    await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    await expect(
+      f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it("doesn't double-offer the same target to the same contributor", async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'a',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 5,
+      kinds: ['excerpt'],
+    });
+    const first = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    expect(first.task.kind).toBe('excerpt');
+    await expect(
+      f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('rejects a kind preference outside declared capacity', async () => {
+    const f = fixture();
+    await f.server.tools.setCapacity(f.caller, {
+      cause_id: f.cause_id,
+      rate: 1,
+      kinds: ['review'],
+    });
+    await expect(
+      f.server.tools.requestAssignment(f.caller, {
+        cause_id: f.cause_id,
+        kind: 'excerpt',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+});
+
 describe('tools.queryProposals', () => {
   it('returns all proposals when no filters are given, ordered by created_at', async () => {
     const f = fixture();

@@ -1,6 +1,8 @@
 import {
   type AgentCredential,
   type AnchorNode,
+  type Assignment,
+  type AssignmentTask,
   type Capacity,
   CastReviewVoteInput,
   type CastReviewVoteOutput,
@@ -35,6 +37,8 @@ import {
   type QueryFrontierOutput,
   QueryProposalsInput,
   type QueryProposalsOutput,
+  RequestAssignmentInput,
+  type RequestAssignmentOutput,
   type ReviewVote,
   SetCapacityInput,
   type SetCapacityOutput,
@@ -42,6 +46,7 @@ import {
   type SubTopicId,
   type SupersedesEdge,
   type SynthesisNode,
+  type WorkKind,
 } from '@anchorage/contracts';
 import { z } from 'zod';
 import { type Caller, resolveCaller } from './auth.js';
@@ -110,6 +115,36 @@ function frontierTiebreakerKey(item: FrontierItem): string {
       return `${item.kind}:${item.proposal_id}`;
     case 'needs_synthesis':
       return `${item.kind}:${item.parent_ids.join(',')}`;
+  }
+}
+
+// The work kind a task represents. AssignmentTask is keyed by `kind`
+// values that already match WorkKind one-to-one — see assignments.ts
+// — so the projection is identity in spirit. Made explicit so future
+// task-kind additions surface here as compile errors.
+function taskWorkKind(task: AssignmentTask): WorkKind {
+  return task.kind;
+}
+
+// A stable string identifying the *target* of an assignment, for
+// double-offer prevention. Two tasks targeting the same proposal-to-
+// review or the same parent-anchor-to-excerpt are the same target —
+// even if they sit in different assignments at different times.
+function assignmentTaskKey(task: AssignmentTask): string {
+  switch (task.kind) {
+    case 'review':
+      return `review:${task.proposal_id}`;
+    case 'excerpt':
+      return `excerpt:${task.parent_anchor_id}`;
+    case 'synthesis':
+    case 'open_question':
+      return `${task.kind}:${[...task.parent_ids].sort().join(',')}`;
+    case 'supersedes':
+      return `supersedes:${task.from_node_id}`;
+    case 'membership':
+      return `membership:${task.node_id}:${task.sub_topic_id}`;
+    case 'anchor':
+      return `anchor:${task.sub_topic_id}`;
   }
 }
 
@@ -310,6 +345,42 @@ export class Server {
     return filtered;
   }
 
+  // The cause an assignment task is scoped to. Most task variants
+  // carry cause_id explicitly; the review variant is scoped via the
+  // proposal it targets. Used by the rate-cap counter so the same
+  // contributor's assignments under different causes don't share a
+  // budget.
+  private causeOfTask(task: AssignmentTask): CauseId | null {
+    if (task.kind === 'review') {
+      const proposal = this.store.proposals.get(task.proposal_id);
+      if (!proposal) return null;
+      const located = this.locateProposalForReview(proposal);
+      return located?.cause_id ?? null;
+    }
+    return task.cause_id;
+  }
+
+  // Map a frontier item to a concrete assignment task. Returns null
+  // for frontier kinds that don't have a v0 task mapping
+  // (`unresolvable_anchor` needs a re-anchor task variant the schema
+  // doesn't carry; `needs_synthesis` has no v0 derivation heuristic).
+  private frontierItemToTask(item: FrontierItem): AssignmentTask | null {
+    switch (item.kind) {
+      case 'orphan_anchor':
+        return {
+          kind: 'excerpt',
+          cause_id: item.cause_id,
+          sub_topic_id: item.sub_topic_id,
+          parent_anchor_id: item.anchor_id,
+        };
+      case 'needs_review':
+        return { kind: 'review', proposal_id: item.proposal_id };
+      case 'unresolvable_anchor':
+      case 'needs_synthesis':
+        return null;
+    }
+  }
+
   // Locate the (cause, sub-topic) for review-routing of a staged
   // proposal. Curator-only kinds (`sub_topic`, `change_of_home`)
   // return null — they are not surfaced to the reviewer pool.
@@ -479,6 +550,148 @@ export class Server {
       };
       this.store.capacities.set(`${identity.id}|${parsed.cause_id}`, capacity);
       return { ok: true };
+    },
+
+    // PRD §Capacity and assignment line 112: request_assignment pulls
+    // a task from the frontier within the caller's declared capacity.
+    // The system selects across all sub-topics in the cause based on
+    // frontier priority; expertise fit and capacity-balancing are v1
+    // refinements (no expertise-history signal exists yet, and
+    // capacity-balancing matters once the population is non-trivial —
+    // testbed territory).
+    //
+    // v0 maps two frontier kinds onto assignment tasks:
+    //
+    //   - `orphan_anchor`  → propose-excerpt task pinning the parent.
+    //   - `needs_review`   → review task pinning the proposal.
+    //
+    // `unresolvable_anchor` and `needs_synthesis` are not assignment-
+    // mappable yet — the former needs a re-anchor task variant the
+    // current AssignmentTask schema doesn't carry; the latter has no
+    // frontier-derivation heuristic. Both surface in query_frontier
+    // and are reachable via contributor-initiated propose_* calls.
+    //
+    // Eligibility gates:
+    //
+    //   1. Caller has a capacity record for the cause.
+    //   2. The work kind is in the caller's declared kinds (and the
+    //      optional `kind` argument, treated here as a strict filter
+    //      rather than the soft preference PRD line 112 describes —
+    //      v0 simplification; the soft path lands when expertise-fit
+    //      logic does).
+    //   3. Outstanding assignments (offered + accepted) for the
+    //      caller in this cause are below the rate cap (PRD line 111:
+    //      "rate caps how many will be granted in a window"; v0
+    //      windows are "currently outstanding").
+    //   4. Caller isn't the proposer of a needs_review task — same
+    //      conflict-of-interest invariant cast_review_vote enforces.
+    //   5. Caller doesn't already hold an outstanding assignment for
+    //      this same task target — no double-offer per contributor.
+    //
+    // The same review task may be offered to multiple contributors
+    // simultaneously (PRD §Reviewer assignment: N reviewers per
+    // proposal); cross-contributor exclusion is not enforced here.
+    requestAssignment: async (
+      caller: Caller,
+      input: RequestAssignmentInput,
+    ): Promise<RequestAssignmentOutput> => {
+      const parsed = RequestAssignmentInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+      this.requireActiveCause(parsed.cause_id);
+
+      const capacity = this.store.capacities.get(`${identity.id}|${parsed.cause_id}`);
+      if (!capacity) {
+        throw new ServerError(
+          'invalid_state',
+          `no capacity declared for cause ${parsed.cause_id} — call set_capacity first`,
+        );
+      }
+
+      // Rate cap: count outstanding (offered + accepted) assignments
+      // owned by this caller in this cause. Submitted/declined/expired
+      // don't count — they've left the rate window.
+      let outstanding = 0;
+      const callerAssignmentsForTarget: Assignment[] = [];
+      for (const a of this.store.assignments.values()) {
+        if (a.contributor_id !== identity.id) continue;
+        const aCause = this.causeOfTask(a.task);
+        if (aCause !== parsed.cause_id) continue;
+        if (a.status === 'offered' || a.status === 'accepted') outstanding += 1;
+        callerAssignmentsForTarget.push(a);
+      }
+      if (outstanding >= capacity.rate) {
+        throw new ServerError(
+          'invalid_state',
+          `rate cap reached: ${outstanding}/${capacity.rate} outstanding assignments`,
+        );
+      }
+
+      const allowedKinds = new Set<WorkKind>(capacity.kinds);
+      if (parsed.kind && !allowedKinds.has(parsed.kind)) {
+        throw new ServerError(
+          'invalid_input',
+          `requested kind ${parsed.kind} is not in declared capacity kinds`,
+        );
+      }
+      const wantedKinds: ReadonlySet<WorkKind> = parsed.kind
+        ? new Set<WorkKind>([parsed.kind])
+        : allowedKinds;
+
+      const frontier = this.deriveFrontier({ cause_id: parsed.cause_id });
+      for (const item of frontier) {
+        const task = this.frontierItemToTask(item);
+        if (!task) continue;
+        if (!wantedKinds.has(taskWorkKind(task))) continue;
+
+        // Conflict-of-interest: skip review tasks for the caller's
+        // own proposals.
+        if (task.kind === 'review') {
+          const target = this.store.proposals.get(task.proposal_id);
+          if (!target) continue;
+          if (target.proposer_id === identity.id) continue;
+          // And skip if the caller has already voted (their
+          // contributor-initiated review already attached to the
+          // proposal); re-offering would be redundant and the cast_
+          // review_vote double-vote guard would reject submission.
+          let voted = false;
+          for (const v of this.store.reviewVotes.values()) {
+            if (v.proposal_id === task.proposal_id && v.reviewer_id === identity.id) {
+              voted = true;
+              break;
+            }
+          }
+          if (voted) continue;
+        }
+
+        // No double-offer: skip items where the caller already holds
+        // an outstanding (offered/accepted) assignment for the same
+        // target. Submitted assignments are fine — that's a different
+        // proposal that will land separately.
+        const taskKey = assignmentTaskKey(task);
+        const alreadyHeld = callerAssignmentsForTarget.some(
+          (a) =>
+            (a.status === 'offered' || a.status === 'accepted') &&
+            assignmentTaskKey(a.task) === taskKey,
+        );
+        if (alreadyHeld) continue;
+
+        const now = this.clock.now();
+        const assignment: Assignment = {
+          id: this.idGen.assignmentId(),
+          contributor_id: identity.id,
+          task,
+          status: 'offered',
+          created_at: now,
+          updated_at: now,
+        };
+        this.store.assignments.set(assignment.id, assignment);
+        return { assignment_id: assignment.id, task };
+      }
+
+      throw new ServerError(
+        'not_found',
+        `no eligible frontier item for ${identity.id} in cause ${parsed.cause_id}`,
+      );
     },
 
     // PRD §Write-path tools: propose_anchor stages an anchor proposal.
