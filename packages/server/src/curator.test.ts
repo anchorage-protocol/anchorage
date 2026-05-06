@@ -381,6 +381,64 @@ describe('curator.acceptProposal', () => {
     expect(updated?.scope_memberships).toEqual([]);
   });
 
+  it('materializes a sub_topic proposal as an active SubTopic on accept', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeSubTopic(f.caller, {
+      cause_id: f.cause_id,
+      name: 'lynch-surveillance',
+      description: 'Lynch surveillance',
+      scope_query: 'lynch',
+    });
+    const result = f.server.curator.acceptProposal(proposal_id);
+    expect(result.node_id).toBeUndefined();
+    if (!result.sub_topic_id) throw new Error('expected sub_topic_id');
+
+    const created = f.server.store.subTopics.get(result.sub_topic_id);
+    expect(created?.name).toBe('lynch-surveillance');
+    expect(created?.status).toBe('active');
+    expect(created?.cause_id).toBe(f.cause_id);
+  });
+
+  it('materializes a sub_topic proposal as a proposed SubTopic on defer', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeSubTopic(f.caller, {
+      cause_id: f.cause_id,
+      name: 'crc-microbiome',
+      description: 'gut microbiome and CRC',
+      scope_query: 'microbiome',
+    });
+    const { sub_topic_id } = f.server.curator.deferSubTopic(proposal_id);
+
+    const created = f.server.store.subTopics.get(sub_topic_id);
+    expect(created?.status).toBe('proposed');
+    // The proposal is resolved (status accepted) — proposed is a
+    // SubTopic state, not a Proposal state.
+    expect(f.server.store.proposals.get(proposal_id)?.status).toBe('accepted');
+  });
+
+  it('rejects deferring a non-sub_topic proposal', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    expect(() => f.server.curator.deferSubTopic(proposal_id)).toThrow(ServerError);
+  });
+
+  it('rejects deferring a non-staged proposal', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeSubTopic(f.caller, {
+      cause_id: f.cause_id,
+      name: 'x',
+      description: 'x',
+      scope_query: 'x',
+    });
+    f.server.curator.acceptProposal(proposal_id);
+    expect(() => f.server.curator.deferSubTopic(proposal_id)).toThrow(ServerError);
+  });
+
   it('rejects an unknown proposal id', () => {
     const f = fixture();
     try {

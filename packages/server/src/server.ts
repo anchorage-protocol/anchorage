@@ -21,6 +21,8 @@ import {
   type ProposeExcerptOutput,
   ProposeMembershipInput,
   type ProposeMembershipOutput,
+  ProposeSubTopicInput,
+  type ProposeSubTopicOutput,
   ProposeSupersedesInput,
   type ProposeSupersedesOutput,
   ProposeSynthesisInput,
@@ -76,6 +78,13 @@ export interface ServerDeps {
   idGen?: IdGen;
   store?: MemoryStore;
   verifier?: Verifier;
+}
+
+interface MaterializationResult {
+  node: Node | null;
+  edges: readonly Edge[];
+  nodeUpdates: readonly Node[];
+  subTopicCreates: readonly SubTopic[];
 }
 
 // Server is the trust boundary. All mutation goes through it. The
@@ -607,6 +616,40 @@ export class Server {
       this.store.proposals.set(proposal.id, proposal);
       return { proposal_id: proposal.id };
     },
+
+    // PRD §Sub-topic creation: in v0 sub-topics are curator-gated.
+    // propose_sub_topic stages the proposal; the SubTopic itself is not
+    // materialized until a curator decision (accept-as-active via
+    // curator.acceptProposal, or defer-as-proposed via
+    // curator.deferSubTopic, per PRD line 218). v1 will add auto-
+    // discovery; the tool surface stays the same.
+    proposeSubTopic: async (
+      caller: Caller,
+      input: ProposeSubTopicInput,
+    ): Promise<ProposeSubTopicOutput> => {
+      const parsed = ProposeSubTopicInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+
+      const cause = this.requireActiveCause(parsed.cause_id);
+
+      const now = this.clock.now();
+      const proposal: Proposal = {
+        id: this.idGen.proposalId(),
+        proposer_id: identity.id,
+        status: 'staged',
+        payload: {
+          kind: 'sub_topic',
+          cause_id: cause.id,
+          name: parsed.name,
+          description: parsed.description,
+          scope_query: parsed.scope_query,
+        },
+        created_at: now,
+        updated_at: now,
+      };
+      this.store.proposals.set(proposal.id, proposal);
+      return { proposal_id: proposal.id };
+    },
   };
 
   readonly curator = {
@@ -616,8 +659,12 @@ export class Server {
     // Phase 2 keeps it as the curator-escalation path described in
     // PRD §Reviewer assignment (step 4: curator escalation) and as the
     // mechanism the eventual review-convergence code calls when it
-    // decides a proposal has accumulated enough accept-votes.
-    acceptProposal: (proposalId: ProposalId): { node_id?: Node['id'] } => {
+    // decides a proposal has accumulated enough accept-votes. The
+    // result includes whichever id the proposal materialized: a
+    // node_id for graph-creating kinds, a sub_topic_id for sub_topic
+    // kind, or neither for in-place mutations (membership, supersedes,
+    // change_of_home).
+    acceptProposal: (proposalId: ProposalId): { node_id?: NodeId; sub_topic_id?: SubTopicId } => {
       const proposal = this.store.proposals.get(proposalId);
       if (!proposal) {
         throw new ServerError('not_found', `proposal not found: ${proposalId}`);
@@ -629,39 +676,96 @@ export class Server {
         );
       }
 
-      const result = this.materialize(proposal);
+      const result = this.materialize(proposal, 'active');
       const now = this.clock.now();
       this.store.proposals.set(proposal.id, { ...proposal, status: 'accepted', updated_at: now });
-      if (result.node) {
-        this.store.nodes.set(result.node.id, result.node);
+      this.applyMaterialization(result);
+      if (result.node) return { node_id: result.node.id };
+      const created = result.subTopicCreates[0];
+      if (created) return { sub_topic_id: created.id };
+      return {};
+    },
+
+    // PRD §Sub-topic creation line 218: "Curator accepts as `active`,
+    // defers as `proposed`, or rejects." This is the deferral path —
+    // the curator has decided to record the sub-topic but hold off on
+    // activation pending more evidence (corpus density, articulable
+    // scope envelope, real audience). The SubTopic is materialized
+    // with status `proposed`; a future curator action flips it to
+    // `active` without going through the proposal system again. The
+    // proposal itself is marked accepted because the curator has
+    // resolved it — `proposed` is a SubTopic state, not a Proposal
+    // state. Only sub_topic-kind proposals are deferrable.
+    deferSubTopic: (proposalId: ProposalId): { sub_topic_id: SubTopicId } => {
+      const proposal = this.store.proposals.get(proposalId);
+      if (!proposal) {
+        throw new ServerError('not_found', `proposal not found: ${proposalId}`);
       }
-      for (const updated of result.nodeUpdates) {
-        this.store.nodes.set(updated.id, updated);
+      if (proposal.status !== 'staged') {
+        throw new ServerError(
+          'invalid_state',
+          `cannot defer proposal in status ${proposal.status}`,
+        );
       }
-      for (const edge of result.edges) {
-        this.store.edges.set(edge.id, edge);
+      if (proposal.payload.kind !== 'sub_topic') {
+        throw new ServerError(
+          'invalid_input',
+          `deferSubTopic only applies to sub_topic proposals (got ${proposal.payload.kind})`,
+        );
       }
-      return result.node ? { node_id: result.node.id } : {};
+      const result = this.materialize(proposal, 'proposed');
+      const now = this.clock.now();
+      this.store.proposals.set(proposal.id, { ...proposal, status: 'accepted', updated_at: now });
+      this.applyMaterialization(result);
+      const created = result.subTopicCreates[0];
+      if (!created) {
+        // Defensive: the sub_topic materialization branch must have
+        // produced exactly one SubTopic.
+        throw new ServerError('invalid_state', 'sub_topic deferral did not materialize a SubTopic');
+      }
+      return { sub_topic_id: created.id };
     },
   };
 
-  // Convert an accepted proposal into the graph mutations it asserts.
-  // Three slots:
-  //   `node`        — a newly created node (anchor / excerpt / synthesis /
-  //                   open_question), or null for kinds that don't
-  //                   create one (supersedes, membership, change_of_home).
-  //   `edges`       — newly created edges (derives or supersedes).
-  //   `nodeUpdates` — existing nodes whose state must be rewritten in
-  //                   place (e.g. supersedes flipping the `from` node to
-  //                   `superseded`; future change_of_home rewriting
-  //                   `home_sub_topic_id`).
+  // Apply the result of materialize() to the store. Centralized so the
+  // accept and defer paths can't drift in how they persist results.
+  private applyMaterialization(result: MaterializationResult): void {
+    if (result.node) {
+      this.store.nodes.set(result.node.id, result.node);
+    }
+    for (const updated of result.nodeUpdates) {
+      this.store.nodes.set(updated.id, updated);
+    }
+    for (const edge of result.edges) {
+      this.store.edges.set(edge.id, edge);
+    }
+    for (const st of result.subTopicCreates) {
+      this.store.subTopics.set(st.id, st);
+    }
+  }
+
+  // Convert an accepted proposal into the state changes it asserts.
+  // Four slots:
+  //   `node`            — a newly created node (anchor / excerpt /
+  //                       synthesis / open_question), or null for kinds
+  //                       that don't create one.
+  //   `edges`           — newly created edges (derives or supersedes).
+  //   `nodeUpdates`     — existing nodes whose state must be rewritten
+  //                       in place (supersedes flipping `from` to
+  //                       superseded; change_of_home rewriting
+  //                       `home_sub_topic_id`; membership appending to
+  //                       `scope_memberships`).
+  //   `subTopicCreates` — newly created sub-topics (sub_topic kind).
+  // The `subTopicStatus` argument lets the same materialization path
+  // produce a SubTopic with different statuses for the curator's two
+  // accept variants (PRD line 218: accept-as-active or defer-as-
+  // proposed). Other kinds ignore it.
   // Kinds without a materialization path throw `invalid_state` until
   // their path lands.
-  private materialize(proposal: Proposal): {
-    node: Node | null;
-    edges: readonly Edge[];
-    nodeUpdates: readonly Node[];
-  } {
+  private materialize(
+    proposal: Proposal,
+    subTopicStatus: 'active' | 'proposed',
+  ): MaterializationResult {
     const now = this.clock.now();
     if (proposal.payload.kind === 'anchor') {
       const verified = this.store.verifiedRefs.get(proposal.id);
@@ -684,7 +788,7 @@ export class Server {
         external_ref: proposal.payload.external_ref,
         content_hash: verified.content_hash,
       };
-      return { node, edges: [], nodeUpdates: [] };
+      return { node, edges: [], nodeUpdates: [], subTopicCreates: [] };
     }
     if (proposal.payload.kind === 'excerpt') {
       // PRD §Edges: derives edges are created atomically with their
@@ -719,7 +823,7 @@ export class Server {
         created_by: proposal.proposer_id,
         created_at: now,
       };
-      return { node, edges: [edge], nodeUpdates: [] };
+      return { node, edges: [edge], nodeUpdates: [], subTopicCreates: [] };
     }
     if (proposal.payload.kind === 'synthesis' || proposal.payload.kind === 'open_question') {
       // All parents must be active at acceptance time. Re-checked
@@ -756,7 +860,7 @@ export class Server {
         created_by: proposal.proposer_id,
         created_at: now,
       }));
-      return { node, edges, nodeUpdates: [] };
+      return { node, edges, nodeUpdates: [], subTopicCreates: [] };
     }
     if (proposal.payload.kind === 'supersedes') {
       // Re-check both endpoints at acceptance: either could have moved
@@ -800,7 +904,7 @@ export class Server {
       // and edge state in sync means callers don't have to walk edges
       // to know whether a node is active.
       const updated: Node = { ...fromNode, status: 'superseded', updated_at: now };
-      return { node: null, edges: [edge], nodeUpdates: [updated] };
+      return { node: null, edges: [edge], nodeUpdates: [updated], subTopicCreates: [] };
     }
     if (proposal.payload.kind === 'membership') {
       // Re-check the node and target sub-topic at acceptance: either
@@ -840,7 +944,7 @@ export class Server {
         scope_memberships: [...node.scope_memberships, proposal.payload.sub_topic_id],
         updated_at: now,
       };
-      return { node: null, edges: [], nodeUpdates: [updated] };
+      return { node: null, edges: [], nodeUpdates: [updated], subTopicCreates: [] };
     }
     if (proposal.payload.kind === 'change_of_home') {
       const node = this.store.nodes.get(proposal.payload.node_id);
@@ -876,11 +980,39 @@ export class Server {
         scope_memberships: filteredMemberships,
         updated_at: now,
       };
-      return { node: null, edges: [], nodeUpdates: [updated] };
+      return { node: null, edges: [], nodeUpdates: [updated], subTopicCreates: [] };
     }
+    if (proposal.payload.kind === 'sub_topic') {
+      // Re-check the parent cause is still active. The cause is the
+      // only hard prerequisite — name/description/scope_query are free
+      // text and don't need re-validation.
+      const cause = this.store.causes.get(proposal.payload.cause_id);
+      if (!cause || cause.status !== 'active') {
+        throw new ServerError(
+          'invalid_state',
+          `cause ${proposal.payload.cause_id} is not active at acceptance`,
+        );
+      }
+      const subTopic: SubTopic = {
+        id: this.idGen.subTopicId(),
+        cause_id: cause.id,
+        name: proposal.payload.name,
+        description: proposal.payload.description,
+        scope_query: proposal.payload.scope_query,
+        status: subTopicStatus,
+        created_at: now,
+      };
+      return { node: null, edges: [], nodeUpdates: [], subTopicCreates: [subTopic] };
+    }
+    // All ProposalPayload variants are handled above; this is an
+    // exhaustiveness guard. If a new payload kind lands without a
+    // matching materialize branch, TypeScript will widen `payload`'s
+    // type past `never` and the assignment below will fail at
+    // compile time, forcing the new branch to be added.
+    const _exhaustive: never = proposal.payload;
     throw new ServerError(
       'invalid_state',
-      `materialization not yet implemented for proposal kind: ${proposal.payload.kind}`,
+      `materialization not implemented for proposal kind: ${(_exhaustive as { kind: string }).kind}`,
     );
   }
 }

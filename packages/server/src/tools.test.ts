@@ -629,3 +629,52 @@ describe('tools.proposeChangeOfHome', () => {
     ).rejects.toMatchObject({ code: 'invalid_state' });
   });
 });
+
+describe('tools.proposeSubTopic', () => {
+  it('stages a sub_topic proposal under an active cause', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeSubTopic(f.caller, {
+      cause_id: f.cause_id,
+      name: 'lynch-surveillance',
+      description: 'Surveillance regimens for Lynch syndrome carriers',
+      scope_query: 'lynch syndrome surveillance',
+    });
+    const p = f.server.store.proposals.get(proposal_id);
+    if (p?.payload.kind !== 'sub_topic') throw new Error('expected sub_topic payload');
+    expect(p.payload.name).toBe('lynch-surveillance');
+    expect(p.status).toBe('staged');
+    // The SubTopic itself is NOT created at propose time — it lives
+    // only as a payload until a curator decision (PRD line 218).
+    expect(
+      [...f.server.store.subTopics.values()].find((s) => s.name === 'lynch-surveillance'),
+    ).toBeUndefined();
+  });
+
+  it('rejects when the cause does not exist', async () => {
+    const f = fixture();
+    await expect(
+      f.server.tools.proposeSubTopic(f.caller, {
+        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
+        cause_id: 'cau_missing' as any,
+        name: 'x',
+        description: 'x',
+        scope_query: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('rejects when the cause is archived', async () => {
+    const f = fixture();
+    const cause = f.server.store.causes.get(f.cause_id);
+    if (!cause) throw new Error('cause missing');
+    f.server.store.causes.set(f.cause_id, { ...cause, status: 'archived' });
+    await expect(
+      f.server.tools.proposeSubTopic(f.caller, {
+        cause_id: f.cause_id,
+        name: 'x',
+        description: 'x',
+        scope_query: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+});
