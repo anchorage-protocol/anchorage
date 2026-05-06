@@ -1,6 +1,8 @@
 import {
   type AgentCredential,
   type AnchorNode,
+  CastReviewVoteInput,
+  type CastReviewVoteOutput,
   type Cause,
   type CauseId,
   type DerivesEdge,
@@ -27,6 +29,7 @@ import {
   type ProposeSupersedesOutput,
   ProposeSynthesisInput,
   type ProposeSynthesisOutput,
+  type ReviewVote,
   type SubTopic,
   type SubTopicId,
   type SupersedesEdge,
@@ -649,6 +652,120 @@ export class Server {
       };
       this.store.proposals.set(proposal.id, proposal);
       return { proposal_id: proposal.id };
+    },
+
+    // PRD §cast_review_vote (line 133): reviewer records a vote with
+    // required rationale. With assignment_id set, the vote fulfills a
+    // review-kind assignment and accrues full assigned-review reputation;
+    // without it, the review is contributor-initiated and weighted lower.
+    // Self-review is rejected as a conflict-of-interest invariant: the
+    // whole point of redundant peer review is that a contributor's own
+    // claim be evaluated by other reviewers (PRD §Reviewer assignment
+    // and the broader spirit of PRD line 246's stance on self-acting on
+    // one's own work). Double-voting on the same proposal is rejected
+    // for the same reason a vote tally needs to be coherent.
+    castReviewVote: async (
+      caller: Caller,
+      input: CastReviewVoteInput,
+    ): Promise<CastReviewVoteOutput> => {
+      const parsed = CastReviewVoteInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+
+      const proposal = this.store.proposals.get(parsed.proposal_id);
+      if (!proposal) {
+        throw new ServerError('not_found', `proposal not found: ${parsed.proposal_id}`);
+      }
+      if (proposal.status !== 'staged') {
+        throw new ServerError(
+          'invalid_state',
+          `cannot vote on proposal in status ${proposal.status}`,
+        );
+      }
+      if (proposal.proposer_id === identity.id) {
+        throw new ServerError(
+          'invalid_input',
+          `reviewer ${identity.id} cannot review their own proposal ${proposal.id}`,
+        );
+      }
+      // One vote per (reviewer, proposal). The vote tally would be
+      // incoherent otherwise, and the abuse-cost story for review
+      // requires that revoting be a deliberate operation (currently
+      // not exposed; the existing vote can be the curator's reference).
+      for (const v of this.store.reviewVotes.values()) {
+        if (v.proposal_id === proposal.id && v.reviewer_id === identity.id) {
+          throw new ServerError(
+            'invalid_state',
+            `reviewer ${identity.id} already voted on proposal ${proposal.id}`,
+          );
+        }
+      }
+
+      // If the reviewer asserts assignment fulfillment, the assignment
+      // must exist, belong to them, target this proposal, and be in a
+      // state that admits fulfillment. Until the assignment-creation
+      // tools land (set_capacity, request_assignment), no assignment_id
+      // will resolve — which is the correct behavior: a reviewer can't
+      // claim assignment credit for an assignment that doesn't exist.
+      if (parsed.assignment_id) {
+        const assignment = this.store.assignments.get(parsed.assignment_id);
+        if (!assignment) {
+          throw new ServerError('not_found', `assignment not found: ${parsed.assignment_id}`);
+        }
+        if (assignment.contributor_id !== identity.id) {
+          throw new ServerError(
+            'unauthorized',
+            `assignment ${assignment.id} does not belong to ${identity.id}`,
+          );
+        }
+        if (assignment.task.kind !== 'review') {
+          throw new ServerError(
+            'invalid_input',
+            `assignment ${assignment.id} is not a review task (got ${assignment.task.kind})`,
+          );
+        }
+        if (assignment.task.proposal_id !== proposal.id) {
+          throw new ServerError(
+            'invalid_input',
+            `assignment ${assignment.id} targets a different proposal`,
+          );
+        }
+        if (assignment.status !== 'accepted' && assignment.status !== 'offered') {
+          throw new ServerError(
+            'invalid_state',
+            `assignment ${assignment.id} is ${assignment.status}`,
+          );
+        }
+      }
+
+      const now = this.clock.now();
+      const vote: ReviewVote = {
+        id: this.idGen.reviewVoteId(),
+        proposal_id: proposal.id,
+        reviewer_id: identity.id,
+        decision: parsed.decision,
+        rationale: parsed.rationale,
+        ...(parsed.assignment_id ? { assignment_id: parsed.assignment_id } : {}),
+        created_at: now,
+      };
+      this.store.reviewVotes.set(vote.id, vote);
+
+      // If the vote fulfilled an assignment, mark the assignment
+      // submitted and pin the fulfilling proposal. The assignment
+      // surface will read this on next request_assignment to know not
+      // to re-offer the same task.
+      if (parsed.assignment_id) {
+        const assignment = this.store.assignments.get(parsed.assignment_id);
+        if (assignment) {
+          this.store.assignments.set(assignment.id, {
+            ...assignment,
+            status: 'submitted',
+            fulfilled_by: proposal.id,
+            updated_at: now,
+          });
+        }
+      }
+
+      return { vote_id: vote.id };
     },
   };
 

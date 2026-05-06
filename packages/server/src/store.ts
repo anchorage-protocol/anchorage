@@ -1,6 +1,8 @@
 import type {
   AgentCredential,
   AgentCredentialId,
+  Assignment,
+  AssignmentId,
   Cause,
   CauseId,
   Edge,
@@ -11,6 +13,8 @@ import type {
   NodeId,
   Proposal,
   ProposalId,
+  ReviewVote,
+  ReviewVoteId,
   SubTopic,
   SubTopicId,
 } from '@anchorage/contracts';
@@ -29,6 +33,8 @@ export class MemoryStore {
   readonly proposals = new Map<ProposalId, Proposal>();
   readonly nodes = new Map<NodeId, Node>();
   readonly edges = new Map<EdgeId, Edge>();
+  readonly reviewVotes = new Map<ReviewVoteId, ReviewVote>();
+  readonly assignments = new Map<AssignmentId, Assignment>();
   // Server-observed verification metadata (content hashes, eventually
   // span offsets and provenance). Keyed by proposal_id because that is
   // when verification ran; copied onto the materialized node at

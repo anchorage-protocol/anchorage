@@ -678,3 +678,118 @@ describe('tools.proposeSubTopic', () => {
     ).rejects.toMatchObject({ code: 'invalid_state' });
   });
 });
+
+describe('tools.castReviewVote', () => {
+  // Two-identity fixture: alice proposes, bob reviews. The base
+  // fixture only mints alice; bob is a second identity for the
+  // self-review and reviewer-isolation tests.
+  async function withReviewerAndStaged(f: ReturnType<typeof fixture>) {
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    return { bobCaller, proposal_id };
+  }
+
+  it('records a vote with rationale on a staged proposal', async () => {
+    const f = fixture();
+    const { bobCaller, proposal_id } = await withReviewerAndStaged(f);
+    const { vote_id } = await f.server.tools.castReviewVote(bobCaller, {
+      proposal_id,
+      decision: 'accept',
+      rationale: 'verifies cleanly and the claim is well-anchored',
+    });
+    const vote = f.server.store.reviewVotes.get(vote_id);
+    expect(vote?.proposal_id).toBe(proposal_id);
+    expect(vote?.reviewer_id).toBe(bobCaller.identity_id);
+    expect(vote?.decision).toBe('accept');
+    expect(vote?.assignment_id).toBeUndefined();
+  });
+
+  it('rejects self-review (proposer voting on their own proposal)', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    await expect(
+      f.server.tools.castReviewVote(f.caller, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'self',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('rejects voting on a non-staged proposal', async () => {
+    const f = fixture();
+    const { bobCaller, proposal_id } = await withReviewerAndStaged(f);
+    f.server.curator.acceptProposal(proposal_id);
+    await expect(
+      f.server.tools.castReviewVote(bobCaller, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'too late',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it('rejects double-voting by the same reviewer', async () => {
+    const f = fixture();
+    const { bobCaller, proposal_id } = await withReviewerAndStaged(f);
+    await f.server.tools.castReviewVote(bobCaller, {
+      proposal_id,
+      decision: 'accept',
+      rationale: 'first',
+    });
+    await expect(
+      f.server.tools.castReviewVote(bobCaller, {
+        proposal_id,
+        decision: 'reject',
+        rationale: 'changed mind',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it('admits parallel votes from different reviewers', async () => {
+    const f = fixture();
+    const { bobCaller, proposal_id } = await withReviewerAndStaged(f);
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const carolCaller: Caller = { identity_id: carol.id };
+    await f.server.tools.castReviewVote(bobCaller, {
+      proposal_id,
+      decision: 'accept',
+      rationale: 'bob accepts',
+    });
+    await f.server.tools.castReviewVote(carolCaller, {
+      proposal_id,
+      decision: 'reject',
+      rationale: 'carol rejects',
+    });
+    const votes = [...f.server.store.reviewVotes.values()].filter(
+      (v) => v.proposal_id === proposal_id,
+    );
+    expect(votes).toHaveLength(2);
+    expect(new Set(votes.map((v) => v.decision))).toEqual(new Set(['accept', 'reject']));
+  });
+
+  it('rejects an assignment_id pointing to no assignment', async () => {
+    const f = fixture();
+    const { bobCaller, proposal_id } = await withReviewerAndStaged(f);
+    await expect(
+      f.server.tools.castReviewVote(bobCaller, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'x',
+        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
+        assignment_id: 'asn_missing' as any,
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
