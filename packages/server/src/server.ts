@@ -1,10 +1,13 @@
 import {
   type AgentCredential,
+  type AnchorNode,
   type Cause,
   type CauseId,
   type Identity,
   type IdentityId,
+  type Node,
   type Proposal,
+  type ProposalId,
   ProposeAnchorInput,
   type ProposeAnchorOutput,
   type SubTopic,
@@ -210,7 +213,7 @@ export class Server {
         this.requireActiveSubTopicInCause(m, cause.id, 'membership');
       }
 
-      await this.verifier.verifyExternalRef(parsed.external_ref);
+      const verified = await this.verifier.verifyExternalRef(parsed.external_ref);
 
       const now = this.clock.now();
       const proposal: Proposal = {
@@ -229,7 +232,75 @@ export class Server {
         updated_at: now,
       };
       this.store.proposals.set(proposal.id, proposal);
+      this.store.verifiedRefs.set(proposal.id, verified);
       return { proposal_id: proposal.id };
     },
   };
+
+  readonly curator = {
+    // Curator-mediated acceptance. Phase 1 surface: until the review
+    // loop lands (assignment-driven sampling, vote tallying,
+    // convergence resolution), this is how staged proposals advance.
+    // Phase 2 keeps it as the curator-escalation path described in
+    // PRD §Reviewer assignment (step 4: curator escalation) and as the
+    // mechanism the eventual review-convergence code calls when it
+    // decides a proposal has accumulated enough accept-votes.
+    acceptProposal: (proposalId: ProposalId): { node_id?: Node['id'] } => {
+      const proposal = this.store.proposals.get(proposalId);
+      if (!proposal) {
+        throw new ServerError('not_found', `proposal not found: ${proposalId}`);
+      }
+      if (proposal.status !== 'staged') {
+        throw new ServerError(
+          'invalid_state',
+          `cannot accept proposal in status ${proposal.status}`,
+        );
+      }
+
+      const node = this.materialize(proposal);
+      const now = this.clock.now();
+      this.store.proposals.set(proposal.id, { ...proposal, status: 'accepted', updated_at: now });
+      if (node) {
+        this.store.nodes.set(node.id, node);
+        return { node_id: node.id };
+      }
+      return {};
+    },
+  };
+
+  // Convert an accepted proposal into the graph node(s) it asserts.
+  // Only `anchor` is handled today; other kinds throw `invalid_state`
+  // until their materialization paths land. The function returns `null`
+  // for kinds that don't produce a node (e.g. membership, supersedes —
+  // those mutate edges rather than producing nodes; future commits).
+  private materialize(proposal: Proposal): Node | null {
+    const now = this.clock.now();
+    if (proposal.payload.kind === 'anchor') {
+      const verified = this.store.verifiedRefs.get(proposal.id);
+      if (!verified) {
+        throw new ServerError(
+          'invalid_state',
+          `verification metadata missing for proposal ${proposal.id}`,
+        );
+      }
+      const node: AnchorNode = {
+        id: this.idGen.nodeId(),
+        kind: 'anchor',
+        home_sub_topic_id: proposal.payload.home_sub_topic_id,
+        scope_memberships: proposal.payload.memberships ?? [],
+        content: proposal.payload.content,
+        status: 'active',
+        created_by: proposal.proposer_id,
+        created_at: now,
+        updated_at: now,
+        external_ref: proposal.payload.external_ref,
+        content_hash: verified.content_hash,
+      };
+      return node;
+    }
+    throw new ServerError(
+      'invalid_state',
+      `materialization not yet implemented for proposal kind: ${proposal.payload.kind}`,
+    );
+  }
 }

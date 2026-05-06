@@ -5,11 +5,14 @@ import type {
   CauseId,
   Identity,
   IdentityId,
+  Node,
+  NodeId,
   Proposal,
   ProposalId,
   SubTopic,
   SubTopicId,
 } from '@anchorage/contracts';
+import type { VerifiedRef } from './verifier.js';
 
 // In-memory store. Keeps the data model concrete while transport,
 // persistence, and storage backend choices are still open. The Server
@@ -22,4 +25,10 @@ export class MemoryStore {
   readonly causes = new Map<CauseId, Cause>();
   readonly subTopics = new Map<SubTopicId, SubTopic>();
   readonly proposals = new Map<ProposalId, Proposal>();
+  readonly nodes = new Map<NodeId, Node>();
+  // Server-observed verification metadata (content hashes, eventually
+  // span offsets and provenance). Keyed by proposal_id because that is
+  // when verification ran; copied onto the materialized node at
+  // acceptance time.
+  readonly verifiedRefs = new Map<ProposalId, VerifiedRef>();
 }
