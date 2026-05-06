@@ -24,6 +24,7 @@ import {
   type OpenQuestionNode,
   type Proposal,
   type ProposalId,
+  type ProposalPayload,
   ProposeAnchorInput,
   type ProposeAnchorOutput,
   ProposeChangeOfHomeInput,
@@ -49,6 +50,8 @@ import {
   type SetCapacityOutput,
   type SubTopic,
   type SubTopicId,
+  SubmitAssignedProposalInput,
+  type SubmitAssignedProposalOutput,
   type SupersedesEdge,
   type SynthesisNode,
   type WorkKind,
@@ -372,6 +375,160 @@ export class Server {
       throw new ServerError('invalid_state', `assignment ${assignmentId} is ${a.status}`);
     }
     return a;
+  }
+
+  // Assert the payload submitted to fulfill an assignment matches
+  // the task's pinned context. Same-kind has already been checked by
+  // the caller; this validates the per-kind target fields.
+  private assertPayloadMatchesTask(payload: ProposalPayload, task: AssignmentTask): void {
+    if (payload.kind === 'anchor' && task.kind === 'anchor') {
+      if (payload.cause_id !== task.cause_id) {
+        throw new ServerError('invalid_input', 'payload cause_id does not match task cause');
+      }
+      if (payload.home_sub_topic_id !== task.sub_topic_id) {
+        throw new ServerError(
+          'invalid_input',
+          'payload home_sub_topic_id does not match task sub-topic',
+        );
+      }
+      return;
+    }
+    if (payload.kind === 'excerpt' && task.kind === 'excerpt') {
+      if (payload.cause_id !== task.cause_id) {
+        throw new ServerError('invalid_input', 'payload cause_id does not match task cause');
+      }
+      if (payload.home_sub_topic_id !== task.sub_topic_id) {
+        throw new ServerError(
+          'invalid_input',
+          'payload home_sub_topic_id does not match task sub-topic',
+        );
+      }
+      if (payload.parent_anchor_id !== task.parent_anchor_id) {
+        throw new ServerError(
+          'invalid_input',
+          'payload parent_anchor_id does not match task parent',
+        );
+      }
+      return;
+    }
+    if (
+      (payload.kind === 'synthesis' || payload.kind === 'open_question') &&
+      (task.kind === 'synthesis' || task.kind === 'open_question')
+    ) {
+      if (payload.cause_id !== task.cause_id) {
+        throw new ServerError('invalid_input', 'payload cause_id does not match task cause');
+      }
+      if (payload.home_sub_topic_id !== task.sub_topic_id) {
+        throw new ServerError(
+          'invalid_input',
+          'payload home_sub_topic_id does not match task sub-topic',
+        );
+      }
+      // Parent set must match exactly (set equality, order-insensitive).
+      const taskParents = new Set(task.parent_ids);
+      const payloadParents = new Set(payload.parent_ids);
+      if (
+        taskParents.size !== payloadParents.size ||
+        [...taskParents].some((p) => !payloadParents.has(p))
+      ) {
+        throw new ServerError('invalid_input', 'payload parent_ids do not match task parents');
+      }
+      return;
+    }
+    if (payload.kind === 'supersedes' && task.kind === 'supersedes') {
+      if (payload.from_node_id !== task.from_node_id) {
+        throw new ServerError(
+          'invalid_input',
+          'payload from_node_id does not match task from_node',
+        );
+      }
+      return;
+    }
+    if (payload.kind === 'membership' && task.kind === 'membership') {
+      if (payload.node_id !== task.node_id) {
+        throw new ServerError('invalid_input', 'payload node_id does not match task node');
+      }
+      if (payload.sub_topic_id !== task.sub_topic_id) {
+        throw new ServerError(
+          'invalid_input',
+          'payload sub_topic_id does not match task sub-topic',
+        );
+      }
+      return;
+    }
+    // sub_topic and change_of_home are curator-only and excluded from
+    // WorkKind; they shouldn't appear here. Review is filtered
+    // earlier in submit_assigned_proposal.
+    throw new ServerError(
+      'invalid_input',
+      `unsupported payload/task pair: ${payload.kind} / ${task.kind}`,
+    );
+  }
+
+  // Route a propose-kind payload through the matching propose_*
+  // tool method. Returns the staged proposal_id. Centralizes the
+  // payload-to-tool mapping so submit_assigned_proposal doesn't
+  // duplicate per-kind logic.
+  private async routePayloadToProposeTool(
+    caller: Caller,
+    payload: ProposalPayload,
+  ): Promise<ProposalId> {
+    switch (payload.kind) {
+      case 'anchor': {
+        const out = await this.tools.proposeAnchor(caller, {
+          cause_id: payload.cause_id,
+          home_sub_topic_id: payload.home_sub_topic_id,
+          ...(payload.memberships ? { memberships: payload.memberships } : {}),
+          content: payload.content,
+          external_ref: payload.external_ref,
+        });
+        return out.proposal_id;
+      }
+      case 'excerpt': {
+        const out = await this.tools.proposeExcerpt(caller, {
+          cause_id: payload.cause_id,
+          home_sub_topic_id: payload.home_sub_topic_id,
+          ...(payload.memberships ? { memberships: payload.memberships } : {}),
+          parent_anchor_id: payload.parent_anchor_id,
+          content: payload.content,
+          quoted_span: payload.quoted_span,
+        });
+        return out.proposal_id;
+      }
+      case 'synthesis':
+      case 'open_question': {
+        const out = await this.tools.proposeSynthesis(caller, {
+          cause_id: payload.cause_id,
+          home_sub_topic_id: payload.home_sub_topic_id,
+          ...(payload.memberships ? { memberships: payload.memberships } : {}),
+          parent_ids: payload.parent_ids,
+          content: payload.content,
+          kind: payload.kind,
+        });
+        return out.proposal_id;
+      }
+      case 'supersedes': {
+        const out = await this.tools.proposeSupersedes(caller, {
+          from_node_id: payload.from_node_id,
+          to_node_id: payload.to_node_id,
+          rationale: payload.rationale,
+        });
+        return out.proposal_id;
+      }
+      case 'membership': {
+        const out = await this.tools.proposeMembership(caller, {
+          node_id: payload.node_id,
+          sub_topic_id: payload.sub_topic_id,
+        });
+        return out.proposal_id;
+      }
+      case 'change_of_home':
+      case 'sub_topic':
+        throw new ServerError(
+          'invalid_input',
+          `${payload.kind} is curator-only and not assignment-driven`,
+        );
+    }
   }
 
   // The cause an assignment task is scoped to. Most task variants
@@ -762,6 +919,92 @@ export class Server {
         updated_at: now,
       });
       return { ok: true };
+    },
+
+    // PRD §Capacity and assignment line 116-117: submit_assigned_
+    // proposal fulfills an *accepted* propose-kind assignment by
+    // staging the proposal under it. Review-kind assignments are
+    // fulfilled via cast_review_vote with assignment_id set, not
+    // through this tool — that's the explicit PRD branch.
+    //
+    // The shape of this tool is delegation: it validates that the
+    // payload matches the task (kind, sub-topic, pinned parents/
+    // anchor), routes through the existing propose_* tool method
+    // for the matching kind so verification/staging logic stays in
+    // one place, and then transitions the assignment to `submitted`
+    // with `fulfilled_by` pointing at the new proposal.
+    //
+    // The propose_* tools don't carry assignment_id today; we patch
+    // it onto the persisted Proposal post-stage. The alternative —
+    // threading assignment_id through every propose_* signature —
+    // is cleaner long-term but adds a parameter to seven tools for
+    // one consumer, so the patch-after stays for now. Marked here
+    // so the next refactor pass finds it.
+    submitAssignedProposal: async (
+      caller: Caller,
+      input: SubmitAssignedProposalInput,
+    ): Promise<SubmitAssignedProposalOutput> => {
+      const parsed = SubmitAssignedProposalInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+
+      const a = this.store.assignments.get(parsed.assignment_id);
+      if (!a) {
+        throw new ServerError('not_found', `assignment not found: ${parsed.assignment_id}`);
+      }
+      if (a.contributor_id !== identity.id) {
+        throw new ServerError(
+          'unauthorized',
+          `assignment ${a.id} does not belong to ${identity.id}`,
+        );
+      }
+      if (a.status !== 'accepted') {
+        throw new ServerError('invalid_state', `assignment ${a.id} is ${a.status}`);
+      }
+      if (a.task.kind === 'review') {
+        throw new ServerError(
+          'invalid_input',
+          'review-kind assignments are fulfilled via cast_review_vote, not submit_assigned_proposal',
+        );
+      }
+
+      // Payload-task consistency. Each kind cross-checks the task's
+      // pinned context against the payload's claim. The wider rep-
+      // laundering vector this closes: a contributor can't accept an
+      // excerpt assignment then submit an anchor (or an excerpt
+      // against a different parent) to satisfy capacity.
+      const { payload } = parsed;
+      if (payload.kind !== a.task.kind) {
+        throw new ServerError(
+          'invalid_input',
+          `payload kind ${payload.kind} does not match task kind ${a.task.kind}`,
+        );
+      }
+      this.assertPayloadMatchesTask(payload, a.task);
+
+      // Route through the matching propose_* tool. The propose_*
+      // methods own all per-kind verification and staging, so we
+      // don't re-implement it here.
+      const proposalId = await this.routePayloadToProposeTool(caller, payload);
+
+      // Patch assignment_id onto the staged proposal record so
+      // downstream consumers (reputation settlement, query_proposals
+      // assigned_to_me filter) can see the assignment-fulfillment
+      // attribution. See top-of-method comment for the refactor
+      // direction.
+      const proposal = this.store.proposals.get(proposalId);
+      if (proposal) {
+        this.store.proposals.set(proposalId, { ...proposal, assignment_id: a.id });
+      }
+
+      const now = this.clock.now();
+      this.store.assignments.set(a.id, {
+        ...a,
+        status: 'submitted',
+        fulfilled_by: proposalId,
+        updated_at: now,
+      });
+
+      return { proposal_id: proposalId };
     },
 
     // PRD §Write-path tools: propose_anchor stages an anchor proposal.

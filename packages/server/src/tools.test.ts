@@ -1137,6 +1137,166 @@ describe('tools.acceptAssignment / declineAssignment', () => {
   });
 });
 
+describe('tools.submitAssignedProposal', () => {
+  // End-to-end happy path of the assignment loop.
+  async function withAcceptedExcerptAssignment() {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'parent',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['excerpt'],
+    });
+    const offered = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id: offered.assignment_id });
+    return { f, bobCaller, anchor_id: aId, assignment_id: offered.assignment_id };
+  }
+
+  it('stages a proposal, attributes the assignment, and marks it submitted', async () => {
+    const { f, bobCaller, anchor_id, assignment_id } = await withAcceptedExcerptAssignment();
+    const { proposal_id } = await f.server.tools.submitAssignedProposal(bobCaller, {
+      assignment_id,
+      payload: {
+        kind: 'excerpt',
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        parent_anchor_id: anchor_id,
+        content: 'span content',
+        quoted_span: { text: 'span', offset: 0 },
+      },
+    });
+
+    const proposal = f.server.store.proposals.get(proposal_id);
+    expect(proposal?.payload.kind).toBe('excerpt');
+    expect(proposal?.assignment_id).toBe(assignment_id);
+
+    const updatedAssignment = f.server.store.assignments.get(assignment_id);
+    expect(updatedAssignment?.status).toBe('submitted');
+    expect(updatedAssignment?.fulfilled_by).toBe(proposal_id);
+  });
+
+  it('rejects when the assignment is not yet accepted', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'p',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 1,
+      kinds: ['excerpt'],
+    });
+    const offered = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    // No accept call.
+    await expect(
+      f.server.tools.submitAssignedProposal(bobCaller, {
+        assignment_id: offered.assignment_id,
+        payload: {
+          kind: 'excerpt',
+          cause_id: f.cause_id,
+          home_sub_topic_id: f.sub_topic_id,
+          parent_anchor_id: aId,
+          content: 'x',
+          quoted_span: { text: 'x', offset: 0 },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it('rejects when payload kind does not match task kind', async () => {
+    const { f, bobCaller, assignment_id } = await withAcceptedExcerptAssignment();
+    await expect(
+      f.server.tools.submitAssignedProposal(bobCaller, {
+        assignment_id,
+        payload: {
+          kind: 'anchor',
+          cause_id: f.cause_id,
+          home_sub_topic_id: f.sub_topic_id,
+          content: 'rep-laundering attempt',
+          external_ref: { kind: 'pmid', value: '99' },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('rejects when payload pins a different parent anchor than the task', async () => {
+    const { f, bobCaller, assignment_id } = await withAcceptedExcerptAssignment();
+    // Stage a second anchor and use its id in the payload.
+    const a2 = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'other',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const a2Id = f.server.curator.acceptProposal(a2.proposal_id).node_id;
+    if (!a2Id) throw new Error('expected second anchor');
+    await expect(
+      f.server.tools.submitAssignedProposal(bobCaller, {
+        assignment_id,
+        payload: {
+          kind: 'excerpt',
+          cause_id: f.cause_id,
+          home_sub_topic_id: f.sub_topic_id,
+          parent_anchor_id: a2Id,
+          content: 'x',
+          quoted_span: { text: 'x', offset: 0 },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('rejects fulfilling a review assignment via this tool (use cast_review_vote)', async () => {
+    const f = fixture();
+    await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 1,
+      kinds: ['review'],
+    });
+    const offered = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id: offered.assignment_id });
+    if (offered.task.kind !== 'review') throw new Error('expected review task');
+    // submit_assigned_proposal rejects review-kind tasks before the
+    // payload is even unwrapped — pass a well-formed propose-kind
+    // payload so we exercise the early review-kind guard, not the
+    // payload-kind mismatch.
+    await expect(
+      f.server.tools.submitAssignedProposal(bobCaller, {
+        assignment_id: offered.assignment_id,
+        payload: {
+          kind: 'anchor',
+          cause_id: f.cause_id,
+          home_sub_topic_id: f.sub_topic_id,
+          content: 'x',
+          external_ref: { kind: 'pmid', value: '2' },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+});
+
 describe('tools.queryProposals', () => {
   it('returns all proposals when no filters are given, ordered by created_at', async () => {
     const f = fixture();
