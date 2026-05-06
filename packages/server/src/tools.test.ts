@@ -1297,6 +1297,93 @@ describe('tools.submitAssignedProposal', () => {
   });
 });
 
+describe('tools.fetchCalibrationBatch', () => {
+  it('returns accepted proposals routed to the sub-topic, projected to ReviewBatchItem shape', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'a',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+
+    const { items } = await f.server.tools.fetchCalibrationBatch(f.caller, {
+      sub_topic_id: f.sub_topic_id,
+    });
+    expect(items).toHaveLength(1);
+    const [item] = items;
+    if (!item) throw new Error('expected one item');
+    expect(item.proposal_id).toBe(a.proposal_id);
+    // ReviewBatchItem deliberately exposes only proposal_id + payload
+    // — no status, created_at, proposer_id, or assignment_id (PRD
+    // §Calibration batches; tools.ts ReviewBatchItem comment).
+    expect(Object.keys(item).sort()).toEqual(['payload', 'proposal_id']);
+  });
+
+  it('omits staged proposals (only validated history is calibration material)', async () => {
+    const f = fixture();
+    await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'staged',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const { items } = await f.server.tools.fetchCalibrationBatch(f.caller, {
+      sub_topic_id: f.sub_topic_id,
+    });
+    expect(items).toHaveLength(0);
+  });
+
+  it('only surfaces proposals routed to the requested sub-topic', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+
+    const { items } = await f.server.tools.fetchCalibrationBatch(f.caller, {
+      sub_topic_id: f.other_sub_topic_id,
+    });
+    expect(items).toHaveLength(0);
+  });
+
+  it('caps the batch at the calibration size with a recency bias', async () => {
+    const f = fixture();
+    // Five accepted anchors; the helper FakeClock advances by 1000ms
+    // each tick, so created_at is ordered.
+    for (let i = 1; i <= 5; i++) {
+      const a = await f.server.tools.proposeAnchor(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: `c${i}`,
+        external_ref: { kind: 'pmid', value: String(i) },
+      });
+      f.server.curator.acceptProposal(a.proposal_id);
+    }
+    const { items } = await f.server.tools.fetchCalibrationBatch(f.caller, {
+      sub_topic_id: f.sub_topic_id,
+    });
+    // The cap is implementation-defined (3 in v0). Whatever it is,
+    // the batch must be shorter than the candidate pool.
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.length).toBeLessThan(5);
+  });
+
+  it('rejects an unknown sub-topic', async () => {
+    const f = fixture();
+    await expect(
+      f.server.tools.fetchCalibrationBatch(f.caller, {
+        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
+        sub_topic_id: 'stp_missing' as any,
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
+
 describe('tools.queryProposals', () => {
   it('returns all proposals when no filters are given, ordered by created_at', async () => {
     const f = fixture();

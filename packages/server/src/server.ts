@@ -16,6 +16,8 @@ import {
   type DerivesEdge,
   type Edge,
   type ExcerptNode,
+  FetchCalibrationBatchInput,
+  type FetchCalibrationBatchOutput,
   type FrontierItem,
   type Identity,
   type IdentityId,
@@ -45,6 +47,7 @@ import {
   type QueryProposalsOutput,
   RequestAssignmentInput,
   type RequestAssignmentOutput,
+  type ReviewBatchItem,
   type ReviewVote,
   SetCapacityInput,
   type SetCapacityOutput,
@@ -103,6 +106,12 @@ export interface ServerDeps {
   store?: MemoryStore;
   verifier?: Verifier;
 }
+
+// v0 cap on calibration items per fetch. Small enough to keep batch
+// composition (real proposals + calibration items) reviewer-tractable;
+// the right value is testbed-tuned and changes alongside the broader
+// batch-sizing knob.
+const CALIBRATION_BATCH_SIZE = 3;
 
 interface MaterializationResult {
   node: Node | null;
@@ -1552,6 +1561,56 @@ export class Server {
       }
 
       return { vote_id: vote.id };
+    },
+
+    // PRD §Calibration batches (lines 200-201): reviewer batches mix
+    // real proposals with calibration items drawn from the graph's
+    // validated history. Calibration items must be statistically
+    // indistinguishable from real frontier work in the dimensions a
+    // reviewer can act on — which is why ReviewBatchItem strips
+    // status, proposer, created_at, and assignment_id, leaving just
+    // proposal_id and payload.
+    //
+    // v0 sampling: take up to CALIBRATION_BATCH_SIZE accepted
+    // proposals routed to the requested sub-topic, biased toward
+    // recency (PRD line 201: "calibration sampling is biased toward
+    // fresh-but-validated history"). Rotation policy and adversary-
+    // resistant distribution mixing are testbed territory; this is
+    // the seam they tune against.
+    //
+    // Per the comment in tools.ts §ReviewBatchItem, the omissions
+    // are deliberate: a reviewer comparing fields between calibration
+    // items and live items shouldn't be able to use those fields to
+    // distinguish them.
+    fetchCalibrationBatch: async (
+      caller: Caller,
+      input: FetchCalibrationBatchInput,
+    ): Promise<FetchCalibrationBatchOutput> => {
+      const parsed = FetchCalibrationBatchInput.parse(input);
+      resolveCaller(this.store, caller);
+      const target = this.store.subTopics.get(parsed.sub_topic_id);
+      if (!target) {
+        throw new ServerError('not_found', `sub-topic not found: ${parsed.sub_topic_id}`);
+      }
+      const candidates: Proposal[] = [];
+      for (const p of this.store.proposals.values()) {
+        if (p.status !== 'accepted') continue;
+        const located = this.locateProposalForReview(p);
+        if (!located || located.sub_topic_id !== parsed.sub_topic_id) continue;
+        candidates.push(p);
+      }
+      // Recency-biased: sort by created_at descending. Tiebreak by id
+      // for replay determinism. The testbed tunes the actual sampling
+      // distribution; the recency bias is the published-default the
+      // adversary harness should evaluate against.
+      candidates.sort((a, b) => {
+        if (a.created_at !== b.created_at) return b.created_at.localeCompare(a.created_at);
+        return a.id.localeCompare(b.id);
+      });
+      const items: ReviewBatchItem[] = candidates
+        .slice(0, CALIBRATION_BATCH_SIZE)
+        .map((p) => ({ proposal_id: p.id, payload: p.payload }));
+      return { items };
     },
   };
 
