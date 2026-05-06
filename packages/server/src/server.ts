@@ -1,6 +1,7 @@
 import {
   type AgentCredential,
   type AnchorNode,
+  type Capacity,
   CastReviewVoteInput,
   type CastReviewVoteOutput,
   type Cause,
@@ -30,6 +31,8 @@ import {
   ProposeSynthesisInput,
   type ProposeSynthesisOutput,
   type ReviewVote,
+  SetCapacityInput,
+  type SetCapacityOutput,
   type SubTopic,
   type SubTopicId,
   type SupersedesEdge,
@@ -295,6 +298,36 @@ export class Server {
   };
 
   readonly tools = {
+    // PRD §Capacity and assignment line 110: set_capacity declares the
+    // contributor's availability at the cause level — a maximum rate
+    // (a cap, not a schedule) and which kinds of work they will accept.
+    // Sub-topic granularity is deliberately not allowed; it would
+    // reopen the rep-laundering vector by letting contributors cherry-
+    // pick easy sub-topics. Idempotent under (identity, cause): calling
+    // set_capacity again replaces the existing declaration. Capacity
+    // is the only way the system learns availability — without one
+    // the contributor receives no assignments.
+    setCapacity: async (caller: Caller, input: SetCapacityInput): Promise<SetCapacityOutput> => {
+      const parsed = SetCapacityInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+      this.requireActiveCause(parsed.cause_id);
+      // De-duplicate kinds at the boundary: the schema has min(1) but
+      // doesn't enforce uniqueness. A contributor declaring `[review,
+      // review]` is almost certainly a client bug; coalescing keeps
+      // downstream selection logic from having to special-case it.
+      const kinds = [...new Set(parsed.kinds)];
+      const now = this.clock.now();
+      const capacity: Capacity = {
+        identity_id: identity.id,
+        cause_id: parsed.cause_id,
+        rate: parsed.rate,
+        kinds,
+        updated_at: now,
+      };
+      this.store.capacities.set(`${identity.id}|${parsed.cause_id}`, capacity);
+      return { ok: true };
+    },
+
     // PRD §Write-path tools: propose_anchor stages an anchor proposal.
     // Synchronous verification at the tool boundary: external_ref must
     // resolve. If verification fails, no proposal record is created

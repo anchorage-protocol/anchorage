@@ -44,6 +44,75 @@ function fixture(opts: { unresolvable?: ReadonlySet<string> } = {}): Fixture {
   };
 }
 
+describe('tools.setCapacity', () => {
+  it('records a capacity declaration under (identity, cause)', async () => {
+    const f = fixture();
+    await f.server.tools.setCapacity(f.caller, {
+      cause_id: f.cause_id,
+      rate: 5,
+      kinds: ['anchor', 'review'],
+    });
+    const cap = f.server.store.capacities.get(`${f.caller.identity_id}|${f.cause_id}`);
+    expect(cap?.rate).toBe(5);
+    expect(cap?.kinds).toEqual(['anchor', 'review']);
+    expect(cap?.identity_id).toBe(f.caller.identity_id);
+  });
+
+  it('replaces a prior declaration on re-call (upsert)', async () => {
+    const f = fixture();
+    await f.server.tools.setCapacity(f.caller, {
+      cause_id: f.cause_id,
+      rate: 5,
+      kinds: ['anchor'],
+    });
+    await f.server.tools.setCapacity(f.caller, {
+      cause_id: f.cause_id,
+      rate: 2,
+      kinds: ['review'],
+    });
+    const cap = f.server.store.capacities.get(`${f.caller.identity_id}|${f.cause_id}`);
+    expect(cap?.rate).toBe(2);
+    expect(cap?.kinds).toEqual(['review']);
+    expect(f.server.store.capacities.size).toBe(1);
+  });
+
+  it('de-duplicates kinds at the boundary', async () => {
+    const f = fixture();
+    await f.server.tools.setCapacity(f.caller, {
+      cause_id: f.cause_id,
+      rate: 1,
+      kinds: ['review', 'review', 'anchor'],
+    });
+    const cap = f.server.store.capacities.get(`${f.caller.identity_id}|${f.cause_id}`);
+    expect(cap?.kinds).toEqual(['review', 'anchor']);
+  });
+
+  it('rejects when the cause is archived', async () => {
+    const f = fixture();
+    const cause = f.server.store.causes.get(f.cause_id);
+    if (!cause) throw new Error('cause missing');
+    f.server.store.causes.set(f.cause_id, { ...cause, status: 'archived' });
+    await expect(
+      f.server.tools.setCapacity(f.caller, {
+        cause_id: f.cause_id,
+        rate: 1,
+        kinds: ['anchor'],
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it('rejects an unauthorized caller', async () => {
+    const f = fixture();
+    await expect(
+      f.server.tools.setCapacity(
+        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
+        { identity_id: 'idn_bogus' as any },
+        { cause_id: f.cause_id, rate: 1, kinds: ['anchor'] },
+      ),
+    ).rejects.toMatchObject({ code: 'unauthorized' });
+  });
+});
+
 describe('tools.proposeAnchor', () => {
   it('stages an anchor proposal when verification passes', async () => {
     const f = fixture();

@@ -169,7 +169,7 @@ The verification engine is the security boundary. Every write tool routes throug
 
 The default flow is assignment-driven. The contributor-initiated flow is a special case (steps 0a/0b are skipped; rep weighting is reduced).
 
-0a. **Capacity** — contributor declares which sub-topics they're available for and at what rate (`set_capacity`).
+0a. **Capacity** — contributor declares availability at the cause level — rate cap and accepted work kinds (`set_capacity`). Sub-topic granularity is deliberately not allowed; it would reopen the rep-laundering vector by letting contributors cherry-pick easy sub-topics.
 0b. **Assignment** — system draws a frontier task matching capacity and assigns it (`request_assignment`); contributor accepts or declines.
 1. **Submit / Propose** — assigned contributor submits work via `submit_assigned_proposal`; contributor-initiated path uses the `propose_*` tools directly.
 2. **Verify** — verification engine accepts or rejects synchronously based on grounding/lineage/rate.

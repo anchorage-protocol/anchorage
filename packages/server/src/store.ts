@@ -3,6 +3,7 @@ import type {
   AgentCredentialId,
   Assignment,
   AssignmentId,
+  Capacity,
   Cause,
   CauseId,
   Edge,
@@ -35,6 +36,11 @@ export class MemoryStore {
   readonly edges = new Map<EdgeId, Edge>();
   readonly reviewVotes = new Map<ReviewVoteId, ReviewVote>();
   readonly assignments = new Map<AssignmentId, Assignment>();
+  // Capacity is one declaration per (identity, cause) — PRD §Capacity
+  // and assignment: capacity is cause-scoped, not sub-topic-scoped.
+  // The composite key keeps lookups O(1) without scanning all records,
+  // and set_capacity is naturally an upsert under that key.
+  readonly capacities = new Map<`${IdentityId}|${CauseId}`, Capacity>();
   // Server-observed verification metadata (content hashes, eventually
   // span offsets and provenance). Keyed by proposal_id because that is
   // when verification ran; copied onto the materialized node at
