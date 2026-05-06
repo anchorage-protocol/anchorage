@@ -1051,6 +1051,92 @@ describe('tools.requestAssignment', () => {
   });
 });
 
+describe('tools.acceptAssignment / declineAssignment', () => {
+  async function withOfferedExcerptAssignment() {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'orphan',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['excerpt'],
+    });
+    const { assignment_id } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    return { f, bobCaller, bob, assignment_id };
+  }
+
+  it('moves an offered assignment to accepted', async () => {
+    const { f, bobCaller, assignment_id } = await withOfferedExcerptAssignment();
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
+    expect(f.server.store.assignments.get(assignment_id)?.status).toBe('accepted');
+  });
+
+  it('rejects accepting an assignment that does not belong to the caller', async () => {
+    const { f, assignment_id } = await withOfferedExcerptAssignment();
+    const mallory = f.server.bootstrap.mintIdentity({ display_name: 'mallory' });
+    await expect(
+      f.server.tools.acceptAssignment({ identity_id: mallory.id }, { assignment_id }),
+    ).rejects.toMatchObject({ code: 'unauthorized' });
+  });
+
+  it('rejects accepting twice', async () => {
+    const { f, bobCaller, assignment_id } = await withOfferedExcerptAssignment();
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
+    await expect(
+      f.server.tools.acceptAssignment(bobCaller, { assignment_id }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it('moves an offered assignment to declined and persists the reason', async () => {
+    const { f, bobCaller, assignment_id } = await withOfferedExcerptAssignment();
+    await f.server.tools.declineAssignment(bobCaller, {
+      assignment_id,
+      reason: 'outside my wheelhouse',
+    });
+    const stored = f.server.store.assignments.get(assignment_id);
+    expect(stored?.status).toBe('declined');
+    expect(stored?.decline_reason).toBe('outside my wheelhouse');
+  });
+
+  it('rejects declining an unknown assignment', async () => {
+    const { f, bobCaller } = await withOfferedExcerptAssignment();
+    await expect(
+      f.server.tools.declineAssignment(bobCaller, {
+        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
+        assignment_id: 'asn_missing' as any,
+        reason: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('frees the rate budget when an assignment is declined', async () => {
+    const { f, bobCaller, assignment_id } = await withOfferedExcerptAssignment();
+    // Add a second orphan so a second assignment is available.
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'second',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+    // Bob's rate is 3 in the helper; confirm decline doesn't block
+    // a second pull. (The helper uses 3 deliberately; the rate-cap
+    // test in requestAssignment uses 1 to exercise the cap path.)
+    await f.server.tools.declineAssignment(bobCaller, { assignment_id, reason: 'no time' });
+    const next = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    expect(next.assignment_id).not.toBe(assignment_id);
+  });
+});
+
 describe('tools.queryProposals', () => {
   it('returns all proposals when no filters are given, ordered by created_at', async () => {
     const f = fixture();

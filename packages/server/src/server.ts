@@ -1,13 +1,18 @@
 import {
+  AcceptAssignmentInput,
+  type AcceptAssignmentOutput,
   type AgentCredential,
   type AnchorNode,
   type Assignment,
+  type AssignmentId,
   type AssignmentTask,
   type Capacity,
   CastReviewVoteInput,
   type CastReviewVoteOutput,
   type Cause,
   type CauseId,
+  DeclineAssignmentInput,
+  type DeclineAssignmentOutput,
   type DerivesEdge,
   type Edge,
   type ExcerptNode,
@@ -343,6 +348,30 @@ export class Server {
       return frontierTiebreakerKey(a).localeCompare(frontierTiebreakerKey(b));
     });
     return filtered;
+  }
+
+  // Resolve an assignment that belongs to the given identity and is
+  // in the `offered` state — the entry point for accept/decline/
+  // expiry transitions. Used by accept_assignment, decline_assignment,
+  // and (later) the assignment-expiry sweep.
+  private requireOwnedOfferedAssignment(
+    assignmentId: AssignmentId,
+    identityId: IdentityId,
+  ): Assignment {
+    const a = this.store.assignments.get(assignmentId);
+    if (!a) {
+      throw new ServerError('not_found', `assignment not found: ${assignmentId}`);
+    }
+    if (a.contributor_id !== identityId) {
+      throw new ServerError(
+        'unauthorized',
+        `assignment ${assignmentId} does not belong to ${identityId}`,
+      );
+    }
+    if (a.status !== 'offered') {
+      throw new ServerError('invalid_state', `assignment ${assignmentId} is ${a.status}`);
+    }
+    return a;
   }
 
   // The cause an assignment task is scoped to. Most task variants
@@ -692,6 +721,47 @@ export class Server {
         'not_found',
         `no eligible frontier item for ${identity.id} in cause ${parsed.cause_id}`,
       );
+    },
+
+    // PRD §Capacity and assignment line 114: accept_assignment moves
+    // an offered assignment to `accepted`. Idempotent under the same
+    // contributor: re-accepting an already-accepted assignment is a
+    // no-op error rather than silent — the contributor likely
+    // miscounts their queue.
+    acceptAssignment: async (
+      caller: Caller,
+      input: AcceptAssignmentInput,
+    ): Promise<AcceptAssignmentOutput> => {
+      const parsed = AcceptAssignmentInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+      const a = this.requireOwnedOfferedAssignment(parsed.assignment_id, identity.id);
+      const now = this.clock.now();
+      this.store.assignments.set(a.id, { ...a, status: 'accepted', updated_at: now });
+      return { ok: true };
+    },
+
+    // PRD §Capacity and assignment line 114-115: decline_assignment
+    // moves an offered assignment to `declined`. Reason is required
+    // and persisted — pattern-decline is an abuse signal handled at
+    // the curator layer (PRD line 162: "suspicious patterns ... flag
+    // for curator review"), and the reason is what a curator inspects
+    // when a pattern surfaces. Declining individual assignments is
+    // explicitly non-punitive on its own (PRD line 115).
+    declineAssignment: async (
+      caller: Caller,
+      input: DeclineAssignmentInput,
+    ): Promise<DeclineAssignmentOutput> => {
+      const parsed = DeclineAssignmentInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+      const a = this.requireOwnedOfferedAssignment(parsed.assignment_id, identity.id);
+      const now = this.clock.now();
+      this.store.assignments.set(a.id, {
+        ...a,
+        status: 'declined',
+        decline_reason: parsed.reason,
+        updated_at: now,
+      });
+      return { ok: true };
     },
 
     // PRD §Write-path tools: propose_anchor stages an anchor proposal.
