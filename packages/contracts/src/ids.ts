@@ -28,3 +28,6 @@ export type MembershipId = z.infer<typeof MembershipId>;
 
 export const AssignmentId = idShape.brand<'AssignmentId'>();
 export type AssignmentId = z.infer<typeof AssignmentId>;
+
+export const ReviewVoteId = idShape.brand<'ReviewVoteId'>();
+export type ReviewVoteId = z.infer<typeof ReviewVoteId>;
