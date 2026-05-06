@@ -45,6 +45,9 @@ import {
   type QueryFrontierOutput,
   QueryProposalsInput,
   type QueryProposalsOutput,
+  QueryReputationInput,
+  type QueryReputationOutput,
+  type ReputationEntry,
   RequestAssignmentInput,
   type RequestAssignmentOutput,
   type ReviewBatchItem,
@@ -100,21 +103,46 @@ const SeedSubTopicInput = z
   .strict();
 type SeedSubTopicInput = z.infer<typeof SeedSubTopicInput>;
 
-// Vote-aggregation thresholds (PRD line 339, testbed-tuned). Defaults
-// here are starting points for the testbed to swap as it sweeps; they
-// are deliberately small so basic walking-skeleton scenarios converge
-// inside one or two votes.
+// Vote-aggregation thresholds and reputation weights (PRD lines 339,
+// testbed-tuned). Defaults here are starting points for the testbed to
+// swap as it sweeps; they are deliberately small so basic walking-
+// skeleton scenarios converge inside one or two votes and produce
+// observable reputation deltas.
 export interface ReviewConfig {
   // Number of `accept` votes needed before the proposal auto-accepts
   // (without curator action). PRD line 179: convergent vote merges.
   votes_to_accept: number;
   // Number of `reject` votes needed before the proposal auto-rejects.
   votes_to_reject: number;
+  // Reputation gain to the proposer when their proposal converges to
+  // accepted (PRD §Reputation line 245: "Earned through confirmed
+  // contributions"). Multiplied by `contributor_initiated_factor` for
+  // proposals not tied to an assignment_id (PRD line 244).
+  proposer_accepted_gain: number;
+  // Reputation loss to the proposer when their proposal converges to
+  // rejected (PRD line 246: "Lost through reverted contributions").
+  proposer_rejected_loss: number;
+  // Reputation gain to a reviewer who voted with the converged
+  // outcome (PRD line 245: "reviewing accurately").
+  reviewer_accurate_gain: number;
+  // Reputation loss to a reviewer who voted against the converged
+  // outcome (PRD line 246: "inaccurate reviews").
+  reviewer_inaccurate_loss: number;
+  // Multiplier applied to *proposer* gain/loss when the proposal was
+  // contributor-initiated rather than assignment-driven. PRD line
+  // 244: "Contributor-initiated work earns sub-topic rep at a
+  // substantially reduced weight." 0 ≤ factor ≤ 1; defaults to 0.5.
+  contributor_initiated_factor: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   votes_to_accept: 2,
   votes_to_reject: 2,
+  proposer_accepted_gain: 1,
+  proposer_rejected_loss: 1,
+  reviewer_accurate_gain: 1,
+  reviewer_inaccurate_loss: 1,
+  contributor_initiated_factor: 0.5,
 };
 
 export interface ServerDeps {
@@ -1492,6 +1520,32 @@ export class Server {
       return { proposals };
     },
 
+    // PRD §Reputation line 248: contributors see their own raw scores
+    // (otherwise they can't reason about where they sit relative to
+    // tier gates); other contributors see only tiers via a separate
+    // public read-path. v0 returns the caller's per-sub-topic scores
+    // for the requested cause, omitting (cause, sub_topic) pairs the
+    // caller has zero reputation in (no pollution from sub-topics
+    // they've never been routed into).
+    queryReputation: async (
+      caller: Caller,
+      input: QueryReputationInput,
+    ): Promise<QueryReputationOutput> => {
+      const parsed = QueryReputationInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+      this.requireActiveCause(parsed.cause_id);
+      const entries: ReputationEntry[] = [];
+      for (const r of this.store.reputations.values()) {
+        if (r.identity_id !== identity.id) continue;
+        if (r.cause_id !== parsed.cause_id) continue;
+        entries.push({ sub_topic_id: r.sub_topic_id, score: r.score });
+      }
+      // Stable order so testbed assertions don't depend on Map
+      // iteration order.
+      entries.sort((a, b) => a.sub_topic_id.localeCompare(b.sub_topic_id));
+      return { entries };
+    },
+
     // PRD §cast_review_vote (line 133): reviewer records a vote with
     // required rationale. With assignment_id set, the vote fulfills a
     // review-kind assignment and accrues full assigned-review reputation;
@@ -1777,12 +1831,129 @@ export class Server {
     }
     if (accepts >= this.review.votes_to_accept) {
       this.acceptStaged(proposal);
+      this.applyReputationUpdates(proposal, 'accepted');
       return;
     }
     if (rejects >= this.review.votes_to_reject) {
       const now = this.clock.now();
       this.store.proposals.set(proposal.id, { ...proposal, status: 'rejected', updated_at: now });
+      this.applyReputationUpdates(proposal, 'rejected');
     }
+  }
+
+  // Update per-(identity, cause, sub_topic) reputation in response to
+  // a proposal converging. PRD §Reputation lines 244-246:
+  //
+  //   - Proposer's home-sub-topic rep moves with the outcome:
+  //     +proposer_accepted_gain on accept, -proposer_rejected_loss on
+  //     reject. Contributor-initiated proposals (no assignment_id)
+  //     are scaled by `contributor_initiated_factor` per PRD line
+  //     244's "substantially reduced weight" rule.
+  //   - Reviewers who voted *with* the converged outcome get
+  //     +reviewer_accurate_gain in the home sub-topic; reviewers who
+  //     voted against it get -reviewer_inaccurate_loss. Reviewers
+  //     accrue rep in the *home* sub-topic of the proposal they
+  //     reviewed (membership proposals route to the target sub-topic
+  //     for review, but the reviewer's competence-signal accrues
+  //     wherever the review effort was spent — which is the location
+  //     they were drawn from).
+  //   - Curator-only kinds (sub_topic, change_of_home) never reach
+  //     this path; resolveByConvergence short-circuits earlier.
+  //   - revise votes count for neither tier and earn no rep movement
+  //     (they remain available for the divergence-resolution path
+  //     when that lands).
+  //   - Self-supersedes carve-outs (PRD line 246) don't apply yet —
+  //     supersedes acceptance updates the from-node's status but
+  //     doesn't flow back into this path; supersedes-driven
+  //     reputation lands when survivorship weighting does.
+  private applyReputationUpdates(proposal: Proposal, outcome: 'accepted' | 'rejected'): void {
+    const subTopicId = this.reputationSubTopicFor(proposal);
+    if (!subTopicId) return;
+    const causeId = this.reputationCauseFor(proposal);
+    if (!causeId) return;
+
+    // Proposer delta. Contributor-initiated (no assignment_id) earns
+    // reduced weight per PRD line 244.
+    const proposerFactor = proposal.assignment_id ? 1 : this.review.contributor_initiated_factor;
+    const proposerDelta =
+      outcome === 'accepted'
+        ? this.review.proposer_accepted_gain * proposerFactor
+        : -this.review.proposer_rejected_loss * proposerFactor;
+    this.bumpReputation(proposal.proposer_id, causeId, subTopicId, proposerDelta);
+
+    // Reviewer deltas. Each unique reviewer gets exactly one delta
+    // per convergence — even if they cast multiple votes (which
+    // double-vote prevention forbids today, but the dedup is cheap
+    // insurance against future revote semantics).
+    const seenReviewers = new Set<IdentityId>();
+    for (const v of this.store.reviewVotes.values()) {
+      if (v.proposal_id !== proposal.id) continue;
+      if (seenReviewers.has(v.reviewer_id)) continue;
+      seenReviewers.add(v.reviewer_id);
+      if (v.decision === 'revise') continue;
+      const wasAccurate =
+        (v.decision === 'accept' && outcome === 'accepted') ||
+        (v.decision === 'reject' && outcome === 'rejected');
+      const reviewerDelta = wasAccurate
+        ? this.review.reviewer_accurate_gain
+        : -this.review.reviewer_inaccurate_loss;
+      this.bumpReputation(v.reviewer_id, causeId, subTopicId, reviewerDelta);
+    }
+  }
+
+  // The sub-topic where reputation accrues for this proposal. For most
+  // kinds it's the payload's home_sub_topic_id; for membership
+  // proposals it's the target sub-topic (the review pool that judged
+  // the scope claim is the one whose reputation pool absorbs the
+  // outcome — same pool that voted, same pool that's tier-gated by
+  // the score). Returns null for curator-only kinds, which never
+  // reach this path anyway.
+  private reputationSubTopicFor(proposal: Proposal): SubTopicId | null {
+    switch (proposal.payload.kind) {
+      case 'anchor':
+      case 'excerpt':
+      case 'synthesis':
+      case 'open_question':
+        return proposal.payload.home_sub_topic_id;
+      case 'membership':
+        return proposal.payload.sub_topic_id;
+      case 'supersedes': {
+        const fromNode = this.store.nodes.get(proposal.payload.from_node_id);
+        return fromNode?.home_sub_topic_id ?? null;
+      }
+      case 'sub_topic':
+      case 'change_of_home':
+        return null;
+    }
+  }
+
+  // Same shape as locateProposalForReview but returning just the
+  // cause_id; locateProposalForReview is keyed by sub-topic-route
+  // semantics for the frontier, while this tracks the cause for
+  // reputation-keying and they happen to coincide today. Kept
+  // separate so future divergence in routing rules doesn't muddle
+  // the two concerns.
+  private reputationCauseFor(proposal: Proposal): CauseId | null {
+    return this.locateProposalForReview(proposal)?.cause_id ?? null;
+  }
+
+  private bumpReputation(
+    identityId: IdentityId,
+    causeId: CauseId,
+    subTopicId: SubTopicId,
+    delta: number,
+  ): void {
+    if (delta === 0) return;
+    const key = `${identityId}|${causeId}|${subTopicId}` as const;
+    const existing = this.store.reputations.get(key);
+    const now = this.clock.now();
+    this.store.reputations.set(key, {
+      identity_id: identityId,
+      cause_id: causeId,
+      sub_topic_id: subTopicId,
+      score: (existing?.score ?? 0) + delta,
+      updated_at: now,
+    });
   }
 
   // Apply the result of materialize() to the store. Centralized so the

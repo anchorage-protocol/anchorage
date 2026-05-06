@@ -26,6 +26,8 @@ import {
   QueryFrontierOutput,
   QueryProposalsInput,
   QueryProposalsOutput,
+  QueryReputationInput,
+  QueryReputationOutput,
   RequestAssignmentInput,
   RequestAssignmentOutput,
   SetCapacityInput,
@@ -262,6 +264,16 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
       outputSchema: FetchCalibrationBatchOutput.shape,
     },
     wrap(server.tools.fetchCalibrationBatch),
+  );
+
+  mcp.registerTool(
+    'query_reputation',
+    {
+      description: "Read the caller's per-sub-topic reputation scores in a cause.",
+      inputSchema: QueryReputationInput.shape,
+      outputSchema: QueryReputationOutput.shape,
+    },
+    wrap(server.tools.queryReputation),
   );
 
   return mcp;

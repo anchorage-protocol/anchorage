@@ -15,6 +15,7 @@ import {
   ProposeSynthesisOutput,
   QueryFrontierOutput,
   QueryProposalsOutput,
+  QueryReputationOutput,
   RequestAssignmentOutput,
   type ReviewDecision,
   type ServerErrorCode,
@@ -193,6 +194,10 @@ export class AnchorageClient {
     sub_topic_id: SubTopicId;
   }): Promise<FetchCalibrationBatchOutput> {
     return this.call('fetch_calibration_batch', input, FetchCalibrationBatchOutput);
+  }
+
+  async queryReputation(input: { cause_id: CauseId }): Promise<QueryReputationOutput> {
+    return this.call('query_reputation', input, QueryReputationOutput);
   }
 
   // The single point at which we shape an MCP callTool round-trip

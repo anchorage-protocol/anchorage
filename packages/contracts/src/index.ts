@@ -9,6 +9,7 @@ export * from './nodes.js';
 export * from './edges.js';
 export * from './memberships.js';
 export * from './proposals.js';
+export * from './reputation.js';
 export * from './reviews.js';
 export * from './assignments.js';
 export * from './frontier.js';

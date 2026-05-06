@@ -337,6 +337,76 @@ describe('testbed: honest-strong archetype', () => {
     expect(excerptNodes).toHaveLength(0);
   });
 
+  it('records reputation deltas observable via query_reputation across the wire', async () => {
+    // Phase 1 measurement check: after a full convergent loop, the
+    // testbed (which has only the contracts + an MCP client) can read
+    // the resulting reputation movement through query_reputation. Bob
+    // gets +1 in the home sub-topic for an assignment-driven excerpt
+    // that converges to accepted; Carol and Dave (the two reviewers
+    // who voted accept) each get +1 for accurate reviews.
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'st',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const a = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    server.curator.acceptProposal(a.proposal_id);
+
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+
+    await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt'],
+      content: {
+        forAnchor: (id) => ({
+          content: `claim ${id}`,
+          quoted_span: { text: 'span', offset: 0 },
+        }),
+      },
+    });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    // Bob's excerpt was assignment-driven, so full weight: +1.
+    const bobRep = await bobClient.queryReputation({ cause_id: cause.id });
+    expect(bobRep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+    // Carol and Dave each voted with the converged outcome → +1.
+    const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
+    expect(carolRep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+    const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
+    expect(daveRep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),

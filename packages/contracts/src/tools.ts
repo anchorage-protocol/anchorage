@@ -201,6 +201,20 @@ export type FetchCalibrationBatchInput = z.infer<typeof FetchCalibrationBatchInp
 export const FetchCalibrationBatchOutput = z.object({ items: z.array(ReviewBatchItem) }).strict();
 export type FetchCalibrationBatchOutput = z.infer<typeof FetchCalibrationBatchOutput>;
 
+// Reputation read. Returns the *caller's own* per-sub-topic scores
+// in a cause. PRD line 248: "Eligibility tiers public; numeric
+// reputation private" — the contributor sees their own raw numbers
+// (otherwise they can't reason about where they sit relative to
+// tier gates), but other contributors see only tiers (which the
+// public read-path will surface through a separate resource once
+// tiers are defined).
+export const QueryReputationInput = z.object({ cause_id: CauseId }).strict();
+export type QueryReputationInput = z.infer<typeof QueryReputationInput>;
+export const ReputationEntry = z.object({ sub_topic_id: SubTopicId, score: z.number() }).strict();
+export type ReputationEntry = z.infer<typeof ReputationEntry>;
+export const QueryReputationOutput = z.object({ entries: z.array(ReputationEntry) }).strict();
+export type QueryReputationOutput = z.infer<typeof QueryReputationOutput>;
+
 // ──── Tool name registry ────
 //
 // The full set of tool names exposed by the MCP server. Useful for the
@@ -224,5 +238,6 @@ export const ToolName = z.enum([
   'query_frontier',
   'query_proposals',
   'fetch_calibration_batch',
+  'query_reputation',
 ]);
 export type ToolName = z.infer<typeof ToolName>;

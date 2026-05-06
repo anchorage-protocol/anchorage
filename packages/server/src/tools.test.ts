@@ -1692,6 +1692,180 @@ describe('tools.castReviewVote', () => {
     expect(f.server.store.proposals.get(proposal_id)?.status).toBe('staged');
   });
 
+  it('credits the proposer when their proposal converges to accepted', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    await f.server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'accept', rationale: 'b' },
+    );
+    await f.server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id, decision: 'accept', rationale: 'c' },
+    );
+    // Contributor-initiated (no assignment_id) → reduced weight (0.5
+    // by default). Default proposer_accepted_gain is 1, so alice gets
+    // 0.5 in her home sub-topic.
+    const { entries } = await f.server.tools.queryReputation(f.caller, {
+      cause_id: f.cause_id,
+    });
+    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, score: 0.5 }]);
+  });
+
+  it('debits the proposer when their proposal converges to rejected', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    await f.server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'reject', rationale: 'b' },
+    );
+    await f.server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id, decision: 'reject', rationale: 'c' },
+    );
+    const { entries } = await f.server.tools.queryReputation(f.caller, {
+      cause_id: f.cause_id,
+    });
+    // -1 * 0.5 = -0.5 (contributor-initiated factor).
+    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, score: -0.5 }]);
+  });
+
+  it('credits accurate reviewers and debits inaccurate ones on convergence', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
+    // Two accepts (bob, carol) → converges to accepted. Dave's reject
+    // is "inaccurate" against the converged outcome, but he can only
+    // vote before convergence — so we have him vote first.
+    await f.server.tools.castReviewVote(
+      { identity_id: dave.id },
+      { proposal_id, decision: 'reject', rationale: 'd' },
+    );
+    await f.server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'accept', rationale: 'b' },
+    );
+    await f.server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id, decision: 'accept', rationale: 'c' },
+    );
+    // Bob and Carol each get +1 (accurate); Dave gets -1 (inaccurate).
+    const { entries: bobE } = await f.server.tools.queryReputation(
+      { identity_id: bob.id },
+      { cause_id: f.cause_id },
+    );
+    expect(bobE).toEqual([{ sub_topic_id: f.sub_topic_id, score: 1 }]);
+    const { entries: carolE } = await f.server.tools.queryReputation(
+      { identity_id: carol.id },
+      { cause_id: f.cause_id },
+    );
+    expect(carolE).toEqual([{ sub_topic_id: f.sub_topic_id, score: 1 }]);
+    const { entries: daveE } = await f.server.tools.queryReputation(
+      { identity_id: dave.id },
+      { cause_id: f.cause_id },
+    );
+    expect(daveE).toEqual([{ sub_topic_id: f.sub_topic_id, score: -1 }]);
+  });
+
+  it('uses full proposer weight when the proposal was assignment-driven', async () => {
+    // End-to-end through the assignment loop: the proposal carries
+    // assignment_id, so contributor_initiated_factor doesn't apply.
+    const f = fixture();
+    // Set up an orphan anchor that will produce an excerpt assignment.
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'parent',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['excerpt'],
+    });
+    const offered = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    if (offered.task.kind !== 'excerpt') throw new Error('expected excerpt');
+    await f.server.tools.acceptAssignment(bobCaller, {
+      assignment_id: offered.assignment_id,
+    });
+    const submitted = await f.server.tools.submitAssignedProposal(bobCaller, {
+      assignment_id: offered.assignment_id,
+      payload: {
+        kind: 'excerpt',
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        parent_anchor_id: offered.task.parent_anchor_id,
+        content: 'span',
+        quoted_span: { text: 'span', offset: 0 },
+      },
+    });
+    // Two reviewers converge it.
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
+    await f.server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id: submitted.proposal_id, decision: 'accept', rationale: 'c' },
+    );
+    await f.server.tools.castReviewVote(
+      { identity_id: dave.id },
+      { proposal_id: submitted.proposal_id, decision: 'accept', rationale: 'd' },
+    );
+    // Bob's proposal was assignment-driven → full weight (1.0), not
+    // 0.5.
+    const { entries } = await f.server.tools.queryReputation(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, score: 1 }]);
+  });
+
+  it('does not move reputation on revise votes', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    await f.server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'revise', rationale: 'needs work' },
+    );
+    // Proposal still staged (revise doesn't count). No rep movement.
+    expect(f.server.store.proposals.get(proposal_id)?.status).toBe('staged');
+    const { entries } = await f.server.tools.queryReputation(f.caller, {
+      cause_id: f.cause_id,
+    });
+    expect(entries).toEqual([]);
+  });
+
   it('rejects an assignment_id pointing to no assignment', async () => {
     const f = fixture();
     const { bobCaller, proposal_id } = await withReviewerAndStaged(f);

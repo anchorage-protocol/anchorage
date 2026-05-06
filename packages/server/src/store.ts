@@ -14,6 +14,7 @@ import type {
   NodeId,
   Proposal,
   ProposalId,
+  Reputation,
   ReviewVote,
   ReviewVoteId,
   SubTopic,
@@ -41,6 +42,11 @@ export class MemoryStore {
   // The composite key keeps lookups O(1) without scanning all records,
   // and set_capacity is naturally an upsert under that key.
   readonly capacities = new Map<`${IdentityId}|${CauseId}`, Capacity>();
+  // Per-(identity, cause, sub_topic) reputation. PRD §Reputation: rep
+  // is anchored at the cause level and refined by sub-topic landing
+  // pattern. The composite key keeps lookups O(1); the values are
+  // updated on convergence in resolveByConvergence.
+  readonly reputations = new Map<`${IdentityId}|${CauseId}|${SubTopicId}`, Reputation>();
   // Server-observed verification metadata (content hashes, eventually
   // span offsets and provenance). Keyed by proposal_id because that is
   // when verification ran; copied onto the materialized node at
