@@ -4,6 +4,7 @@ import {
   type Cause,
   type CauseId,
   type DerivesEdge,
+  type Edge,
   type ExcerptNode,
   type Identity,
   type IdentityId,
@@ -16,10 +17,13 @@ import {
   type ProposeAnchorOutput,
   ProposeExcerptInput,
   type ProposeExcerptOutput,
+  ProposeSupersedesInput,
+  type ProposeSupersedesOutput,
   ProposeSynthesisInput,
   type ProposeSynthesisOutput,
   type SubTopic,
   type SubTopicId,
+  type SupersedesEdge,
   type SynthesisNode,
 } from '@anchorage/contracts';
 import { z } from 'zod';
@@ -149,6 +153,51 @@ export class Server {
       throw new ServerError('invalid_input', `node ${nodeId} is not an anchor`);
     }
     return node;
+  }
+
+  // The cause an existing node lives under, found via its home sub-topic.
+  // Used by tools that take node ids without a redundant cause_id (PRD's
+  // `propose_supersedes`, `propose_membership`, `propose_change_of_home`):
+  // the cause is implicit in the node, and re-passing it would create a
+  // surface for inconsistency.
+  private causeOfNode(node: Node): CauseId {
+    const home = this.store.subTopics.get(node.home_sub_topic_id);
+    if (!home) {
+      throw new ServerError(
+        'invalid_state',
+        `node ${node.id} home sub-topic ${node.home_sub_topic_id} not found`,
+      );
+    }
+    return home.cause_id;
+  }
+
+  // Reject supersedes cycles (PRD §Edges: "Supersedes cycles A→B→C→A are
+  // forbidden by the verification engine"). We walk the existing active
+  // supersedes edges starting from the proposed `to` end and look for the
+  // proposed `from` end. If the new edge would close a cycle, reject.
+  // Linear in the number of supersedes edges; fine for an in-memory store
+  // and the load profile of a single MCP server. When edges move to a
+  // proper store the structure can be precomputed.
+  private supersedesWouldCycle(fromId: NodeId, toId: NodeId): boolean {
+    if (fromId === toId) return true;
+    const successors = new Map<NodeId, NodeId[]>();
+    for (const e of this.store.edges.values()) {
+      if (e.kind !== 'supersedes' || e.status !== 'active') continue;
+      const list = successors.get(e.from) ?? [];
+      list.push(e.to);
+      successors.set(e.from, list);
+    }
+    const seen = new Set<NodeId>();
+    const stack: NodeId[] = [toId];
+    while (stack.length > 0) {
+      const cur = stack.pop() as NodeId;
+      if (cur === fromId) return true;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      const next = successors.get(cur);
+      if (next) stack.push(...next);
+    }
+    return false;
   }
 
   readonly bootstrap = {
@@ -370,6 +419,76 @@ export class Server {
       this.store.proposals.set(proposal.id, proposal);
       return { proposal_id: proposal.id };
     },
+
+    // PRD §Write-path tools: propose_supersedes stages a supersedes edge
+    // from an old node to its replacement. Unlike the other propose_*
+    // tools the input doesn't carry a cause_id — the cause is implicit
+    // in the nodes, and re-passing it would just create a surface for
+    // inconsistency. Both nodes must be active (PRD §Edges line 74:
+    // "the `to` end must be active at proposal time"; we additionally
+    // require the `from` end to be active because superseding an
+    // already-superseded node is meaningless). Cycle prevention runs
+    // here so contributors get a synchronous error rather than a delayed
+    // acceptance failure.
+    proposeSupersedes: async (
+      caller: Caller,
+      input: ProposeSupersedesInput,
+    ): Promise<ProposeSupersedesOutput> => {
+      const parsed = ProposeSupersedesInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+
+      if (parsed.from_node_id === parsed.to_node_id) {
+        throw new ServerError('invalid_input', 'from_node_id and to_node_id must differ');
+      }
+
+      const fromNode = this.store.nodes.get(parsed.from_node_id);
+      if (!fromNode) {
+        throw new ServerError('not_found', `from node not found: ${parsed.from_node_id}`);
+      }
+      if (fromNode.status !== 'active') {
+        throw new ServerError('invalid_state', `from node ${fromNode.id} is ${fromNode.status}`);
+      }
+      const toNode = this.store.nodes.get(parsed.to_node_id);
+      if (!toNode) {
+        throw new ServerError('not_found', `to node not found: ${parsed.to_node_id}`);
+      }
+      if (toNode.status !== 'active') {
+        throw new ServerError('invalid_state', `to node ${toNode.id} is ${toNode.status}`);
+      }
+
+      const fromCause = this.causeOfNode(fromNode);
+      const toCause = this.causeOfNode(toNode);
+      if (fromCause !== toCause) {
+        throw new ServerError(
+          'invalid_input',
+          `supersedes endpoints belong to different causes (${fromCause} vs ${toCause})`,
+        );
+      }
+
+      if (this.supersedesWouldCycle(fromNode.id, toNode.id)) {
+        throw new ServerError(
+          'invalid_input',
+          `supersedes from ${fromNode.id} to ${toNode.id} would create a cycle`,
+        );
+      }
+
+      const now = this.clock.now();
+      const proposal: Proposal = {
+        id: this.idGen.proposalId(),
+        proposer_id: identity.id,
+        status: 'staged',
+        payload: {
+          kind: 'supersedes',
+          from_node_id: fromNode.id,
+          to_node_id: toNode.id,
+          rationale: parsed.rationale,
+        },
+        created_at: now,
+        updated_at: now,
+      };
+      this.store.proposals.set(proposal.id, proposal);
+      return { proposal_id: proposal.id };
+    },
   };
 
   readonly curator = {
@@ -398,6 +517,9 @@ export class Server {
       if (result.node) {
         this.store.nodes.set(result.node.id, result.node);
       }
+      for (const updated of result.nodeUpdates) {
+        this.store.nodes.set(updated.id, updated);
+      }
       for (const edge of result.edges) {
         this.store.edges.set(edge.id, edge);
       }
@@ -405,12 +527,23 @@ export class Server {
     },
   };
 
-  // Convert an accepted proposal into the graph node and edges it
-  // asserts. Anchor and excerpt are handled today; other kinds throw
-  // `invalid_state` until their materialization paths land. Returning
-  // `node: null` is reserved for kinds that don't produce a node at
-  // all (e.g. membership, supersedes — those mutate edges only).
-  private materialize(proposal: Proposal): { node: Node | null; edges: readonly DerivesEdge[] } {
+  // Convert an accepted proposal into the graph mutations it asserts.
+  // Three slots:
+  //   `node`        — a newly created node (anchor / excerpt / synthesis /
+  //                   open_question), or null for kinds that don't
+  //                   create one (supersedes, membership, change_of_home).
+  //   `edges`       — newly created edges (derives or supersedes).
+  //   `nodeUpdates` — existing nodes whose state must be rewritten in
+  //                   place (e.g. supersedes flipping the `from` node to
+  //                   `superseded`; future change_of_home rewriting
+  //                   `home_sub_topic_id`).
+  // Kinds without a materialization path throw `invalid_state` until
+  // their path lands.
+  private materialize(proposal: Proposal): {
+    node: Node | null;
+    edges: readonly Edge[];
+    nodeUpdates: readonly Node[];
+  } {
     const now = this.clock.now();
     if (proposal.payload.kind === 'anchor') {
       const verified = this.store.verifiedRefs.get(proposal.id);
@@ -433,7 +566,7 @@ export class Server {
         external_ref: proposal.payload.external_ref,
         content_hash: verified.content_hash,
       };
-      return { node, edges: [] };
+      return { node, edges: [], nodeUpdates: [] };
     }
     if (proposal.payload.kind === 'excerpt') {
       // PRD §Edges: derives edges are created atomically with their
@@ -468,7 +601,7 @@ export class Server {
         created_by: proposal.proposer_id,
         created_at: now,
       };
-      return { node, edges: [edge] };
+      return { node, edges: [edge], nodeUpdates: [] };
     }
     if (proposal.payload.kind === 'synthesis' || proposal.payload.kind === 'open_question') {
       // All parents must be active at acceptance time. Re-checked
@@ -505,7 +638,51 @@ export class Server {
         created_by: proposal.proposer_id,
         created_at: now,
       }));
-      return { node, edges };
+      return { node, edges, nodeUpdates: [] };
+    }
+    if (proposal.payload.kind === 'supersedes') {
+      // Re-check both endpoints at acceptance: either could have moved
+      // out of `active` between propose and accept. Same defense as the
+      // excerpt-parent re-check. Re-run the cycle detector too — a
+      // concurrent supersedes acceptance could have introduced a path
+      // that wasn't there at propose time.
+      const fromNode = this.store.nodes.get(proposal.payload.from_node_id);
+      if (!fromNode || fromNode.status !== 'active') {
+        throw new ServerError(
+          'invalid_state',
+          `from node ${proposal.payload.from_node_id} is not active at acceptance`,
+        );
+      }
+      const toNode = this.store.nodes.get(proposal.payload.to_node_id);
+      if (!toNode || toNode.status !== 'active') {
+        throw new ServerError(
+          'invalid_state',
+          `to node ${proposal.payload.to_node_id} is not active at acceptance`,
+        );
+      }
+      if (this.supersedesWouldCycle(fromNode.id, toNode.id)) {
+        throw new ServerError(
+          'invalid_state',
+          `supersedes from ${fromNode.id} to ${toNode.id} would create a cycle at acceptance`,
+        );
+      }
+      const edge: SupersedesEdge = {
+        id: this.idGen.edgeId(),
+        kind: 'supersedes',
+        from: fromNode.id,
+        to: toNode.id,
+        status: 'active',
+        created_by: proposal.proposer_id,
+        created_at: now,
+        rationale: proposal.payload.rationale,
+      };
+      // The active-node rule (PRD §Nodes line 69) defines a node as
+      // inactive iff it is the `from` of a supersedes edge. We make
+      // that explicit on the node's status field too — keeping status
+      // and edge state in sync means callers don't have to walk edges
+      // to know whether a node is active.
+      const updated: Node = { ...fromNode, status: 'superseded', updated_at: now };
+      return { node: null, edges: [edge], nodeUpdates: [updated] };
     }
     throw new ServerError(
       'invalid_state',

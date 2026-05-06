@@ -171,6 +171,84 @@ describe('curator.acceptProposal', () => {
     expect(incoming.every((e) => e.kind === 'derives' && e.status === 'active')).toBe(true);
   });
 
+  it('materializes a supersedes edge and flips the from-node to superseded', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'old',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const b = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'new',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    const bId = f.server.curator.acceptProposal(b.proposal_id).node_id;
+    if (!aId || !bId) throw new Error('expected anchors');
+
+    const { proposal_id } = await f.server.tools.proposeSupersedes(f.caller, {
+      from_node_id: aId,
+      to_node_id: bId,
+      rationale: 'b corrects a',
+    });
+    const result = f.server.curator.acceptProposal(proposal_id);
+    // supersedes does not create a node.
+    expect(result.node_id).toBeUndefined();
+
+    const fromNode = f.server.store.nodes.get(aId);
+    expect(fromNode?.status).toBe('superseded');
+    const toNode = f.server.store.nodes.get(bId);
+    expect(toNode?.status).toBe('active');
+
+    const supersedesEdges = [...f.server.store.edges.values()].filter(
+      (e) => e.kind === 'supersedes',
+    );
+    expect(supersedesEdges).toHaveLength(1);
+    expect(supersedesEdges[0]).toMatchObject({
+      kind: 'supersedes',
+      from: aId,
+      to: bId,
+      status: 'active',
+      rationale: 'b corrects a',
+    });
+  });
+
+  it('rejects accepting a supersedes whose from node was superseded between propose and accept', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'old',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const b = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'new',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    const bId = f.server.curator.acceptProposal(b.proposal_id).node_id;
+    if (!aId || !bId) throw new Error('expected anchors');
+
+    const { proposal_id } = await f.server.tools.proposeSupersedes(f.caller, {
+      from_node_id: aId,
+      to_node_id: bId,
+      rationale: 'x',
+    });
+
+    // Simulate a different supersedes path having flipped a inactive
+    // between propose and accept.
+    const aNode = f.server.store.nodes.get(aId);
+    if (!aNode) throw new Error('a missing');
+    f.server.store.nodes.set(aId, { ...aNode, status: 'superseded' });
+
+    expect(() => f.server.curator.acceptProposal(proposal_id)).toThrow(ServerError);
+  });
+
   it('rejects an unknown proposal id', () => {
     const f = fixture();
     try {

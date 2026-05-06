@@ -313,3 +313,156 @@ describe('tools.proposeSynthesis', () => {
     ).rejects.toMatchObject({ code: 'not_found' });
   });
 });
+
+describe('tools.proposeSupersedes', () => {
+  async function withTwoAnchors(f: ReturnType<typeof fixture>) {
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'a',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const b = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'b',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    const bId = f.server.curator.acceptProposal(b.proposal_id).node_id;
+    if (!aId || !bId) throw new Error('expected both anchors');
+    return [aId, bId] as const;
+  }
+
+  it('stages a supersedes proposal between two active nodes', async () => {
+    const f = fixture();
+    const [a, b] = await withTwoAnchors(f);
+    const { proposal_id } = await f.server.tools.proposeSupersedes(f.caller, {
+      from_node_id: a,
+      to_node_id: b,
+      rationale: 'b is the corrected version of a',
+    });
+    const p = f.server.store.proposals.get(proposal_id);
+    if (p?.payload.kind !== 'supersedes') throw new Error('expected supersedes payload');
+    expect(p.payload.from_node_id).toBe(a);
+    expect(p.payload.to_node_id).toBe(b);
+    expect(p.payload.rationale).toBe('b is the corrected version of a');
+    expect(p.status).toBe('staged');
+  });
+
+  it('rejects from === to', async () => {
+    const f = fixture();
+    const [a] = await withTwoAnchors(f);
+    await expect(
+      f.server.tools.proposeSupersedes(f.caller, {
+        from_node_id: a,
+        to_node_id: a,
+        rationale: 'self',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('rejects an unknown from node', async () => {
+    const f = fixture();
+    const [, b] = await withTwoAnchors(f);
+    await expect(
+      f.server.tools.proposeSupersedes(f.caller, {
+        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
+        from_node_id: 'nod_missing' as any,
+        to_node_id: b,
+        rationale: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('rejects when the from node is already superseded', async () => {
+    const f = fixture();
+    const [a, b] = await withTwoAnchors(f);
+    const node = f.server.store.nodes.get(a);
+    if (!node) throw new Error('expected node');
+    f.server.store.nodes.set(a, { ...node, status: 'superseded' });
+    await expect(
+      f.server.tools.proposeSupersedes(f.caller, {
+        from_node_id: a,
+        to_node_id: b,
+        rationale: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it('rejects when endpoints belong to different causes', async () => {
+    const f = fixture();
+    const [a] = await withTwoAnchors(f);
+    const otherCause = f.server.bootstrap.createCause({ name: 'AMR', description: 'x' });
+    const otherSt = f.server.bootstrap.seedSubTopic({
+      cause_id: otherCause.id,
+      name: 'x',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const otherProp = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: otherCause.id,
+      home_sub_topic_id: otherSt.id,
+      content: 'other',
+      external_ref: { kind: 'pmid', value: '99' },
+    });
+    const otherId = f.server.curator.acceptProposal(otherProp.proposal_id).node_id;
+    if (!otherId) throw new Error('expected other anchor');
+    await expect(
+      f.server.tools.proposeSupersedes(f.caller, {
+        from_node_id: a,
+        to_node_id: otherId,
+        rationale: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('rejects a proposal that would close a supersedes cycle', async () => {
+    const f = fixture();
+    const [a, b] = await withTwoAnchors(f);
+    // a → b is fine.
+    const { proposal_id } = await f.server.tools.proposeSupersedes(f.caller, {
+      from_node_id: a,
+      to_node_id: b,
+      rationale: 'first',
+    });
+    f.server.curator.acceptProposal(proposal_id);
+
+    // Now b is the only active end of the chain. A proposal b → a
+    // would re-introduce a (already superseded) and form a cycle once
+    // a is reactivated; even before that the cycle test (b → a → b
+    // via the existing edge) trips. Use a fresh active node to make
+    // the cycle path concrete: c → a, then a → c attempted.
+    const cProp = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'c',
+      external_ref: { kind: 'pmid', value: '3' },
+    });
+    const cId = f.server.curator.acceptProposal(cProp.proposal_id).node_id;
+    if (!cId) throw new Error('expected c');
+
+    // c → b creates a chain c → b alongside the existing a → b.
+    const { proposal_id: cb } = await f.server.tools.proposeSupersedes(f.caller, {
+      from_node_id: cId,
+      to_node_id: b,
+      rationale: 'second',
+    });
+    f.server.curator.acceptProposal(cb);
+
+    // b is still active. b → c would mean b ⇒ c ⇒ b, a cycle.
+    // But b is active and c is now superseded, so the from/to-active
+    // checks would fire first. Reactivate c by hand to expose the
+    // cycle check.
+    const cNode = f.server.store.nodes.get(cId);
+    if (!cNode) throw new Error('c missing');
+    f.server.store.nodes.set(cId, { ...cNode, status: 'active' });
+    await expect(
+      f.server.tools.proposeSupersedes(f.caller, {
+        from_node_id: b,
+        to_node_id: cId,
+        rationale: 'cycle',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+});
