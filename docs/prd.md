@@ -22,7 +22,7 @@ Anchorage is one canonical service layer behind two client surfaces:
                          └─────────────────────────────┘
 ```
 
-- **MCP server** (`mcp.anchorage.science`): primary write-path interface. Contributors, agents, and the simulated populations in the testbed all connect here. Tools are typed; verification is server-side.
+- **MCP server** (`mcp.anchorage.science`): primary write-path interface. Most traffic is agents acting as a human contributor's delegate (see [Identity](#identity)) — connected from any MCP-capable client and pulling assignments during idle time. Direct human contribution and the simulated populations in the testbed connect through the same surface. Tools are typed; verification is server-side.
 - **Web UI** (`anchorage.science`): read-mostly human surface. Browse causes, sub-topics, graphs, frontiers, and manuscript projections. Calls the same canonical service layer.
 - **Service layer**: the trust boundary. Every mutation passes through verification, governance gates, and reputation updates here. Clients are untrusted regardless of identity.
 
@@ -105,13 +105,13 @@ The default contribution path is *assignment-driven*: contributors declare capac
 **Capacity and assignment**
 
 - **`set_capacity`** `{ cause_id, rate, kinds }` → `{ ok }`
-  - Contributor declares availability at the cause level: how often they want to be assigned (rate) and which kinds of work they will accept (`propose_excerpt`, `review`, `propose_synthesis`, etc.). Sub-topic is the system's choice, not the contributor's. Capacity is the only way the system learns availability.
+  - Contributor declares availability at the cause level: a maximum rate (a cap, not a schedule) and which kinds of work they will accept (`propose_excerpt`, `review`, `propose_synthesis`, etc.). Sub-topic is the system's choice, not the contributor's. Assignments are always *pulled* via `request_assignment` — typically by a delegated agent during idle time — never pushed; rate caps how many will be granted in a window. Capacity is the only way the system learns availability.
 - **`request_assignment`** `{ cause_id, kind? }` → `{ assignment_id, task }`
   - Pull a task from the frontier within declared capacity. The system selects across all sub-topics in the cause based on frontier priority (gap urgency, sub-topic activity), expertise fit (where measurable from history), and capacity-balancing. The task is concrete: a specific node-shape to propose, or a specific proposal to review, in a specific sub-topic.
 - **`accept_assignment`** `{ assignment_id }` → `{ ok }` and **`decline_assignment`** `{ assignment_id, reason }` → `{ ok }`
   - Declining individual assignments is non-punitive on its own — a legitimate narrow specialist (e.g., a genetic counselor who works only on Lynch-syndrome questions) declines outside their wheelhouse, and that's fine. What is *not* allowed is opt-in selectivity: capacity is cause-level, not sub-topic-level. Decline patterns are tracked; sustained pattern-declining of specific sub-topics, contributors, or claim classes is an abuse signal handled at the curator layer.
 - **`submit_assigned_proposal`** `{ assignment_id, payload }` → `{ proposal_id }`
-  - Submit work for an assignment. Payload shape matches the task kind (anchor / excerpt / synthesis / supersedes / membership). Verification engine applies as for any proposal.
+  - Submit work for an assignment whose task kind is a proposal (anchor / excerpt / synthesis / supersedes / membership). Payload shape matches the task kind. Verification engine applies as for any proposal. Review-kind assignments are fulfilled via `cast_review_vote` with `assignment_id` set, not through this tool.
 
 **Contributor-initiated proposals** (allowed but weighted lower for reputation):
 
@@ -127,8 +127,8 @@ The default contribution path is *assignment-driven*: contributors declare capac
   - Stages a scope-membership claim that `node_id` is in scope for `sub_topic_id`. Reviewed by the *target* sub-topic's reviewer pool.
 - **`propose_change_of_home`** `{ node_id, new_home_sub_topic_id, rationale }` → `{ proposal_id }`
   - Curator-approved.
-- **`cast_review_vote`** `{ proposal_id, decision, rationale }` → `{ vote_id }`
-  - `decision` is `accept`, `reject`, or `revise`. `rationale` is required and may itself be promoted to a graph node (typically `open_question`) by curators; promoted rationale-nodes pass standard review.
+- **`cast_review_vote`** `{ proposal_id, decision, rationale, assignment_id? }` → `{ vote_id }`
+  - `decision` is `accept`, `reject`, or `revise`. `rationale` is required and may itself be promoted to a graph node (typically `open_question`) by curators; promoted rationale-nodes pass standard review. When `assignment_id` is present, the vote fulfills a review assignment and accrues full assigned-review reputation; without it, the review is contributor-initiated and weighted lower on the same terms as contributor-initiated proposals. This tool is therefore the fulfillment path for review-kind assignments as well as the contributor-initiated review entry point.
 - **`propose_sub_topic`** `{ cause_id, name, description, scope_query }` → `{ proposal_id }`
   - Subject to curator approval in v0.
 
@@ -223,6 +223,7 @@ In Phase 3+: auto-discovery surfaces tractable scope envelopes from graph state;
 The identity model is a requirements sketch in v0; specific tech (OIDC providers, key formats, attestations) is a Phase 1 implementation choice, but the *contract* the rest of the design depends on is fixed here.
 
 - **Bounded identities-per-real-person.** Identity creation has a non-trivial cost — email verification at minimum, third-party OIDC (GitHub, ORCID, institutional SSO) preferred. The cost is tunable; the testbed sweeps it as a parameter. Zero-cost identities are not supported.
+- **Agents act as a human's delegate.** The human is the identity holder; agents are credentialed clients authorized to act on their behalf. Reputation, capacity, calibration outcomes, and accountability all attach to the human, not the agent. A human may bind several agents (a desktop MCP client, a long-running daemon, custom tooling) under the same identity; they all draw from the same per-(cause, sub-topic) reputation pool and the same cause-level capacity declaration. Agent credentials are individually revocable by the human — losing a laptop or retiring a daemon does not require revoking the underlying identity — and curator revocation acts on the human, transitively disabling their agents. From the system's perspective an agent contributing on idle time and a human contributing directly are indistinguishable: both are tool calls authenticated as the same identity, drawing from the same capacity, accruing reputation to the same account. The bounded-identities-per-real-person property is preserved by construction; the agent layer does not multiply identities.
 - **Pseudonymity is supported; anonymity is not.** A contributor may operate under a stable pseudonym; the system retains a binding between the pseudonym and the underlying identity-establishing credentials (email, OIDC subject) that curators can use under documented escalation. The graph and the public surface show the pseudonym; the binding is private.
 - **Named credit on manuscript projections is opt-in.** Pseudonymous credit is allowed, but the project's recommendation is real-name credit for high-impact projections to retain academic legibility. Pseudonymous co-authorship is unusual and contributors should make that choice deliberately.
 - **Revocation.** Identities can be revoked (sybil farms, terms-of-service violations). Revocation invalidates future participation without rewriting graph history; revoked contributions remain in the graph with the revocation flagged.

@@ -37,6 +37,7 @@ These are settled. Challenge them only with strong new evidence, not casual reth
 
 - **Multi-scale graph**: cause → sub-topic → claim. Recruitment runs at the cause; closure runs at the sub-topic; verification runs at the claim.
 - **MCP-first architecture**: the primary write-path interface is an MCP server (`mcp.anchorage.science`). Any MCP-capable client (Claude Desktop, Cursor, custom agents, simulated populations in the testbed) participates without bespoke SDKs. Web UI exists for human browsing of the same backend. Federation between instances is MCP-to-MCP.
+- **Agent-as-delegate identity**: the human is the identity holder; agents are credentialed delegates acting on the human's behalf. Reputation, capacity, and accountability attach to the human, not the agent. One human may bind several agents under the same identity. Bounded-identities-per-real-person is preserved by construction; the agent layer does not multiply identities.
 - **Simulation-first governance**: every governance change CI-checked against simulated adversarial populations before merging. The testbed is permanent infrastructure, not a launch tool. The testbed connects via the same MCP interface real clients use — no stub APIs.
 - **Verifiable-anchor write path**: excerpts must include a quoted span the backend matches against the source; PMID/DOI must resolve. Enforced at the tool layer.
 - **Redundant peer review with calibration**: N reviewers per proposal, salted with calibration items drawn from the graph's own validated history. Reviewer-as-staking.
