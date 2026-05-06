@@ -553,3 +553,79 @@ describe('tools.proposeMembership', () => {
     ).rejects.toMatchObject({ code: 'invalid_state' });
   });
 });
+
+describe('tools.proposeChangeOfHome', () => {
+  async function withAnchor(f: ReturnType<typeof fixture>) {
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const id = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!id) throw new Error('expected anchor');
+    return id;
+  }
+
+  it('stages a change_of_home proposal for a different sub-topic in the same cause', async () => {
+    const f = fixture();
+    const node_id = await withAnchor(f);
+    const { proposal_id } = await f.server.tools.proposeChangeOfHome(f.caller, {
+      node_id,
+      new_home_sub_topic_id: f.other_sub_topic_id,
+      rationale: 'this node is really about screening adherence',
+    });
+    const p = f.server.store.proposals.get(proposal_id);
+    if (p?.payload.kind !== 'change_of_home') throw new Error('expected change_of_home payload');
+    expect(p.payload.node_id).toBe(node_id);
+    expect(p.payload.new_home_sub_topic_id).toBe(f.other_sub_topic_id);
+    expect(p.payload.rationale).toMatch(/screening/);
+    expect(p.status).toBe('staged');
+  });
+
+  it('rejects when the new home equals the current home', async () => {
+    const f = fixture();
+    const node_id = await withAnchor(f);
+    await expect(
+      f.server.tools.proposeChangeOfHome(f.caller, {
+        node_id,
+        new_home_sub_topic_id: f.sub_topic_id,
+        rationale: 'no-op',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('rejects when the new home is in a different cause', async () => {
+    const f = fixture();
+    const node_id = await withAnchor(f);
+    const otherCause = f.server.bootstrap.createCause({ name: 'AMR', description: 'x' });
+    const otherSt = f.server.bootstrap.seedSubTopic({
+      cause_id: otherCause.id,
+      name: 'x',
+      description: 'x',
+      scope_query: 'x',
+    });
+    await expect(
+      f.server.tools.proposeChangeOfHome(f.caller, {
+        node_id,
+        new_home_sub_topic_id: otherSt.id,
+        rationale: 'cross-cause',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('rejects when the node is not active', async () => {
+    const f = fixture();
+    const node_id = await withAnchor(f);
+    const node = f.server.store.nodes.get(node_id);
+    if (!node) throw new Error('node missing');
+    f.server.store.nodes.set(node_id, { ...node, status: 'superseded' });
+    await expect(
+      f.server.tools.proposeChangeOfHome(f.caller, {
+        node_id,
+        new_home_sub_topic_id: f.other_sub_topic_id,
+        rationale: 'x',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+});

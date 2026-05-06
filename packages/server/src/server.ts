@@ -15,6 +15,8 @@ import {
   type ProposalId,
   ProposeAnchorInput,
   type ProposeAnchorOutput,
+  ProposeChangeOfHomeInput,
+  type ProposeChangeOfHomeOutput,
   ProposeExcerptInput,
   type ProposeExcerptOutput,
   ProposeMembershipInput,
@@ -554,6 +556,57 @@ export class Server {
       this.store.proposals.set(proposal.id, proposal);
       return { proposal_id: proposal.id };
     },
+
+    // PRD §Change of home: propose_change_of_home moves a node's home
+    // sub-topic to a different one within the same cause. Rare in
+    // practice — most apparent "wrong sub-topic" cases turn out to be
+    // membership-needed cases, which is why the membership tool is the
+    // first thing contributors should reach for. PRD line 131 marks
+    // this curator-approved; today every proposal is curator-mediated,
+    // and when the review loop lands change_of_home stays on the
+    // curator path while other proposal kinds move to the reviewer
+    // pool.
+    proposeChangeOfHome: async (
+      caller: Caller,
+      input: ProposeChangeOfHomeInput,
+    ): Promise<ProposeChangeOfHomeOutput> => {
+      const parsed = ProposeChangeOfHomeInput.parse(input);
+      const { identity } = resolveCaller(this.store, caller);
+
+      const node = this.store.nodes.get(parsed.node_id);
+      if (!node) {
+        throw new ServerError('not_found', `node not found: ${parsed.node_id}`);
+      }
+      if (node.status !== 'active') {
+        throw new ServerError('invalid_state', `node ${node.id} is ${node.status}`);
+      }
+      const causeId = this.causeOfNode(node);
+      this.requireActiveSubTopicInCause(parsed.new_home_sub_topic_id, causeId, 'new home');
+
+      if (node.home_sub_topic_id === parsed.new_home_sub_topic_id) {
+        throw new ServerError(
+          'invalid_input',
+          `node ${node.id} is already homed in sub-topic ${parsed.new_home_sub_topic_id}`,
+        );
+      }
+
+      const now = this.clock.now();
+      const proposal: Proposal = {
+        id: this.idGen.proposalId(),
+        proposer_id: identity.id,
+        status: 'staged',
+        payload: {
+          kind: 'change_of_home',
+          node_id: node.id,
+          new_home_sub_topic_id: parsed.new_home_sub_topic_id,
+          rationale: parsed.rationale,
+        },
+        created_at: now,
+        updated_at: now,
+      };
+      this.store.proposals.set(proposal.id, proposal);
+      return { proposal_id: proposal.id };
+    },
   };
 
   readonly curator = {
@@ -785,6 +838,42 @@ export class Server {
       const updated: Node = {
         ...node,
         scope_memberships: [...node.scope_memberships, proposal.payload.sub_topic_id],
+        updated_at: now,
+      };
+      return { node: null, edges: [], nodeUpdates: [updated] };
+    }
+    if (proposal.payload.kind === 'change_of_home') {
+      const node = this.store.nodes.get(proposal.payload.node_id);
+      if (!node || node.status !== 'active') {
+        throw new ServerError(
+          'invalid_state',
+          `node ${proposal.payload.node_id} is not active at acceptance`,
+        );
+      }
+      const target = this.store.subTopics.get(proposal.payload.new_home_sub_topic_id);
+      if (!target || target.status !== 'active') {
+        throw new ServerError(
+          'invalid_state',
+          `new home sub-topic ${proposal.payload.new_home_sub_topic_id} is not active at acceptance`,
+        );
+      }
+      if (node.home_sub_topic_id === proposal.payload.new_home_sub_topic_id) {
+        throw new ServerError(
+          'invalid_state',
+          `node ${node.id} is now homed in sub-topic ${proposal.payload.new_home_sub_topic_id}`,
+        );
+      }
+      // PRD §Change of home: "Other memberships are unaffected; the one
+      // exception is that if the new home was previously a scope
+      // membership, it is removed from the membership list" — leaving
+      // the home in scope_memberships would be a redundant duplicate
+      // since the home is implicitly in scope.
+      const newHome = proposal.payload.new_home_sub_topic_id;
+      const filteredMemberships = node.scope_memberships.filter((s) => s !== newHome);
+      const updated: Node = {
+        ...node,
+        home_sub_topic_id: newHome,
+        scope_memberships: filteredMemberships,
         updated_at: now,
       };
       return { node: null, edges: [], nodeUpdates: [updated] };

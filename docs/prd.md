@@ -85,7 +85,7 @@ Memberships are how cross-sub-topic concerns compose without duplication, withou
 
 ### Change of home
 
-Sometimes a node is initially homed in the wrong sub-topic. `propose_change_of_home` moves the home sub-topic to a different one within the same cause, subject to curator approval. Memberships are unaffected. This is a real but rare operation; most apparent "wrong sub-topic" cases turn out to be membership-needed cases instead.
+Sometimes a node is initially homed in the wrong sub-topic. `propose_change_of_home` moves the home sub-topic to a different one within the same cause, subject to curator approval. Other memberships are unaffected; the one exception is that if the new home was previously a scope membership, it is removed from the membership list — the home is implicitly in scope, so leaving it in `scope_memberships` would be a redundant duplicate. This is a real but rare operation; most apparent "wrong sub-topic" cases turn out to be membership-needed cases instead.
 
 ### Manuscript projection
 

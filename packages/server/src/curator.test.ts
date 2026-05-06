@@ -309,6 +309,78 @@ describe('curator.acceptProposal', () => {
     expect(() => f.server.curator.acceptProposal(proposal_id)).toThrow(ServerError);
   });
 
+  it('materializes change_of_home by rewriting home and preserving unrelated memberships', async () => {
+    const f = fixture();
+    const second = f.server.bootstrap.seedSubTopic({
+      cause_id: f.cause_id,
+      name: 'screening-adherence',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const third = f.server.bootstrap.seedSubTopic({
+      cause_id: f.cause_id,
+      name: 'lynch-surveillance',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      memberships: [third.id],
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+
+    const { proposal_id } = await f.server.tools.proposeChangeOfHome(f.caller, {
+      node_id: aId,
+      new_home_sub_topic_id: second.id,
+      rationale: 'misfiled',
+    });
+    const result = f.server.curator.acceptProposal(proposal_id);
+    expect(result.node_id).toBeUndefined();
+
+    const updated = f.server.store.nodes.get(aId);
+    expect(updated?.home_sub_topic_id).toBe(second.id);
+    // PRD §Change of home: memberships unaffected when the new home
+    // wasn't already in the list.
+    expect(updated?.scope_memberships).toEqual([third.id]);
+  });
+
+  it('strips the new home from scope_memberships when promoting an existing member', async () => {
+    const f = fixture();
+    const second = f.server.bootstrap.seedSubTopic({
+      cause_id: f.cause_id,
+      name: 'screening-adherence',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      memberships: [second.id],
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+
+    const { proposal_id } = await f.server.tools.proposeChangeOfHome(f.caller, {
+      node_id: aId,
+      new_home_sub_topic_id: second.id,
+      rationale: 'promoting an existing member',
+    });
+    f.server.curator.acceptProposal(proposal_id);
+
+    const updated = f.server.store.nodes.get(aId);
+    expect(updated?.home_sub_topic_id).toBe(second.id);
+    // The previously-membership-now-home entry is stripped (PRD §Change
+    // of home: home is implicitly in scope, leaving it in
+    // scope_memberships would be a redundant duplicate).
+    expect(updated?.scope_memberships).toEqual([]);
+  });
+
   it('rejects an unknown proposal id', () => {
     const f = fixture();
     try {
