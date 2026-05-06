@@ -22,14 +22,13 @@ A protocol and public instance for **cooperative open research with auditable li
 
 ## Phase awareness
 
-Anchorage is **Phase 0 (design)** as of 2026-05-04. This gates what kind of work is appropriate:
+Anchorage is in concurrent **Phase 0 + Phase 1** as of 2026-05-06. This gates what kind of work is appropriate:
 
-- **Phase 0**: doc work only. No code. No app shells. No "let's prototype" moves.
-- **Phase 1**: adversary testbed. Real graph schema and tools, but contributors are simulated.
+- **Phase 0 + 1 (concurrent)**: design docs and the adversary testbed co-evolve. The testbed uses the real graph schema and real write-path tools; contributors are simulated. Docs and code stay in lockstep — no commit lands with one out of date with the other (see [Conventions](#conventions-for-working-in-this-repo)).
 - **Phase 2**: single-cause public instance with real human contributors.
 - **Phase 3+**: documented in [ROADMAP.md](./ROADMAP.md).
 
-The order is load-bearing. Don't skip ahead — the testbed validates governance before users meet it.
+**The user-exposure boundary between Phase 1 and Phase 2 is what's load-bearing**: no real users meet the system until the testbed runs the full governance loop against the adversary suite and published attack-success-rates pass thresholds. Doc-then-code sequencing is *not* load-bearing; sim-then-prod sequencing is.
 
 ## Load-bearing design commitments
 
@@ -38,7 +37,7 @@ These are settled. Challenge them only with strong new evidence, not casual reth
 - **Multi-scale graph**: cause → sub-topic → claim. Recruitment runs at the cause; closure runs at the sub-topic; verification runs at the claim.
 - **MCP-first architecture**: the primary write-path interface is an MCP server (`mcp.anchorage.science`). Any MCP-capable client (Claude Desktop, Cursor, custom agents, simulated populations in the testbed) participates without bespoke SDKs. Web UI exists for human browsing of the same backend. Federation between instances is MCP-to-MCP.
 - **Agent-as-delegate identity**: the human is the identity holder; agents are credentialed delegates acting on the human's behalf. Reputation, capacity, and accountability attach to the human, not the agent. One human may bind several agents under the same identity. Bounded-identities-per-real-person is preserved by construction; the agent layer does not multiply identities.
-- **Simulation-first governance**: every governance change CI-checked against simulated adversarial populations before merging. The testbed is permanent infrastructure, not a launch tool. The testbed connects via the same MCP interface real clients use — no stub APIs.
+- **Simulation-first governance**: every governance change CI-checked against simulated adversarial populations before merging. The testbed is permanent infrastructure, not a launch tool. **Sim and prod are by-construction indistinguishable from the system's perspective** — same MCP interface, same identity model, same auth, same verification, same reputation, same governance state machine. The only difference is who is on the other end of the connection. No `if (sim) ...` branching in the codebase, ever. This is what lets testbed results transfer to production by construction; without it the testbed is a fiction.
 - **Verifiable-anchor write path**: excerpts must include a quoted span the backend matches against the source; PMID/DOI must resolve. Enforced at the tool layer.
 - **Redundant peer review with calibration**: N reviewers per proposal, salted with calibration items drawn from the graph's own validated history. Reviewer-as-staking.
 - **Reputation per-(cause, sub-topic)**: anchored at cause, refined by sub-topic. Non-transferable, non-monetizable, no token.
@@ -49,6 +48,8 @@ These are settled. Challenge them only with strong new evidence, not casual reth
 
 ## Conventions for working in this repo
 
+- **Improve the repo proactively.** When you spot a solid opportunity — a contradiction between docs, an underspecified load-bearing point, prose hiding an ambiguity a careful reader would catch, a section out of step with a more recent commitment — flag it and, if the fix fits the current phase, do it. Don't wait to be asked. The bar is "solid opportunity," not "any nit"; load-bearing commitments aren't casually relitigated, and improvements stay inside the current phase's allowed work. When unsure about scope, surface the observation rather than acting silently. This applies to every agent that ever inspects this repo, not just the current session.
+- **Docs and code never drift apart.** Every commit that changes a contract (data model, tool surface, governance rule, parameter range, identity model) updates both the docs and the code in the same commit. The docs are the spec, not retrospective documentation; a commit that updates one without the other is a bug. This is what makes concurrent Phase 0 + 1 development safe — without lockstep discipline, "concurrent" degenerates into "code is truth, docs are aspirational."
 - **Doc edits go to `main` directly** when made by the maintainer; no PR ceremony for design-doc work. PRs are for external contributions.
 - **Commits are DCO-signed** (`git commit -s`).
 - **No emojis in repo files** unless explicitly requested.

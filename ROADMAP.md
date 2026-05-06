@@ -6,27 +6,29 @@ The roadmap is a living document. Phases will move; some will split or merge. Wh
 
 ---
 
-## Phase 0 — Design (current)
+## Phase 0 — Design (current, concurrent with Phase 1)
 
 **Goal:** A coherent design document set that the next person to read can decide *in ten minutes* whether they want to be involved.
+
+**Concurrency.** Phase 0 and Phase 1 run concurrently. Doc work and testbed work co-evolve, with the docs-never-drift discipline (see [CLAUDE.md](./CLAUDE.md)) keeping them in lockstep — every commit that touches a contract updates both. Phase 0 finishes when the docs stop moving under their own pressure; testbed work continues into Phase 1's exit.
 
 **Artifacts:**
 
 - [README.md](./README.md) — elevator pitch, mental model, status.
 - [docs/manifesto.md](./docs/manifesto.md) — why this exists, why now, why this shape.
-- [docs/governance.md](./docs/governance.md) — contribution norms, review responsibilities (skeleton; expanded in Phase 0.1).
+- [docs/governance.md](./docs/governance.md) — contribution norms, review responsibilities.
 - [docs/prd.md](./docs/prd.md) — technical north star: data model, governance machinery, calibration, credit, adversary testbed.
 - [docs/seed-topic.md](./docs/seed-topic.md) — first cause for the public instance, starter sub-topics, and rationale.
 
-**Exit criterion:** the docs survive their first serious adversarial review by an outside expert.
+**Exit criterion:** the docs are stable enough that the testbed builds from them without surfacing further contradictions or underspecified load-bearing points. Adversarial review by capable models acts as a continuous pre-screen; outside-expert and friend review are welcome but not gating.
 
 ---
 
-## Phase 1 — Adversary testbed
+## Phase 1 — Adversary testbed (concurrent with Phase 0)
 
 **Goal:** A simulation harness that runs the full governance regime against a synthetic adversarial population, with published results.
 
-This is the unique technical asset of Anchorage and the cheapest credible artifact we can produce. It is built before any user-facing code.
+This is the unique technical asset of Anchorage and the cheapest credible artifact we can produce. **The exit from Phase 1 is the user-exposure gate** — no real users meet Anchorage until this phase's exit criterion is met. Phase 1 work runs concurrently with Phase 0 doc work.
 
 **Scope:**
 
@@ -96,4 +98,4 @@ This is the unique technical asset of Anchorage and the cheapest credible artifa
 
 ## Status
 
-Phase 0, week 1.
+Phase 0 + Phase 1, week 1 (concurrent). Design docs settled enough to begin scaffolding the testbed; the two co-evolve from here.
