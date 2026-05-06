@@ -99,6 +99,8 @@ The *projection config* is itself a governance artifact, not a private editorial
 
 The MCP server exposes a small, verification-heavy set of tools. The minimum write surface is:
 
+A separate **admin surface** — not exposed as MCP tools — covers the curator-only operations the contributor flow assumes already happened: minting an identity (Phase 1: by curator action; Phase 2+: behind whatever identity-cost mechanism is set, see [Identity](#identity)), binding agent credentials to it, creating a cause, and seeding sub-topics. These are not MCP tools because they are not contributor actions; making them tools would either require a privileged-tool concept (which the testbed would then have to teach its synthetic populations not to call) or open a sybil/cause-spam vector. The same operations are how the testbed sets up scenarios — sim and prod use the same admin surface, by the same indistinguishability rule that governs the tool surface.
+
 ### Write-path tools
 
 The default contribution path is *assignment-driven*: contributors declare capacity at the **cause** level (not the sub-topic level — sub-topic granularity would reopen the laundering vector by letting contributors cherry-pick easy sub-topics), the system draws assignments from the frontier across all sub-topics in the cause (gap-closing tasks: orphan anchors needing excerpts, syntheses needing parents, contested claims needing review), and reputation accrues on assigned work. A contributor-initiated path exists but with weaker rep weighting (see [Reputation](#reputation)).
