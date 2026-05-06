@@ -11,3 +11,12 @@ export {
   type HonestStrongResult,
   runHonestStrong,
 } from './archetypes/honest-strong.js';
+export {
+  acceptAllDecider,
+  type HonestReviewerAction,
+  type HonestReviewerConfig,
+  type HonestReviewerResult,
+  type ReviewDecider,
+  type ReviewDecisionWithRationale,
+  runHonestReviewer,
+} from './archetypes/honest-reviewer.js';

@@ -1,4 +1,10 @@
-import { AnchorageClient, type ContentProvider, runHonestStrong } from '@anchorage/testbed';
+import {
+  AnchorageClient,
+  type ContentProvider,
+  acceptAllDecider,
+  runHonestReviewer,
+  runHonestStrong,
+} from '@anchorage/testbed';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it } from 'vitest';
@@ -160,6 +166,98 @@ describe('testbed: honest-strong archetype', () => {
     expect(
       [...server.store.proposals.values()].filter((p) => p.payload.kind === 'excerpt'),
     ).toHaveLength(0);
+  });
+
+  it('drives proposal → reviewer-pool review → convergent merge end to end', async () => {
+    // The Phase 1 thesis lives or dies on this scenario: honest
+    // proposers + honest reviewers + the convergent-vote machinery
+    // close the loop without curator action. Two reviewers with the
+    // default threshold of 2 should auto-accept each excerpt the
+    // proposer submits.
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'st',
+      description: 'x',
+      scope_query: 'x',
+    });
+    // Two orphan anchors waiting for excerpts.
+    for (let i = 1; i <= 2; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) => ({
+        content: `claim from ${anchorId}`,
+        quoted_span: { text: 'span', offset: 0 },
+      }),
+    };
+
+    // Bob (proposer) and two reviewers (carol, dave). Each gets
+    // their own MCP session — same architecture a multi-tenant
+    // production deployment would use.
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+
+    // Bob proposes excerpts. The two anchor-orphans drain into two
+    // staged excerpt proposals.
+    const proposerResult = await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+    expect(proposerResult.actions.filter((a) => a.kind === 'submitted')).toHaveLength(2);
+
+    // Carol and Dave each pull review assignments. With threshold 2,
+    // two accepts on each proposal should converge it.
+    const carolResult = await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    const daveResult = await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    // Each reviewer voted on both excerpts.
+    const carolVotes = carolResult.actions.filter((a) => a.kind === 'voted');
+    const daveVotes = daveResult.actions.filter((a) => a.kind === 'voted');
+    expect(carolVotes).toHaveLength(2);
+    expect(daveVotes).toHaveLength(2);
+
+    // Both excerpts converged to accepted; both excerpt nodes were
+    // materialized along with their derives edges.
+    const excerptProposals = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    expect(excerptProposals).toHaveLength(2);
+    expect(excerptProposals.every((p) => p.status === 'accepted')).toBe(true);
+    const excerptNodes = [...server.store.nodes.values()].filter((n) => n.kind === 'excerpt');
+    expect(excerptNodes).toHaveLength(2);
+    const derivesEdges = [...server.store.edges.values()].filter((e) => e.kind === 'derives');
+    expect(derivesEdges).toHaveLength(2);
   });
 
   it('surfaces typed error codes through AnchorageClientError', async () => {
