@@ -2658,6 +2658,147 @@ describe('testbed: honest-strong archetype', () => {
     expect(daveVote?.decision).toBe('reject');
   });
 
+  it('decline-pattern projection surfaces a reviewer who only declines outside their preferred shape', async () => {
+    // PRD §Adversary testbed names "decline-pattern abuse" as a
+    // distinct vector: declining everything outside the adversary's
+    // preferred sub-topic to approximate selectivity even though
+    // capacity is cause-level. The defense PRD commits to is
+    // "decline-tracking + curator escalation": the system records
+    // decline reasons (already wired at the assignment surface) and
+    // the curator surface projects per-(cause, reviewer) decline
+    // rates so a curator can investigate when a pattern surfaces.
+    //
+    // This test wires the projection end-to-end. Dave declines any
+    // excerpt about "no effect" (a one-line stand-in for "outside
+    // my preferred shape" — the effective signal is the same: high
+    // decline rate within a cause). Erin accepts everything. Both
+    // are offered assignments via the standard pull loop. The
+    // curator-side projection ranks Dave at the top by decline
+    // rate; Erin's rate is zero. The min_rate filter shows the
+    // intended use — surface only patterns above a curator-chosen
+    // threshold.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    // Three "works" excerpts under paper 1, three "no effect"
+    // excerpts under paper 2. Six staged review-tasks total.
+    for (let i = 0; i < 3; i++) {
+      await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor2Node.id,
+        content: `treatment X has no effect for stage IV ${i}`,
+        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+      });
+    }
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erinClient = await wireArchetype(server, erin.id);
+    const daveClient = await wireArchetype(server, dave.id);
+
+    // Erin runs first, accepts everything.
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 10,
+      decide: acceptAllDecider,
+    });
+
+    // Dave's decline pattern: declines anything mentioning "no
+    // effect" (returns null from decide → archetype calls
+    // decline_assignment with reason "outside expertise"). Accepts
+    // the rest.
+    const decliner: import('@anchorage/testbed').ReviewDecider = {
+      decide: (payload) => {
+        if ('content' in payload && payload.content.includes('no effect')) return null;
+        return { decision: 'accept', rationale: 'spot-checked, looks correct' };
+      },
+    };
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 10,
+      decide: decliner,
+    });
+
+    // Curator-side projection: per-(cause, reviewer) decline rates,
+    // sorted by rate desc.
+    const patterns = server.curator.declinePatterns(cause.id);
+    expect(patterns).toHaveLength(2);
+    const davePattern = patterns.find((p) => p.identity_id === dave.id);
+    const erinPattern = patterns.find((p) => p.identity_id === erin.id);
+    expect(davePattern).toBeDefined();
+    expect(erinPattern).toBeDefined();
+    // Dave was offered all six excerpts and declined the three
+    // "no effect" ones. Decline rate 0.5.
+    expect(davePattern?.offers).toBeGreaterThanOrEqual(3);
+    expect(davePattern?.declines).toBe(3);
+    expect(davePattern?.decline_rate).toBeGreaterThan(0);
+    // Erin declined nothing.
+    expect(erinPattern?.declines).toBe(0);
+    expect(erinPattern?.decline_rate).toBe(0);
+    // Sorted: Dave first (higher rate).
+    expect(patterns[0]?.identity_id).toBe(dave.id);
+
+    // The min_rate filter cuts Erin out. The curator uses this
+    // filter to surface only patterns worth investigating.
+    const filtered = server.curator.declinePatterns(cause.id, { min_rate: 0.3 });
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]?.identity_id).toBe(dave.id);
+
+    // The min_offers filter prevents small-sample false positives.
+    // Setting min_offers above Dave's offer count hides him; below,
+    // he surfaces. The exact threshold a curator uses is
+    // operationally private (PRD §Verification engine, Rate limits and abuse signals).
+    const tooHigh = server.curator.declinePatterns(cause.id, { min_offers: 999 });
+    expect(tooHigh).toHaveLength(0);
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),

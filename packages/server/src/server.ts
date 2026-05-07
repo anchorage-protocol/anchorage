@@ -2067,6 +2067,75 @@ export class Server {
     // proposal itself is marked accepted because the curator has
     // resolved it — `proposed` is a SubTopic state, not a Proposal
     // state. Only sub_topic-kind proposals are deferrable.
+    // Decline-pattern projection (PRD §Adversary testbed: "Decline-
+    // pattern abuse — declining everything outside the adversary's
+    // preferred sub-topic ... Decline-tracking + curator escalation
+    // handle this"). Per-(cause, reviewer) decline counts and rates,
+    // sorted by rate descending. Curator-side surface: PRD commits to
+    // pattern-decline as an abuse signal handled at the curator layer
+    // (PRD §Verification engine, Rate limits and abuse signals — also referenced from
+    // decline_assignment), and the "specific signals are operationally
+    // private" line keeps the threshold and exact projection shape out
+    // of the public API. Caller-passed `min_offers` filters out
+    // small-sample noise; `min_rate` filters out reviewers who decline
+    // occasionally for legitimate reasons. Default min_offers=3 (below
+    // which decline-rate is meaningless) and min_rate=0 (return
+    // everyone above the offer floor; the curator decides what
+    // constitutes a pattern).
+    declinePatterns: (
+      causeId: CauseId,
+      options?: { min_offers?: number; min_rate?: number },
+    ): Array<{
+      identity_id: IdentityId;
+      offers: number;
+      declines: number;
+      decline_rate: number;
+    }> => {
+      const minOffers = options?.min_offers ?? 3;
+      const minRate = options?.min_rate ?? 0;
+      const perReviewer = new Map<IdentityId, { offers: number; declines: number }>();
+      for (const a of this.store.assignments.values()) {
+        // Cause is on the task for propose-kind assignments and on
+        // the targeted proposal's home sub-topic for review-kind
+        // assignments. Skip assignments whose cause can't be resolved
+        // (orphaned by a deleted proposal — defensive only; v0
+        // proposals are not deleted).
+        let aCauseId: CauseId | undefined;
+        if (a.task.kind === 'review') {
+          const p = this.store.proposals.get(a.task.proposal_id);
+          aCauseId = p ? this.locateProposalForReview(p)?.cause_id : undefined;
+        } else {
+          aCauseId = a.task.cause_id;
+        }
+        if (aCauseId !== causeId) continue;
+        let rec = perReviewer.get(a.contributor_id);
+        if (!rec) {
+          rec = { offers: 0, declines: 0 };
+          perReviewer.set(a.contributor_id, rec);
+        }
+        rec.offers += 1;
+        if (a.status === 'declined') rec.declines += 1;
+      }
+      const result: Array<{
+        identity_id: IdentityId;
+        offers: number;
+        declines: number;
+        decline_rate: number;
+      }> = [];
+      for (const [identity_id, { offers, declines }] of perReviewer) {
+        if (offers < minOffers) continue;
+        const decline_rate = declines / offers;
+        if (decline_rate < minRate) continue;
+        result.push({ identity_id, offers, declines, decline_rate });
+      }
+      // Stable sort: rate desc, then identity_id asc as tiebreaker.
+      result.sort((a, b) => {
+        if (b.decline_rate !== a.decline_rate) return b.decline_rate - a.decline_rate;
+        return a.identity_id < b.identity_id ? -1 : a.identity_id > b.identity_id ? 1 : 0;
+      });
+      return result;
+    },
+
     deferSubTopic: (proposalId: ProposalId): { sub_topic_id: SubTopicId } => {
       const proposal = this.store.proposals.get(proposalId);
       if (!proposal) {
