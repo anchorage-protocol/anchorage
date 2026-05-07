@@ -1243,6 +1243,176 @@ describe('testbed: honest-strong archetype', () => {
     expect(Math.max(carolScore, daveScore)).toBeGreaterThan(erinScore);
   });
 
+  it('pool-size scaling closes the calibration-aware coalition with sufficient honest reviewers', async () => {
+    // PRD line 195: convergence and divergence thresholds are claim-
+    // class-aware; high-stakes classes draw larger pools and tighter
+    // thresholds. The previous test surfaces the standing open vector:
+    // a 2-of-3 calibration-aware coalition bypasses both calibration
+    // defenses against a single honest reviewer at votes_to_X = 2.
+    // This test is the regression handle on the pool-size lever:
+    // raise votes_to_X to 3 and add a third and fourth honest
+    // reviewer, and the same coalition can no longer drive a
+    // bias-aligned suppression — the bias-misaligned excerpt
+    // converges to accepted under honest-majority weight rather than
+    // staying staged or flipping rejected.
+    //
+    // What the lever does: at threshold N, a coalition of size < N
+    // cannot solo-drive a convergence on either side. The minimum
+    // honest-reviewer count to beat a coalition of size K on the
+    // suppression vector is K+1 — three honest votes outpace two
+    // coalition rejects when the threshold is 3. This is the third-
+    // honest-reviewer effect named in the convergence-aware-defense
+    // commit's milestones.
+    //
+    // What the lever doesn't do: it doesn't help on small sub-topics
+    // where the eligible pool can't furnish K+1 honest reviewers
+    // (PRD line 311 names this directly — "how the regime degrades
+    // on small sub-topics where the floor isn't reached"). And the
+    // assignment-time stratification work that closes that
+    // degradation is still the next defense target.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 3,
+        votes_to_reject: 3,
+        calibration_inject_every_n: 2,
+        calibration_aware_convergence: true,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    for (let i = 1; i <= 2; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) =>
+        anchorId.endsWith('1') || anchorId.endsWith('a')
+          ? {
+              content: 'treatment X works for stage III',
+              quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+            }
+          : {
+              content: 'treatment X has no effect for stage IV',
+              quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+            },
+    };
+    await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    // Run the first honest reviewer. Then the coalition runs (so they
+    // get to vote on real proposals before convergence happens). Then
+    // the remaining honest reviewers, who carry the no-effect excerpt
+    // past threshold despite the coalition's reject votes.
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    const calAwareBiased = payloadBiasedDecider({
+      acceptIf: (payload) =>
+        'content' in payload &&
+        (!payload.content.includes('treatment') || payload.content.includes('works')),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+
+    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+    const grace = server.bootstrap.mintIdentity({ display_name: 'grace' });
+    const frankClient = await wireArchetype(server, frank.id);
+    const graceClient = await wireArchetype(server, grace.id);
+    await runHonestReviewer(frankClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(graceClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    // Headline: both excerpts converge to accepted. The coalition's
+    // 2 reject votes on no-effect cannot drive convergence past the
+    // threshold of 3, and the three honest accepts (erin + frank +
+    // grace) carry no-effect to acceptance. Compare to the previous
+    // test where the same coalition flipped no-effect to rejected.
+    const excerpts = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    const works = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('works'),
+    );
+    const noEffect = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('no effect'),
+    );
+    expect(works?.status).toBe('accepted');
+    expect(noEffect?.status).toBe('accepted');
+
+    // Both excerpts materialize as nodes. The previous test asserts
+    // exactly one excerpt node (the bias-aligned one); this test
+    // asserts the suppressed-excerpt baseline does not return.
+    const excerptNodes = [...server.store.nodes.values()].filter((n) => n.kind === 'excerpt');
+    expect(excerptNodes).toHaveLength(2);
+
+    // Reputation: honest dominance restored. Erin votes accurately
+    // on both convergences and accumulates calibration passes; the
+    // coalition splits — accurate on works, inaccurate on no-effect.
+    // The honest leader strictly dominates each coalition member.
+    const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
+    const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
+    const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
+    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    expect(erinScore).toBeGreaterThan(carolScore);
+    expect(erinScore).toBeGreaterThan(daveScore);
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
