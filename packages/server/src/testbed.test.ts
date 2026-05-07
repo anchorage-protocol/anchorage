@@ -3,6 +3,7 @@ import {
   type ContentProvider,
   type HallucinationFabricator,
   acceptAllDecider,
+  payloadBiasedDecider,
   rejectAllDecider,
   runHallucinator,
   runHonestReviewer,
@@ -637,6 +638,148 @@ describe('testbed: honest-strong archetype', () => {
     expect(
       [...server.store.proposals.values()].filter((p) => p.payload.kind === 'excerpt'),
     ).toHaveLength(1);
+  });
+
+  it('surfaces the strategic-coalition attack: bias flips both convergence and rep', async () => {
+    // PRD adversary taxonomy line 306: a strategic adversary biases
+    // the graph toward outcome X. Line 309: a coalition is N of them
+    // sharing the bias. With pure-vote convergence and reputation
+    // tracked against the converged outcome, a 2-of-3 coalition
+    // wins both ledgers — the well-grounded honest excerpt is
+    // suppressed AND the honest reviewer is punished for voting
+    // honestly. This is the open attack surface PRD names; later
+    // phases close it via calibration (line 304: "Lazy. Reviewer
+    // that votes without reading. Should be caught by calibration")
+    // by seeding batches with proposals of known ground truth, so
+    // the strategic adversary's bias visibly diverges from the
+    // calibrated outcome rather than just from honest reviewers'
+    // votes. This test is the regression handle on the pre-
+    // calibration state — a defense that closes the surface should
+    // make this scenario fail.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    for (let i = 1; i <= 2; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+
+    // Bob is the honest proposer. Both excerpts are well-grounded:
+    // verbatim spans from the source, content honestly summarizes
+    // each finding. The system should treat both equivalently.
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) =>
+        anchorId.endsWith('1') || anchorId.endsWith('a')
+          ? {
+              content: 'treatment X works for stage III',
+              quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+            }
+          : {
+              content: 'treatment X has no effect for stage IV',
+              quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+            },
+    };
+    await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    // Erin is the honest reviewer — accepts well-grounded claims
+    // regardless of finding direction. She runs first, voting on
+    // both excerpts; neither converges yet (1 accept each, threshold
+    // 2). Then the strategic coalition runs.
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    // The coalition shares one biased decider: accept findings that
+    // claim treatment X works, reject findings that don't. Both
+    // strategics see both excerpts (assignment is system-driven —
+    // no pre-arrangement; the leverage is vote bias, not selection).
+    const biased = payloadBiasedDecider({
+      acceptIf: (payload) => 'content' in payload && payload.content.includes('works'),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    await runHonestReviewer(carolClient, { cause_id: cause.id, rate: 5, decide: biased });
+    await runHonestReviewer(daveClient, { cause_id: cause.id, rate: 5, decide: biased });
+
+    // Convergence: excerpt-works gets 3 accepts (Erin + 2 strategics)
+    // → accepted. Excerpt-no-effect gets 1 accept (Erin) + 2 rejects
+    // (strategics) → rejected. The well-grounded "no effect" finding
+    // is suppressed.
+    const excerpts = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    expect(excerpts).toHaveLength(2);
+    const works = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('works'),
+    );
+    const noEffect = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('no effect'),
+    );
+    expect(works?.status).toBe('accepted');
+    expect(noEffect?.status).toBe('rejected');
+
+    // Reputation: Erin is at zero net (+1 from the accepted "works",
+    // -1 from the rejected "no-effect" because her accept was
+    // inaccurate against the converged reject). Despite voting
+    // honestly on both well-grounded excerpts, the system credits
+    // her with nothing.
+    const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
+    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    expect(erinScore).toBe(0);
+
+    // The strategic pair both come out positive — they voted with
+    // the converged outcome on every excerpt they saw, so every
+    // vote was "accurate." The coalition gained rep from suppressing
+    // valid work.
+    const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
+    const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    expect(carolScore).toBeGreaterThan(0);
+    expect(daveScore).toBeGreaterThan(0);
+
+    // Materialization: only the bias-aligned excerpt has a node;
+    // the suppressed one doesn't.
+    const excerptNodes = [...server.store.nodes.values()].filter((n) => n.kind === 'excerpt');
+    expect(excerptNodes).toHaveLength(1);
+    expect(excerptNodes[0]?.content).toContain('works');
   });
 
   it('surfaces typed error codes through AnchorageClientError', async () => {

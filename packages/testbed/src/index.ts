@@ -16,6 +16,8 @@ export {
   type HonestReviewerAction,
   type HonestReviewerConfig,
   type HonestReviewerResult,
+  payloadBiasedDecider,
+  type PayloadBiasedDeciderConfig,
   rejectAllDecider,
   type ReviewDecider,
   type ReviewDecisionWithRationale,

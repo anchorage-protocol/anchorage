@@ -64,6 +64,39 @@ export const rejectAllDecider: ReviewDecider = {
   decide: () => ({ decision: 'reject', rationale: 'declined as out of scope' }),
 };
 
+// Payload-biased decider: votes accept when `acceptIf(payload)` is
+// true, reject otherwise. The strategic-adversary archetype (PRD
+// line 306 — "hidden-objective model — instructed to bias the graph
+// toward outcome X while passing calibration") is built from this
+// primitive: the predicate is the hidden objective. Coalitions are
+// just N reviewers sharing the same predicate — assignment is
+// system-driven so the coalition's leverage is vote bias, not vote
+// selection (PRD line 287: "Coalition pre-arrangement closed by
+// construction").
+//
+// The rationale strings are surfaced over the wire and visible to
+// reviewers and curators. A real strategic adversary would phrase
+// rationales innocuously; the configurable strings let scenarios
+// model that. Calibration's job (Phase-2 work) is to detect bias
+// despite innocuous rationales by seeding the batch with proposals
+// of known ground truth.
+export interface PayloadBiasedDeciderConfig {
+  acceptIf: (payload: ProposalPayload) => boolean;
+  rationaleAccept?: string;
+  rationaleReject?: string;
+}
+
+export function payloadBiasedDecider(config: PayloadBiasedDeciderConfig): ReviewDecider {
+  const accept = config.rationaleAccept ?? 'aligned with my read of the literature';
+  const reject = config.rationaleReject ?? 'inconsistent with my read of the literature';
+  return {
+    decide: (payload) =>
+      config.acceptIf(payload)
+        ? { decision: 'accept', rationale: accept }
+        : { decision: 'reject', rationale: reject },
+  };
+}
+
 export async function runHonestReviewer(
   client: AnchorageClient,
   config: HonestReviewerConfig,
