@@ -2456,6 +2456,208 @@ describe('testbed: honest-strong archetype', () => {
     expect(carolVote?.decision).toBe('reject');
   });
 
+  it('mixed-strategy coalition exploits the gap between agreement and anti-correlation thresholds', async () => {
+    // The natural adaptation against the agreement+anti-correlation
+    // pair of cluster signals: don't agree on every shared proposal
+    // (defeats agreement), don't disagree on every shared proposal
+    // either (defeats anti-correlation). Mix. With both thresholds
+    // at 1.0, any non-perfect mix sits below both and evades the
+    // cluster primitive entirely.
+    //
+    // The coalition needs to *look like* two reviewers who happen to
+    // disagree some of the time and agree some of the time — the
+    // statistical signature of two mostly-independent reviewers.
+    // Fifty-fifty agreement on shared priming (2 agreed, 2 disagreed
+    // out of 4) lights up neither metric at threshold 1.0. The pair
+    // holds singleton strata, the cross-stratum draw rule has nothing
+    // to enforce, and both members vote on the contested item.
+    //
+    // Headline: contested converges *rejected*. The bias-suppression
+    // vector reopens against the v0 stratification regime, including
+    // its anti-correlation refinement. Closing this gap requires a
+    // signal that doesn't reduce to a single agreement/disagreement
+    // ratio — calibration-item-specific agreement (where ground
+    // truth is known) or payload-feature vote patterns (clustering
+    // on what the pair votes about, not just whom they agree with).
+    // Both are named in the PRD as the next testbed targets on this
+    // seam.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        stratification_enabled: true,
+        // Both thresholds at 1.0: catches perfect agreement and
+        // perfect decorrelation, leaves the mix in between exposed.
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_anti_correlation_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erinClient = await wireArchetype(server, erin.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    for (const c of [{ identity_id: carol.id }, { identity_id: dave.id }]) {
+      await server.tools.setCapacity(c, {
+        cause_id: cause.id,
+        rate: 5,
+        kinds: ['review'],
+      });
+    }
+
+    // PRIMING with mixed strategy. Four "works" priming proposals.
+    // Carol+Dave's vote pattern: (accept, accept), (accept, reject),
+    // (reject, accept), (reject, reject). Shared = 4, agreed = 2
+    // (positions 0 and 3), disagreed = 2 (positions 1 and 2).
+    // Agreement ratio 0.5 < 1.0 (no positive edge). Disagreement
+    // ratio 0.5 < 1.0 (no negative edge). They sit in singleton
+    // strata.
+    const carolDavePattern: Array<['accept' | 'reject', 'accept' | 'reject']> = [
+      ['accept', 'accept'],
+      ['accept', 'reject'],
+      ['reject', 'accept'],
+      ['reject', 'reject'],
+    ];
+    for (let i = 0; i < carolDavePattern.length; i++) {
+      const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      const pattern = carolDavePattern[i];
+      if (!pattern) throw new Error('pattern out of range');
+      const [carolVote, daveVote] = pattern;
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        {
+          proposal_id: excerpt.proposal_id,
+          decision: carolVote,
+          rationale:
+            carolVote === 'accept'
+              ? 'consistent with my read of the literature'
+              : 'underpowered, methodological concerns',
+        },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: dave.id },
+        {
+          proposal_id: excerpt.proposal_id,
+          decision: daveVote,
+          rationale:
+            daveVote === 'accept'
+              ? 'consistent with my read of the literature'
+              : 'underpowered, methodological concerns',
+        },
+      );
+      const after = server.store.proposals.get(excerpt.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(excerpt.proposal_id);
+      }
+    }
+
+    // CONTESTED: the no-effect excerpt the coalition wants to suppress.
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    const calAwareBiased = payloadBiasedDecider({
+      acceptIf: (payload) =>
+        'content' in payload &&
+        (!payload.content.includes('treatment') || payload.content.includes('works')),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    // Carol runs first, votes reject on contested.
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+    // Dave runs. Cluster signal silent (mixed pattern below both
+    // thresholds), so the cross-stratum gate has nothing to enforce.
+    // Dave is routed onto the contested slot and votes reject —
+    // pushing the tally to 2 rejects, which converges reject.
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+
+    const target = server.store.proposals.get(contested.proposal_id);
+    expect(target?.status).toBe('rejected');
+    const contestedVotes = [...server.store.reviewVotes.values()].filter(
+      (v) => v.proposal_id === contested.proposal_id,
+    );
+    expect(contestedVotes).toHaveLength(3);
+    const erinVote = contestedVotes.find((v) => v.reviewer_id === erin.id);
+    const carolVote = contestedVotes.find((v) => v.reviewer_id === carol.id);
+    const daveVote = contestedVotes.find((v) => v.reviewer_id === dave.id);
+    expect(erinVote?.decision).toBe('accept');
+    expect(carolVote?.decision).toBe('reject');
+    expect(daveVote?.decision).toBe('reject');
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
