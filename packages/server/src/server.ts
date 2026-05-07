@@ -771,7 +771,6 @@ export class Server {
       if (alreadySeen) continue;
       candidates.push(p);
     }
-    if (candidates.length === 0) return null;
     // Recency bias matches `fetchCalibrationBatch` (PRD §Calibration batches:
     // "biased toward fresh-but-validated history"). Tiebreak by id
     // for replay determinism.
@@ -779,7 +778,9 @@ export class Server {
       if (a.created_at !== b.created_at) return b.created_at.localeCompare(a.created_at);
       return a.id.localeCompare(b.id);
     });
-    return { kind: 'review', proposal_id: candidates[0]!.id };
+    const top = candidates[0];
+    if (!top) return null;
+    return { kind: 'review', proposal_id: top.id };
   }
 
   // Locate the (cause, sub-topic) for review-routing of a staged
