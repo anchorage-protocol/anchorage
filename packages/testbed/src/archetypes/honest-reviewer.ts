@@ -149,25 +149,30 @@ export async function runHonestReviewer(
 
     // To decide the reviewer needs the proposal payload. PRD line
     // 195 (ReviewBatchItem) is the canonical reviewer view; for v0
-    // we get it via query_proposals filtered to staged + assigned-
-    // to-me, then look up the specific proposal_id. A real reviewer
-    // surface would deliver the payload alongside the assignment.
-    const { proposals } = await client.queryProposals({
-      assigned_to_me: true,
-      status: 'staged',
-    });
+    // we get it via query_proposals filtered to assigned-to-me, then
+    // look up the specific proposal_id. We deliberately do *not*
+    // filter by status here: a review-kind assignment may target a
+    // staged proposal (real review) or an accepted proposal
+    // (calibration injection per PRD §Calibration batches), and the
+    // reviewer is supposed to be unable to tell them apart. Filtering
+    // on status would leak the seam to the decider via "I got an item
+    // that's never returned to me" and break the indistinguishability
+    // commitment. The decider only sees `target.payload`, which is
+    // identical in shape across both.
+    const { proposals } = await client.queryProposals({ assigned_to_me: true });
     const target = proposals.find((p) => p.id === reviewProposalId);
     if (!target) {
-      // Race: the proposal moved off staged between our offer and
-      // our lookup (e.g. another reviewer already converged it).
+      // Race: the proposal vanished between our offer and our
+      // lookup (a curator-side action — proposals don't otherwise
+      // disappear). Decline rather than guess.
       await client.declineAssignment({
         assignment_id: offered.assignment_id,
-        reason: 'proposal no longer staged',
+        reason: 'proposal not visible',
       });
       actions.push({
         kind: 'declined',
         assignment_id: offered.assignment_id,
-        reason: 'proposal not staged',
+        reason: 'proposal not visible',
       });
       continue;
     }

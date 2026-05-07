@@ -782,6 +782,147 @@ describe('testbed: honest-strong archetype', () => {
     expect(excerptNodes[0]?.content).toContain('works');
   });
 
+  it('calibration injection costs the strategic coalition rep without preventing convergence subversion', async () => {
+    // Companion to the strategic-coalition scenario above. Same setup
+    // (two well-grounded excerpts, one honest reviewer + a 2-of-3
+    // biased coalition); the only change is calibration injection
+    // turned on at the server (every 2nd review-task offer is a
+    // calibration item drawn from validated history). PRD line 203:
+    // "Reviewers who fail calibration lose reputation" — this is the
+    // mechanism the named defense relies on.
+    //
+    // The defense is honest about its scope: it does *not* prevent
+    // the coalition from suppressing the bias-misaligned excerpt at
+    // the convergence layer (only a 3rd honest reviewer, calibration-
+    // aware vote weighting, or stratified assignment can do that).
+    // What it does is cost the coalition reputation on calibration
+    // items their bias misfires on, while crediting the honest
+    // reviewer for honest acceptance. The rep ledger flips: the
+    // honest reviewer ends strictly positive; the coalition's net
+    // is no longer a clean win.
+    //
+    // The defense is also imperfect: a coalition member whose bias
+    // happens to match a calibration item still passes (here, Dave
+    // catches the just-converged "works" excerpt as calibration on
+    // his second offer and accepts it, since "works" matches his
+    // predicate). This is the calibration-aware adversary case PRD
+    // line 281 names ("strategic adversary ... while passing
+    // calibration"); patient/sweep variants are testbed work that
+    // builds on this seam, not regressions of it.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: { calibration_inject_every_n: 2 },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    // Two anchors, both curator-accepted. These are the initial
+    // calibration corpus: payload content is "paper 1"/"paper 2",
+    // which contains neither "works" nor "no effect" — so the
+    // coalition's bias predicate ("includes 'works'") rejects both,
+    // failing calibration on each.
+    for (let i = 1; i <= 2; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) =>
+        anchorId.endsWith('1') || anchorId.endsWith('a')
+          ? {
+              content: 'treatment X works for stage III',
+              quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+            }
+          : {
+              content: 'treatment X has no effect for stage IV',
+              quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+            },
+    };
+    await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    const biased = payloadBiasedDecider({
+      acceptIf: (payload) => 'content' in payload && payload.content.includes('works'),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    await runHonestReviewer(carolClient, { cause_id: cause.id, rate: 5, decide: biased });
+    await runHonestReviewer(daveClient, { cause_id: cause.id, rate: 5, decide: biased });
+
+    // Convergence still flips with the bias — calibration does not
+    // close the convergence-layer surface, only the rep-ledger one.
+    // This part of the assertion is the regression handle on the
+    // open-attack scenario above: if a future change closes the
+    // convergence vector too, this expectation should be updated
+    // alongside.
+    const excerpts = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    const works = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('works'),
+    );
+    const noEffect = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('no effect'),
+    );
+    expect(works?.status).toBe('accepted');
+    expect(noEffect?.status).toBe('rejected');
+
+    const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
+    const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
+    const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
+    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+
+    // Headline inversion: in the no-calibration scenario above,
+    // erinScore was 0 and the coalition was strictly positive on
+    // both members. Here, the honest reviewer's calibration passes
+    // give her a strictly positive score and dominate the lower of
+    // the two coalition scores. Both halves of this expectation
+    // are what calibration was added to do; together they're the
+    // regression handle that says "the defense, where it bites,
+    // bites in the right direction."
+    expect(erinScore).toBeGreaterThan(0);
+    expect(erinScore).toBeGreaterThan(Math.min(carolScore, daveScore));
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
