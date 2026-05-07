@@ -2955,6 +2955,204 @@ describe('testbed: honest-strong archetype', () => {
     expect(archivedAgain).toEqual([]);
   });
 
+  it('contention-weighted + anti-correlation together close the mixed-strategy gap', async () => {
+    // Companion to the mixed-strategy-coalition test above. The
+    // standalone mixed strategy defeats each refinement individually
+    // because both reduce to a single ratio: with raw edges, a 50/50
+    // pattern lands at agreement=0.5 and disagreement=0.5, sitting
+    // below threshold 1.0 in either direction. The composition
+    // closes the gap.
+    //
+    // Contention weighting reweights the pair-stat by per-proposal
+    // contention (2*min(a,r)/total). For the mixed-strategy priming:
+    //   (accept, accept): a=2, r=0 → contention 0, contributes 0.
+    //   (accept, reject): a=1, r=1 → contention 1, contributes 1.
+    //   (reject, accept): a=1, r=1 → contention 1, contributes 1.
+    //   (reject, reject): a=0, r=2 → contention 0, contributes 0.
+    // So weighted_shared = 2, weighted_agreed = 0,
+    // weighted_disagreed = 2. The disagreement metric collapses to
+    // 1.0 even though the raw mix is 50/50 — the agreement on
+    // unanimous-easy items contributes 0 weight, leaving only the
+    // contentious disagreements to define the relationship. Anti-
+    // correlation at threshold 1.0 then fires the edge, Carol+Dave
+    // cluster, and the cross-stratum gate trips Dave away from the
+    // contested slot.
+    //
+    // Headline: contested stays staged. The mixed-strategy gap that
+    // each defense couldn't close alone is closed by the
+    // composition. The seam moves: a coalition adapting against
+    // this regime would need to avoid co-voting on any contentious
+    // item, which constrains them sharply (suppressing the
+    // contested target inherently *creates* a contentious item, and
+    // priming with non-contentious co-votes either lights up the
+    // positive-agreement edge or fails to inflate shared history).
+    // Further adaptations are testbed targets, not regressions of
+    // this seam.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_anti_correlation_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+        // The composition: contention-weighted edges *and*
+        // anti-correlation together. Either alone leaves the gap
+        // open against the 50/50 pattern.
+        stratum_contention_weighted: true,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erinClient = await wireArchetype(server, erin.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    for (const c of [{ identity_id: carol.id }, { identity_id: dave.id }]) {
+      await server.tools.setCapacity(c, {
+        cause_id: cause.id,
+        rate: 5,
+        kinds: ['review'],
+      });
+    }
+
+    // PRIMING with the same 50/50 mixed pattern that defeated each
+    // refinement alone.
+    const carolDavePattern: Array<['accept' | 'reject', 'accept' | 'reject']> = [
+      ['accept', 'accept'],
+      ['accept', 'reject'],
+      ['reject', 'accept'],
+      ['reject', 'reject'],
+    ];
+    for (let i = 0; i < carolDavePattern.length; i++) {
+      const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      const cell = carolDavePattern[i];
+      if (!cell) throw new Error('pattern out of range');
+      const [carolVote, daveVote] = cell;
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        {
+          proposal_id: excerpt.proposal_id,
+          decision: carolVote,
+          rationale:
+            carolVote === 'accept'
+              ? 'consistent with my read of the literature'
+              : 'underpowered, methodological concerns',
+        },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: dave.id },
+        {
+          proposal_id: excerpt.proposal_id,
+          decision: daveVote,
+          rationale:
+            daveVote === 'accept'
+              ? 'consistent with my read of the literature'
+              : 'underpowered, methodological concerns',
+        },
+      );
+      const after = server.store.proposals.get(excerpt.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(excerpt.proposal_id);
+      }
+    }
+
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    const calAwareBiased = payloadBiasedDecider({
+      acceptIf: (payload) =>
+        'content' in payload &&
+        (!payload.content.includes('treatment') || payload.content.includes('works')),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+    // Dave's request_assignment hits the cross-stratum gate: Carol
+    // already voted on contested; with contention-weighted edges
+    // and anti-correlation enabled, Carol+Dave's mixed pattern
+    // collapses to weighted disagreement 1.0 and the negative edge
+    // fires. Same cluster. Skip.
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+
+    const target = server.store.proposals.get(contested.proposal_id);
+    expect(target?.status).toBe('staged');
+    const contestedVotes = [...server.store.reviewVotes.values()].filter(
+      (v) => v.proposal_id === contested.proposal_id,
+    );
+    expect(contestedVotes).toHaveLength(2);
+    expect(contestedVotes.map((v) => v.reviewer_id).sort()).toEqual([carol.id, erin.id].sort());
+  });
+
   // Parameter sweep over the (coalition decorrelation rate,
   // stratum_anti_correlation_threshold) plane. PRD §Adversary
   // testbed (Architecture, "Parameter sweeps") commits this shape
