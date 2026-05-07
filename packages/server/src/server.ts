@@ -2136,6 +2136,61 @@ export class Server {
       return result;
     },
 
+    // Divergence-closure sweep (PRD §Reviewer assignment: "divergences
+    // without further evidence within a tunable window are archived
+    // (status `unresolved-archived`) rather than perpetually re-
+    // routed"). The contracts already commit `unresolved-archived` as
+    // a terminal proposal status; this is the path that produces it.
+    //
+    // A staged proposal is *archivable* when:
+    //   1. It has at least one cast vote (a never-reviewed proposal
+    //      isn't divergent — it's just unstarted, and stays staged
+    //      pending assignment).
+    //   2. Its most recent vote is older than `window_seconds`. The
+    //      proposal's own created_at is not the right anchor —
+    //      activity (votes) is what indicates whether the proposal
+    //      is actively being worked.
+    //
+    // Curator-triggered, not automatic: production likely runs this
+    // on a scheduler, but the trigger is operationally private and
+    // testbed-tunable. Returns the archived proposal_ids so callers
+    // can audit. cause_id is an optional filter — the typical sweep
+    // is per-cause, but sweeping the whole instance is allowed.
+    archiveStaleProposals: (options: {
+      window_seconds: number;
+      cause_id?: CauseId;
+    }): ProposalId[] => {
+      if (options.window_seconds <= 0) return [];
+      const now = this.clock.now();
+      const cutoffMs = Date.parse(now) - options.window_seconds * 1000;
+      // Latest vote timestamp per proposal. We iterate votes once and
+      // track the max created_at; cheap for v0 testbed sizes.
+      const latestVoteAt = new Map<ProposalId, number>();
+      for (const v of this.store.reviewVotes.values()) {
+        const ts = Date.parse(v.created_at);
+        const prior = latestVoteAt.get(v.proposal_id);
+        if (prior === undefined || ts > prior) latestVoteAt.set(v.proposal_id, ts);
+      }
+      const archived: ProposalId[] = [];
+      for (const proposal of this.store.proposals.values()) {
+        if (proposal.status !== 'staged') continue;
+        const latest = latestVoteAt.get(proposal.id);
+        if (latest === undefined) continue; // unstarted: not divergent
+        if (latest > cutoffMs) continue; // recent activity: not stale
+        if (options.cause_id !== undefined) {
+          const route = this.locateProposalForReview(proposal);
+          if (!route || route.cause_id !== options.cause_id) continue;
+        }
+        this.store.proposals.set(proposal.id, {
+          ...proposal,
+          status: 'unresolved-archived',
+          updated_at: now,
+        });
+        archived.push(proposal.id);
+      }
+      return archived;
+    },
+
     deferSubTopic: (proposalId: ProposalId): { sub_topic_id: SubTopicId } => {
       const proposal = this.store.proposals.get(proposalId);
       if (!proposal) {

@@ -2799,6 +2799,162 @@ describe('testbed: honest-strong archetype', () => {
     expect(tooHigh).toHaveLength(0);
   });
 
+  it('archives stale staged proposals via the divergence-closure sweep', async () => {
+    // PRD §Reviewer assignment commits divergence closure: "divergent
+    // proposals are routed to richer review or carried forward as
+    // parallel synthesis nodes / open_question, but not indefinitely:
+    // divergences without further evidence within a tunable window
+    // are archived (status `unresolved-archived`) rather than
+    // perpetually re-routed." The contracts already commit the
+    // unresolved-archived status; this is the path that produces it.
+    //
+    // Setup: three staged excerpts, each with one accept vote (the
+    // pool can't reach votes_to_accept=5 — they sit divergent, the
+    // shape PRD's closure mechanism is for). Time passes. One of
+    // them gets a fresh vote (refreshing its activity timestamp).
+    // The sweep runs with a window short enough that the older two
+    // qualify but the freshly-voted one doesn't.
+    //
+    // Assertions: the older two flip to unresolved-archived, the
+    // freshly-voted one stays staged, and a never-voted control
+    // proposal stays staged regardless of age (a never-reviewed
+    // proposal isn't divergent — it's just unstarted, and the
+    // window logic explicitly skips it).
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      // High thresholds so single votes don't converge — the
+      // divergence-closure mechanism only matters for proposals
+      // stuck below the threshold.
+      review: { votes_to_accept: 5, votes_to_reject: 5 },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+    const anchor = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor.proposal_id);
+    const anchorNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchorNode) throw new Error('anchor not materialized');
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+
+    // Three staged excerpts, each with a vote at roughly its
+    // creation time.
+    const stale1 = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorNode.id,
+      content: 'treatment X works for stage III A',
+      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+    });
+    await server.tools.castReviewVote(
+      { identity_id: erin.id },
+      {
+        proposal_id: stale1.proposal_id,
+        decision: 'accept',
+        rationale: 'spot-checked, looks correct',
+      },
+    );
+    const fresh = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorNode.id,
+      content: 'treatment X works for stage III B',
+      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+    });
+    await server.tools.castReviewVote(
+      { identity_id: erin.id },
+      {
+        proposal_id: fresh.proposal_id,
+        decision: 'accept',
+        rationale: 'spot-checked, looks correct',
+      },
+    );
+    const stale2 = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorNode.id,
+      content: 'treatment X works for stage III C',
+      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+    });
+    await server.tools.castReviewVote(
+      { identity_id: erin.id },
+      {
+        proposal_id: stale2.proposal_id,
+        decision: 'accept',
+        rationale: 'spot-checked, looks correct',
+      },
+    );
+    // Control: never voted on. Should stay staged regardless of age
+    // — divergence closure is for divergent proposals, not unstarted
+    // ones.
+    const unstarted = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorNode.id,
+      content: 'treatment X works for stage III D',
+      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+    });
+
+    // Force-advance the clock by a large gap so the next vote sits
+    // well after the early ones. Each clock.now() call advances by
+    // tickMs=1000, so 100 calls = 100s.
+    for (let i = 0; i < 100; i++) server.clock.now();
+
+    // Refresh `fresh` with a vote from a different reviewer. This is
+    // the "further evidence" PRD's closure mechanism is checking for.
+    // Frank votes revise so the proposal stays staged (revise is
+    // a no-op for convergence) — what matters is the activity
+    // timestamp.
+    await server.tools.castReviewVote(
+      { identity_id: frank.id },
+      {
+        proposal_id: fresh.proposal_id,
+        decision: 'revise',
+        rationale: 'needs more context on the cohort',
+      },
+    );
+
+    // Sweep with a window short enough that the early votes are
+    // outside it but Frank's recent revise is inside.
+    const archived = server.curator.archiveStaleProposals({
+      window_seconds: 50,
+      cause_id: cause.id,
+    });
+    expect(archived.sort()).toEqual([stale1.proposal_id, stale2.proposal_id].sort());
+
+    expect(server.store.proposals.get(stale1.proposal_id)?.status).toBe('unresolved-archived');
+    expect(server.store.proposals.get(stale2.proposal_id)?.status).toBe('unresolved-archived');
+    expect(server.store.proposals.get(fresh.proposal_id)?.status).toBe('staged');
+    expect(server.store.proposals.get(unstarted.proposal_id)?.status).toBe('staged');
+
+    // Re-running the sweep is idempotent — already-archived proposals
+    // are no longer staged and are skipped.
+    const archivedAgain = server.curator.archiveStaleProposals({
+      window_seconds: 50,
+      cause_id: cause.id,
+    });
+    expect(archivedAgain).toEqual([]);
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
