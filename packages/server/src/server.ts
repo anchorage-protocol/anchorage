@@ -133,6 +133,27 @@ export interface ReviewConfig {
   // 244: "Contributor-initiated work earns sub-topic rep at a
   // substantially reduced weight." 0 ≤ factor ≤ 1; defaults to 0.5.
   contributor_initiated_factor: number;
+  // Calibration injection cadence. PRD §Calibration batches: reviewer
+  // batches mix real proposals with calibration items drawn from
+  // validated history; PRD line 288 settles that calibration arrives
+  // via the same assignment surface as real work, so it is structurally
+  // indistinguishable from "the rest of the work." 0 disables; N>0 means
+  // every Nth review-task offer to a given (caller, cause) is replaced
+  // with a calibration draw (an accepted-from-history proposal). The
+  // testbed sweeps this; baseline is disabled so non-calibration
+  // scenarios remain unaffected.
+  calibration_inject_every_n: number;
+  // Reputation gain when a reviewer correctly accepts a calibration
+  // item (PRD line 203: "Reviewers who fail calibration lose
+  // reputation" — the dual gain is the symmetric incentive). Smaller
+  // than reviewer_accurate_gain by default so calibration is a
+  // confirmation channel, not a rep-laundering one.
+  calibration_pass_gain: number;
+  // Reputation loss when a reviewer rejects (or asks for revision on,
+  // by the contrapositive — but revise is a no-op here, see below) a
+  // calibration item. PRD line 203 + line 246: failing calibration
+  // and inaccurate reviews both deduct rep.
+  calibration_fail_loss: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -143,6 +164,9 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   reviewer_accurate_gain: 1,
   reviewer_inaccurate_loss: 1,
   contributor_initiated_factor: 0.5,
+  calibration_inject_every_n: 0,
+  calibration_pass_gain: 1,
+  calibration_fail_loss: 1,
 };
 
 export interface ServerDeps {
@@ -641,6 +665,58 @@ export class Server {
     }
   }
 
+  // Pick a calibration target for a reviewer in this cause. Calibration
+  // items are accepted-from-history proposals (PRD §Calibration batches
+  // line 201: "drawn from the graph's own validated history — proposals
+  // that survived multiple confirmations and have been stable"). The
+  // task wears the same `review` shape as a real review task; the
+  // accepted-status seam is what tells `cast_review_vote` to score
+  // against ground truth instead of running convergence. Conflict-of-
+  // interest, already-voted, and no-double-offer gates mirror the
+  // regular review-assignment path so a calibration item can't be
+  // distinguished by being subject to laxer rules. Returns null when
+  // no eligible candidate exists — e.g., a fresh sub-topic where no
+  // proposal has yet been accepted.
+  private drawCalibrationTask(
+    causeId: CauseId,
+    callerId: IdentityId,
+    callerAssignments: readonly Assignment[],
+  ): AssignmentTask | null {
+    const candidates: Proposal[] = [];
+    for (const p of this.store.proposals.values()) {
+      if (p.status !== 'accepted') continue;
+      if (p.proposer_id === callerId) continue;
+      const located = this.locateProposalForReview(p);
+      if (!located || located.cause_id !== causeId) continue;
+      let voted = false;
+      for (const v of this.store.reviewVotes.values()) {
+        if (v.proposal_id === p.id && v.reviewer_id === callerId) {
+          voted = true;
+          break;
+        }
+      }
+      if (voted) continue;
+      const taskKey = `review:${p.id}`;
+      const alreadySeen = callerAssignments.some(
+        (a) =>
+          a.status !== 'expired' &&
+          a.status !== 'submitted' &&
+          assignmentTaskKey(a.task) === taskKey,
+      );
+      if (alreadySeen) continue;
+      candidates.push(p);
+    }
+    if (candidates.length === 0) return null;
+    // Recency bias matches `fetchCalibrationBatch` (PRD line 201:
+    // "biased toward fresh-but-validated history"). Tiebreak by id
+    // for replay determinism.
+    candidates.sort((a, b) => {
+      if (a.created_at !== b.created_at) return b.created_at.localeCompare(a.created_at);
+      return a.id.localeCompare(b.id);
+    });
+    return { kind: 'review', proposal_id: candidates[0]!.id };
+  }
+
   // Locate the (cause, sub-topic) for review-routing of a staged
   // proposal. Curator-only kinds (`sub_topic`, `change_of_home`)
   // return null — they are not surfaced to the reviewer pool.
@@ -896,6 +972,45 @@ export class Server {
       const wantedKinds: ReadonlySet<WorkKind> = parsed.kind
         ? new Set<WorkKind>([parsed.kind])
         : allowedKinds;
+
+      // Calibration injection. PRD §Calibration batches + line 288:
+      // calibration items arrive on the same assignment surface as real
+      // review work, structurally indistinguishable to the reviewer.
+      // Cadence is config-driven so the testbed can sweep it; baseline
+      // (every_n=0) is disabled and leaves the frontier-only path
+      // unchanged. We count review-task offers to this caller in this
+      // cause and inject every Nth one — deterministic given a fixed
+      // history, which is what the testbed needs for replay. The draw
+      // can fail (no validated history yet, or all candidates excluded
+      // by conflict-of-interest / already-voted gates), in which case
+      // we fall through to the regular frontier loop rather than fail
+      // the request.
+      if (this.review.calibration_inject_every_n > 0 && wantedKinds.has('review')) {
+        let priorReviewOffers = 0;
+        for (const a of callerAssignmentsForTarget) {
+          if (a.task.kind === 'review') priorReviewOffers += 1;
+        }
+        if ((priorReviewOffers + 1) % this.review.calibration_inject_every_n === 0) {
+          const calTask = this.drawCalibrationTask(
+            parsed.cause_id,
+            identity.id,
+            callerAssignmentsForTarget,
+          );
+          if (calTask) {
+            const now = this.clock.now();
+            const assignment: Assignment = {
+              id: this.idGen.assignmentId(),
+              contributor_id: identity.id,
+              task: calTask,
+              status: 'offered',
+              created_at: now,
+              updated_at: now,
+            };
+            this.store.assignments.set(assignment.id, assignment);
+            return { assignment_id: assignment.id, task: calTask };
+          }
+        }
+      }
 
       const frontier = this.deriveFrontier({ cause_id: parsed.cause_id });
       for (const item of frontier) {
@@ -1572,7 +1687,19 @@ export class Server {
       if (!proposal) {
         throw new ServerError('not_found', `proposal not found: ${parsed.proposal_id}`);
       }
-      if (proposal.status !== 'staged') {
+      // Two valid voting paths: (a) staged proposals — the regular
+      // review path that drives convergence; (b) accepted proposals
+      // reached via assignment — the calibration path, which scores
+      // the reviewer against ground truth without re-resolving a
+      // proposal that is already settled. The assignment_id requirement
+      // on (b) is what tells the system the reviewer received this
+      // item via the calibration injection seam in request_assignment;
+      // a contributor-initiated cast_review_vote on an already-accepted
+      // proposal has no defined semantics (it cannot move convergence,
+      // and treating it as calibration would let a reviewer farm rep
+      // by self-selecting easy already-accepted items).
+      const isCalibration = proposal.status === 'accepted' && parsed.assignment_id !== undefined;
+      if (!isCalibration && proposal.status !== 'staged') {
         throw new ServerError(
           'invalid_state',
           `cannot vote on proposal in status ${proposal.status}`,
@@ -1660,6 +1787,30 @@ export class Server {
             updated_at: now,
           });
         }
+      }
+
+      if (isCalibration) {
+        // Calibration scoring against ground truth. The proposal
+        // survived to acceptance in validated history, so the
+        // expected vote is `accept`. PRD line 203: "Reviewers who
+        // fail calibration lose reputation"; line 246: "rejected
+        // calibration items both decrease reputation." `revise` is a
+        // no-op for symmetry with the convergence-driven rep path,
+        // which also doesn't move rep on revise (PRD line 245-246
+        // are silent on revise; treating it as no-op preserves the
+        // "reviewer asked for more" signal without forcing it onto
+        // a binary scoring axis). The vote does not run convergence
+        // — the proposal is already resolved.
+        const subTopicId = this.reputationSubTopicFor(proposal);
+        const causeId = this.reputationCauseFor(proposal);
+        if (subTopicId && causeId && parsed.decision !== 'revise') {
+          const delta =
+            parsed.decision === 'accept'
+              ? this.review.calibration_pass_gain
+              : -this.review.calibration_fail_loss;
+          this.bumpReputation(identity.id, causeId, subTopicId, delta);
+        }
+        return { vote_id: vote.id };
       }
 
       // Convergence check: enough accept-votes auto-accepts; enough

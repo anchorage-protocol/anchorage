@@ -3,7 +3,7 @@ import type { Caller } from './auth.js';
 import { FakeClock } from './clock.js';
 import { ServerError } from './errors.js';
 import { SeededIdGen } from './id-gen.js';
-import { Server } from './server.js';
+import { type ReviewConfig, Server } from './server.js';
 import { FakeVerifier } from './verifier.js';
 
 interface Fixture {
@@ -14,11 +14,14 @@ interface Fixture {
   other_sub_topic_id: ReturnType<Server['bootstrap']['seedSubTopic']>['id'];
 }
 
-function fixture(opts: { unresolvable?: ReadonlySet<string> } = {}): Fixture {
+function fixture(
+  opts: { unresolvable?: ReadonlySet<string>; review?: Partial<ReviewConfig> } = {},
+): Fixture {
   const server = new Server({
     clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
     idGen: new SeededIdGen('t'),
     verifier: new FakeVerifier(opts.unresolvable),
+    ...(opts.review ? { review: opts.review } : {}),
   });
   const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
   const cred = server.bootstrap.bindAgentCredential({ identity_id: identity.id, label: 'desktop' });
@@ -1880,3 +1883,221 @@ describe('tools.castReviewVote', () => {
     ).rejects.toMatchObject({ code: 'not_found' });
   });
 });
+
+describe('calibration loop', () => {
+  // PRD §Calibration batches: reviewer batches mix real proposals with
+  // calibration items drawn from validated history; calibration arrives
+  // on the same assignment surface as real review work (PRD line 288).
+  // These tests exercise the seam end-to-end at the tool layer:
+  // request_assignment injects an accepted-from-history proposal as a
+  // review task; cast_review_vote scores against ground truth and
+  // adjusts the reviewer's reputation without re-resolving the
+  // already-accepted proposal.
+
+  // Sets up an accepted "validated history" proposal under alice and a
+  // bob reviewer with review-kind capacity. Calibration injection is
+  // configured to fire on bob's first review-task offer.
+  async function withCalibrationCandidate(f: ReturnType<typeof fixture>) {
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'validated',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['review'],
+    });
+    return { bobCaller, accepted_proposal_id: a.proposal_id };
+  }
+
+  it('injects an accepted-from-history proposal as the first review-task offer', async () => {
+    const f = fixture({ review: { calibration_inject_every_n: 1 } });
+    const { bobCaller, accepted_proposal_id } = await withCalibrationCandidate(f);
+    const { task } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    if (task.kind !== 'review') throw new Error('expected review task');
+    // Indistinguishable shape from a real review task: just a review
+    // task pointing at a proposal_id. The reviewer can't tell from
+    // the task alone that it's calibration.
+    expect(task.proposal_id).toBe(accepted_proposal_id);
+    expect(f.server.store.proposals.get(accepted_proposal_id)?.status).toBe('accepted');
+  });
+
+  it('accept on a calibration item bumps reputation by calibration_pass_gain', async () => {
+    const f = fixture({
+      review: { calibration_inject_every_n: 1, calibration_pass_gain: 2 },
+    });
+    const { bobCaller } = await withCalibrationCandidate(f);
+    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    if (task.kind !== 'review') throw new Error('expected review task');
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
+    await f.server.tools.castReviewVote(bobCaller, {
+      proposal_id: task.proposal_id,
+      decision: 'accept',
+      rationale: 'reads cleanly, span checks out',
+      assignment_id,
+    });
+    const { entries } = await f.server.tools.queryReputation(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, score: 2 }]);
+  });
+
+  it('reject on a calibration item subtracts calibration_fail_loss', async () => {
+    const f = fixture({
+      review: { calibration_inject_every_n: 1, calibration_fail_loss: 3 },
+    });
+    const { bobCaller } = await withCalibrationCandidate(f);
+    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    if (task.kind !== 'review') throw new Error('expected review task');
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
+    await f.server.tools.castReviewVote(bobCaller, {
+      proposal_id: task.proposal_id,
+      decision: 'reject',
+      rationale: 'underpowered',
+      assignment_id,
+    });
+    const { entries } = await f.server.tools.queryReputation(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, score: -3 }]);
+  });
+
+  it('revise on a calibration item moves no reputation', async () => {
+    const f = fixture({ review: { calibration_inject_every_n: 1 } });
+    const { bobCaller } = await withCalibrationCandidate(f);
+    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    if (task.kind !== 'review') throw new Error('expected review task');
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
+    await f.server.tools.castReviewVote(bobCaller, {
+      proposal_id: task.proposal_id,
+      decision: 'revise',
+      rationale: 'wants more context',
+      assignment_id,
+    });
+    const { entries } = await f.server.tools.queryReputation(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    expect(entries).toEqual([]);
+  });
+
+  it('a calibration vote does not re-resolve the already-accepted proposal', async () => {
+    const f = fixture({ review: { calibration_inject_every_n: 1 } });
+    const { bobCaller, accepted_proposal_id } = await withCalibrationCandidate(f);
+    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    if (task.kind !== 'review') throw new Error('expected review task');
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
+    await f.server.tools.castReviewVote(bobCaller, {
+      proposal_id: task.proposal_id,
+      decision: 'reject',
+      rationale: 'no',
+      assignment_id,
+    });
+    // The proposal stays accepted: convergence does not run on
+    // already-resolved proposals, so a reject vote on a calibration
+    // item can't flip its status.
+    expect(f.server.store.proposals.get(accepted_proposal_id)?.status).toBe('accepted');
+    // The original proposer's reputation is untouched — calibration
+    // scoring acts on the reviewer alone (curator-accepted anchors
+    // don't currently bump proposer rep, so this is "still nothing,"
+    // which is the right invariant either way: a calibration vote
+    // must never flow rep to or from the proposer of the calibration
+    // item).
+    const { entries: aliceEntries } = await f.server.tools.queryReputation(f.caller, {
+      cause_id: f.cause_id,
+    });
+    expect(aliceEntries).toEqual([]);
+    // The reviewer alone takes the calibration hit (-1 default).
+    const { entries: bobEntries } = await f.server.tools.queryReputation(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    expect(bobEntries).toEqual([{ sub_topic_id: f.sub_topic_id, score: -1 }]);
+  });
+
+  it('rejects voting on an accepted proposal without an assignment_id', async () => {
+    const f = fixture();
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(proposal_id);
+    // Contributor-initiated voting on already-accepted work has no
+    // defined semantics and is not a calibration entry point — that
+    // path requires the assignment seam.
+    await expect(
+      f.server.tools.castReviewVote(bobCaller, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'late',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it('skips calibration when no validated-history candidate exists, falling back to the frontier', async () => {
+    const f = fixture({ review: { calibration_inject_every_n: 1 } });
+    // Alice stages but never gets accepted: no calibration material.
+    const staged = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'staged',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['review'],
+    });
+    const { task } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    if (task.kind !== 'review') throw new Error('expected review task');
+    // Calibration draw returned null (no accepted proposals), so the
+    // request fell through to the frontier and offered the staged
+    // proposal as a normal review task.
+    expect(task.proposal_id).toBe(staged.proposal_id);
+  });
+
+  it('a calibration draw skips the caller’s own validated proposals', async () => {
+    const f = fixture({ review: { calibration_inject_every_n: 1 } });
+    // Alice has an accepted proposal (validated history). Alice declares
+    // review capacity. The calibration draw must skip her own proposal
+    // (conflict of interest invariant), so the request falls back to
+    // the frontier — which is empty for her, producing not_found.
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'mine',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+    await f.server.tools.setCapacity(f.caller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['review'],
+    });
+    await expect(
+      f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
+
