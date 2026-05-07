@@ -68,7 +68,7 @@ No tokens. No marketplace. No paid tier. Reputation and credit are the only curr
 
 ## Status
 
-Concurrent Phase 0 + Phase 1. Design docs are settled and the v0 MCP tool surface is implemented as a TypeScript `Server` class — every tool from the PRD's MCP surface, the curator-mediated acceptance path, the full assignment loop, the review path, and the read-path projections. The contributor lifecycle composes correctly under test. MCP transport and the synthetic-contributor harness are next; verification stays structural until the testbed exercises the live-fetch path. Track [ROADMAP.md](./ROADMAP.md) for phasing.
+Concurrent Phase 0 + Phase 1. Design docs are settled and the v0 MCP tool surface is implemented as a TypeScript `Server` class — every tool from the PRD's MCP surface, the curator-mediated acceptance path, the full assignment loop, the review path, and the read-path projections. The contributor lifecycle composes correctly under test, the same code paths run behind the MCP wire transport, and the testbed harness drives synthetic archetypes (honest contributors, honest and lazy reviewers, hallucinator) end-to-end against the live tool surface, with reputation and verifier-rejection outcomes observable over the wire. Live-fetch verification (PMID/DOI/URL resolution) stays a stub until the testbed needs it; span verification is wired at the verifier seam and exercised by adversary scenarios. Track [ROADMAP.md](./ROADMAP.md) for phasing.
 
 ## Documents
 

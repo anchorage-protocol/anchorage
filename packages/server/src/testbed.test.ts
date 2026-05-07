@@ -1,8 +1,10 @@
 import {
   AnchorageClient,
   type ContentProvider,
+  type HallucinationFabricator,
   acceptAllDecider,
   rejectAllDecider,
+  runHallucinator,
   runHonestReviewer,
   runHonestStrong,
 } from '@anchorage/testbed';
@@ -481,6 +483,160 @@ describe('testbed: honest-strong archetype', () => {
     expect(honest1Rep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
     const honest2Rep = await honest2Client.queryReputation({ cause_id: cause.id });
     expect(honest2Rep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+  });
+
+  it('catches the hallucinator at the verifier, before reviewers see anything', async () => {
+    // PRD adversary taxonomy line 305: hallucinated submissions
+    // "Should be caught at the verification engine (span mismatch,
+    // unresolved citations) before review." Operationalized: the
+    // FakeVerifier holds source content for two PMIDs; the
+    // hallucinator's constantFabricator submits spans that don't
+    // appear in either source. The server's propose_excerpt path
+    // calls verifier.verifySpan and throws invalid_input, so no
+    // proposal record is ever created. The reviewer pool stays
+    // empty. The hallucinator gains no rep — verification rejection
+    // is not a review rejection (ProposalStatus's documented
+    // distinction in @anchorage/contracts).
+    const sources = new Map<string, string>([
+      ['1', 'paper one says ctDNA detection precedes radiographic recurrence by months'],
+      ['2', 'paper two reports MRD positivity correlates with relapse risk in stage III CRC'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'ctDNA-MRD',
+      description: 'mrd',
+      scope_query: 'ctDNA',
+    });
+    for (let i = 1; i <= 2; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+
+    // Fabricator: a span that appears in neither source.
+    const fabricator: HallucinationFabricator = {
+      fabricateForAnchor: () => ({
+        content: 'fabricated finding',
+        quoted_span: { text: 'this exact text is not in any source', offset: 0 },
+      }),
+    };
+
+    const result = await runHallucinator(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      fabricator,
+    });
+
+    // Two anchors → two requested+accepted+submit_rejected triples,
+    // then idle.
+    const submitRejected = result.actions.filter((a) => a.kind === 'submit_rejected');
+    expect(submitRejected).toHaveLength(2);
+    expect(
+      submitRejected.every((a) => a.kind === 'submit_rejected' && a.code === 'invalid_input'),
+    ).toBe(true);
+    expect(result.actions[result.actions.length - 1]?.kind).toBe('idle');
+
+    // No excerpt proposal record exists — that is the load-bearing
+    // assertion. Reviewers literally cannot see what was never
+    // staged, so the hallucinator never burns reviewer time.
+    expect(
+      [...server.store.proposals.values()].filter((p) => p.payload.kind === 'excerpt'),
+    ).toHaveLength(0);
+
+    // The reviewer-side query: needs_review surface is empty
+    // because no excerpt is staged. Cross-checked over the wire so
+    // the assertion isn't reaching into internals.
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const frontier = await carolClient.queryFrontier({
+      cause_id: cause.id,
+      frontier_kind: 'needs_review',
+    });
+    expect(frontier.items).toHaveLength(0);
+
+    // Reputation: hallucinator has no rep entry in the cause —
+    // verification-rejected work neither earns nor loses rep, by
+    // the same property that no proposal record was created.
+    const bobRep = await bobClient.queryReputation({ cause_id: cause.id });
+    expect(bobRep.entries).toEqual([]);
+  });
+
+  it('verifier accepts honest spans that appear in the configured source', async () => {
+    // Symmetric check: with sources configured, a span that *does*
+    // appear in the parent anchor's source passes verification and
+    // the loop works as it did before. Without this, the
+    // verifySpan path could be silently rejecting honest work and
+    // the only signal would be a lower honest-strong throughput in
+    // sweeps — caught here at the unit grain instead.
+    const sources = new Map<string, string>([
+      ['1', 'paper one says ctDNA detection precedes radiographic recurrence by months'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'st',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const a = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper one',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    server.curator.acceptProposal(a.proposal_id);
+
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+
+    // The span is a verbatim slice of the configured source.
+    const provider: ContentProvider = {
+      forAnchor: () => ({
+        content: 'ctDNA detection precedes radiographic recurrence',
+        quoted_span: {
+          text: 'ctDNA detection precedes radiographic recurrence',
+          offset: 0,
+        },
+      }),
+    };
+
+    const result = await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    expect(result.actions.filter((a) => a.kind === 'submitted')).toHaveLength(1);
+    expect(
+      [...server.store.proposals.values()].filter((p) => p.payload.kind === 'excerpt'),
+    ).toHaveLength(1);
   });
 
   it('surfaces typed error codes through AnchorageClientError', async () => {

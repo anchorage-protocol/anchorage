@@ -21,3 +21,12 @@ export {
   type ReviewDecisionWithRationale,
   runHonestReviewer,
 } from './archetypes/honest-reviewer.js';
+export {
+  constantFabricator,
+  type HallucinatedExcerpt,
+  type HallucinationFabricator,
+  type HallucinatorAction,
+  type HallucinatorConfig,
+  type HallucinatorResult,
+  runHallucinator,
+} from './archetypes/hallucinator.js';

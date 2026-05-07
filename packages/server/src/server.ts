@@ -1129,13 +1129,14 @@ export class Server {
       return { proposal_id: proposal.id };
     },
 
-    // PRD §Write-path tools: propose_excerpt stages an excerpt
-    // proposal under an existing accepted anchor. Span-against-source
-    // verification is structural-only here — the schema enforces non-
-    // empty `text` and non-negative `offset`. Real fetch+match against
-    // the parent anchor's source content waits for the verification
-    // engine. Until then, the parent must already be an active node,
-    // which is the strictest check we can do without I/O.
+    // PRD §Write-path tools (line 124): propose_excerpt stages an
+    // excerpt proposal under an existing accepted anchor, and the
+    // server matches `quoted_span` against the resolved source —
+    // mismatch rejects at write time, not at review time (line 159).
+    // The verifier owns the source-fetching boundary; the test
+    // FakeVerifier holds source fixtures, the production verifier
+    // will fetch. Schema-level checks (non-empty `text`,
+    // non-negative `offset`) are necessary but not sufficient.
     proposeExcerpt: async (
       caller: Caller,
       input: ProposeExcerptInput,
@@ -1149,7 +1150,11 @@ export class Server {
       for (const m of memberships) {
         this.requireActiveSubTopicInCause(m, cause.id, 'membership');
       }
-      this.requireActiveAnchorInCause(parsed.parent_anchor_id, cause.id);
+      const parentAnchor = this.requireActiveAnchorInCause(parsed.parent_anchor_id, cause.id);
+      // Span must appear in the parent anchor's source. Failure here
+      // throws — the proposal is never staged, never assigned, never
+      // shown to a reviewer.
+      await this.verifier.verifySpan(parentAnchor.external_ref, parsed.quoted_span);
 
       const now = this.clock.now();
       const proposal: Proposal = {
