@@ -213,6 +213,25 @@ export interface ReviewConfig {
   // testability. Multiplicative tightening is a future testbed
   // sweep.
   stratification_degraded_extra: number;
+  // Contention-weighted edge formation for the cluster primitive
+  // (PRD §Reviewer assignment, "weighting shared proposals by
+  // contention"). When true, pairwise edges are weighted by per-
+  // proposal contention — `2 * min(accepts, rejects) / total_votes`,
+  // so unanimous proposals contribute 0 weight and perfect-split
+  // proposals contribute 1. The pair edges when (a) at least
+  // stratum_min_shared_proposals raw shared votes exist (the brand-
+  // new-reviewer floor stays in place) AND (b) weighted_agreement /
+  // weighted_shared >= stratum_agreement_threshold AND (c)
+  // weighted_shared > 0 (some non-zero contention has accumulated).
+  // Closes the over-aggregation failure mode where unanimous-easy
+  // priming collapses honest reviewers into one cluster, strangling
+  // the cross-stratum draw rule. Does *not* close the decorrelating-
+  // coalition vector, since a pair that disagrees on every shared
+  // proposal still has weighted_agreement = 0; that vector remains
+  // open and is named in the PRD as the next testbed target.
+  // Defaults to off so existing scenarios that rely on raw cluster
+  // semantics are unaffected.
+  stratum_contention_weighted: boolean;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -232,6 +251,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   stratum_agreement_threshold: 0.8,
   stratum_target_count: 2,
   stratification_degraded_extra: 1,
+  stratum_contention_weighted: false,
 };
 
 export interface ServerDeps {
@@ -2350,6 +2370,27 @@ export class Server {
       perReviewer.set(v.proposal_id, v.decision);
     }
 
+    // Per-proposal vote tallies, used to compute contention weights
+    // when stratum_contention_weighted is on. We tally over all
+    // (cause, sub-topic)-scoped non-revise votes — the same vote set
+    // that feeds the pairwise edge loop below — so contention
+    // reflects the broader pool's split on each proposal. Computed
+    // once outside the O(N²) pair loop.
+    const proposalTally = new Map<ProposalId, { accepts: number; rejects: number }>();
+    if (this.review.stratum_contention_weighted) {
+      for (const perReviewer of reviewerVotes.values()) {
+        for (const [pid, decision] of perReviewer) {
+          let t = proposalTally.get(pid);
+          if (!t) {
+            t = { accepts: 0, rejects: 0 };
+            proposalTally.set(pid, t);
+          }
+          if (decision === 'accept') t.accepts += 1;
+          else if (decision === 'reject') t.rejects += 1;
+        }
+      }
+    }
+
     // Pairwise edge build. We iterate reviewers in a stable order to
     // make cluster id assignment deterministic — same vote state =
     // same cluster ids.
@@ -2368,14 +2409,44 @@ export class Server {
         if (!vb) continue;
         let shared = 0;
         let agreed = 0;
+        let weightedShared = 0;
+        let weightedAgreed = 0;
         for (const [pid, decisionA] of va) {
           const decisionB = vb.get(pid);
           if (!decisionB) continue;
           shared += 1;
-          if (decisionA === decisionB) agreed += 1;
+          const agree = decisionA === decisionB;
+          if (agree) agreed += 1;
+          if (this.review.stratum_contention_weighted) {
+            const tally = proposalTally.get(pid);
+            if (tally) {
+              const total = tally.accepts + tally.rejects;
+              if (total > 0) {
+                const minor = Math.min(tally.accepts, tally.rejects);
+                // Contention in [0,1]: 0 when unanimous, 1 at perfect
+                // split. Captures how informative this shared vote is
+                // about coalition signal — agreement on uncontentious
+                // proposals carries no weight, agreement on split-pool
+                // proposals carries the most.
+                const contention = (2 * minor) / total;
+                weightedShared += contention;
+                if (agree) weightedAgreed += contention;
+              }
+            }
+          }
         }
         if (shared < this.review.stratum_min_shared_proposals) continue;
-        if (agreed / shared < this.review.stratum_agreement_threshold) continue;
+        if (this.review.stratum_contention_weighted) {
+          // Weighted shared must be strictly positive — a pair whose
+          // entire shared history sits on unanimous proposals carries
+          // no signal in either direction and gets no edge. The brand-
+          // new-reviewer floor is preserved by the raw shared count
+          // check above; this is the additional weighted gate.
+          if (weightedShared <= 0) continue;
+          if (weightedAgreed / weightedShared < this.review.stratum_agreement_threshold) continue;
+        } else {
+          if (agreed / shared < this.review.stratum_agreement_threshold) continue;
+        }
         adjacency.get(a)?.add(b);
         adjacency.get(b)?.add(a);
       }

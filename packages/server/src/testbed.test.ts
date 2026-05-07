@@ -1854,6 +1854,413 @@ describe('testbed: honest-strong archetype', () => {
     expect(daveVote?.decision).toBe('reject');
   });
 
+  it('raw cluster primitive over-aggregates: unanimous-priming honest pool collapses into one stratum', async () => {
+    // The v0 cluster primitive (vote-pattern co-occurrence with raw
+    // agreement ratio) has a failure mode the decorrelating-coalition
+    // test surfaces by negation: when honest reviewers happen to share
+    // a unanimous priming history, raw 100%-agreement pulls them all
+    // into one cluster, the cross-stratum draw rule fires against
+    // them, and only one of them can vote on a contested item.
+    // Coalition members who *avoided* the priming sit in singleton
+    // strata and walk through the gate the honest reviewers got
+    // locked out of — so the pathology actively favors the coalition.
+    //
+    // Setup: 3 honest reviewers (Erin, Frank, Gina) accumulate
+    // shared accept-history on 3 "works" priming proposals via
+    // direct cast_review_vote (the same priming pattern the
+    // stratification-closes-coalition test uses) and the curator
+    // accepts those proposals to clear them from the frontier.
+    // Carol+Dave (coalition, shared bias predicate suppressing "no
+    // effect" findings) sit out priming entirely — a one-line
+    // adversary adaptation. Then the contested no-effect excerpt
+    // comes up via the assignment loop. Erin pulls and votes accept;
+    // Frank and Gina request assignments but get blocked by the
+    // cross-stratum check (they're co-stratum with already-voted
+    // Erin); Carol and Dave pull through (singletons) and both vote
+    // reject. Tally lands at 1 accept / 2 rejects, hits
+    // votes_to_reject=2, contested converges to rejected. The
+    // companion test below demonstrates contention-weighted edges
+    // closing this seam.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 3,
+        votes_to_reject: 2,
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+        stratum_contention_weighted: false,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+    const gina = server.bootstrap.mintIdentity({ display_name: 'gina' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erinClient = await wireArchetype(server, erin.id);
+    const frankClient = await wireArchetype(server, frank.id);
+    const ginaClient = await wireArchetype(server, gina.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    for (const c of [
+      { identity_id: erin.id },
+      { identity_id: frank.id },
+      { identity_id: gina.id },
+      { identity_id: carol.id },
+      { identity_id: dave.id },
+    ]) {
+      await server.tools.setCapacity(c, {
+        cause_id: cause.id,
+        rate: 5,
+        kinds: ['review'],
+      });
+    }
+
+    // PRIMING. Three "works" proposals; Erin, Frank, Gina each
+    // direct-cast accept on each. Direct cast bypasses the
+    // assignment selector so the cluster signal accumulates without
+    // triggering cross-stratum routing or stratification-degraded
+    // tightening mid-priming. Curator-accepts any that linger
+    // staged. Same pattern as the stratification-closes-coalition
+    // test.
+    for (let i = 0; i < 3; i++) {
+      const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      for (const r of [erin.id, frank.id, gina.id]) {
+        await server.tools.castReviewVote(
+          { identity_id: r },
+          {
+            proposal_id: excerpt.proposal_id,
+            decision: 'accept',
+            rationale: 'spot-checked, looks correct',
+          },
+        );
+      }
+      const after = server.store.proposals.get(excerpt.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(excerpt.proposal_id);
+      }
+    }
+
+    // CONTESTED: the no-effect excerpt the coalition wants to suppress.
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+
+    // CONTESTED PHASE.
+    const calAwareBiased = payloadBiasedDecider({
+      acceptIf: (payload) =>
+        'content' in payload &&
+        (!payload.content.includes('treatment') || payload.content.includes('works')),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    // Erin runs first — her pair-edges with Frank and Gina from
+    // priming put her squarely in cluster-EFG. She's first to the
+    // contested slot, so the cross-stratum gate doesn't have anyone
+    // routed yet to compare against, and her accept lands.
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    // Frank and Gina now hit the cross-stratum gate: Erin (already
+    // voted, in routedReviewers) is co-stratum, so request_assignment
+    // skips the contested item for them. They idle without voting.
+    await runHonestReviewer(frankClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(ginaClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    // Carol and Dave (singletons — never voted on priming) walk
+    // through. Both reject under the bias predicate.
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+
+    // HEADLINE: contested converges *rejected*. The honest pool's
+    // shared priming history overaggregated them into one cluster,
+    // the cross-stratum gate locked the majority of them out, and
+    // the coalition collected the votes_to_reject=2 majority on its
+    // own. Bias suppression succeeds — not via direct attack on the
+    // diversity defense, but as a side effect of the raw cluster
+    // primitive treating unanimous-easy agreement as coalition signal.
+    const target = server.store.proposals.get(contested.proposal_id);
+    expect(target?.status).toBe('rejected');
+    const contestedVotes = [...server.store.reviewVotes.values()].filter(
+      (v) => v.proposal_id === contested.proposal_id,
+    );
+    expect(contestedVotes).toHaveLength(3);
+    const erinVote = contestedVotes.find((v) => v.reviewer_id === erin.id);
+    const frankVote = contestedVotes.find((v) => v.reviewer_id === frank.id);
+    const ginaVote = contestedVotes.find((v) => v.reviewer_id === gina.id);
+    const carolVote = contestedVotes.find((v) => v.reviewer_id === carol.id);
+    const daveVote = contestedVotes.find((v) => v.reviewer_id === dave.id);
+    expect(erinVote?.decision).toBe('accept');
+    expect(frankVote).toBeUndefined();
+    expect(ginaVote).toBeUndefined();
+    expect(carolVote?.decision).toBe('reject');
+    expect(daveVote?.decision).toBe('reject');
+  });
+
+  it('contention-weighted clustering keeps unanimous-priming pool in distinct strata, restoring honest review flow', async () => {
+    // Companion to the over-aggregation test above. Identical setup
+    // — same 5-reviewer pool, same 3 unanimous priming proposals,
+    // same contested no-effect excerpt, same coalition predicate.
+    // The only change is `stratum_contention_weighted: true`. With
+    // contention weighting, each unanimous priming proposal carries
+    // 0 weight (`2 * min(accepts, rejects) / total = 0`), the
+    // weighted shared-history sum collapses to 0 for every pair, no
+    // edges form, and all 5 reviewers sit in singleton strata.
+    //
+    // The cross-stratum gate then has nothing to enforce. Erin,
+    // Frank, and Gina all walk through it on the contested slot;
+    // their three accepts hit votes_to_accept=3 before the coalition
+    // can vote, and the contested excerpt converges accepted. The
+    // coalition's request_assignment surfaces not_found by the time
+    // they run — the proposal is no longer staged.
+    //
+    // Headline: contention-weighting closes the over-aggregation
+    // pathology without giving up the cluster signal where it
+    // matters. A pair whose shared history sits entirely on
+    // unanimous-easy proposals carries no edge weight; a pair whose
+    // shared history includes contentious proposals where they
+    // co-voted does, and that's the signal the clustering primitive
+    // is actually trying to capture. The decorrelating-coalition
+    // bypass remains open — that vector is named separately and is
+    // the next testbed target on this seam.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 3,
+        votes_to_reject: 2,
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+        stratum_contention_weighted: true,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+    const gina = server.bootstrap.mintIdentity({ display_name: 'gina' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erinClient = await wireArchetype(server, erin.id);
+    const frankClient = await wireArchetype(server, frank.id);
+    const ginaClient = await wireArchetype(server, gina.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    for (const c of [
+      { identity_id: erin.id },
+      { identity_id: frank.id },
+      { identity_id: gina.id },
+      { identity_id: carol.id },
+      { identity_id: dave.id },
+    ]) {
+      await server.tools.setCapacity(c, {
+        cause_id: cause.id,
+        rate: 5,
+        kinds: ['review'],
+      });
+    }
+
+    for (let i = 0; i < 3; i++) {
+      const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      for (const r of [erin.id, frank.id, gina.id]) {
+        await server.tools.castReviewVote(
+          { identity_id: r },
+          {
+            proposal_id: excerpt.proposal_id,
+            decision: 'accept',
+            rationale: 'spot-checked, looks correct',
+          },
+        );
+      }
+      const after = server.store.proposals.get(excerpt.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(excerpt.proposal_id);
+      }
+    }
+
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+
+    const calAwareBiased = payloadBiasedDecider({
+      acceptIf: (payload) =>
+        'content' in payload &&
+        (!payload.content.includes('treatment') || payload.content.includes('works')),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    // Honest reviewers run first. Each is a singleton under
+    // contention-weighted clustering (priming carries 0 weight,
+    // 0 edges, 0 cluster aggregation). Three accepts in a row reach
+    // votes_to_accept=3 and the proposal converges accepted before
+    // the coalition has a chance to vote.
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(frankClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(ginaClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    // Coalition runs — but contested is no longer staged.
+    // request_assignment surfaces not_found and they idle.
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+
+    const target = server.store.proposals.get(contested.proposal_id);
+    expect(target?.status).toBe('accepted');
+    const contestedVotes = [...server.store.reviewVotes.values()].filter(
+      (v) => v.proposal_id === contested.proposal_id,
+    );
+    expect(contestedVotes).toHaveLength(3);
+    expect(contestedVotes.map((v) => v.reviewer_id).sort()).toEqual(
+      [erin.id, frank.id, gina.id].sort(),
+    );
+    expect(contestedVotes.every((v) => v.decision === 'accept')).toBe(true);
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
