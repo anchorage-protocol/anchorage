@@ -2101,3 +2101,316 @@ describe('calibration loop', () => {
   });
 });
 
+describe('stratified-by-history reviewer assignment', () => {
+  // Build a sub-topic with `count` accepted anchors and `count`
+  // staged excerpts hanging off them. Returns the staged excerpt ids
+  // in creation order for use as priming targets and final targets.
+  // Anchors and excerpts are alice's; the caller in `f` proposes them.
+  async function seedExcerpts(f: Fixture, count: number): Promise<string[]> {
+    const excerptIds: string[] = [];
+    for (let i = 1; i <= count; i++) {
+      const a = await f.server.tools.proposeAnchor(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: `paper ${i}`,
+        external_ref: { kind: 'pmid', value: String(i) },
+      });
+      f.server.curator.acceptProposal(a.proposal_id);
+      const anchorNode = [...f.server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
+      );
+      if (!anchorNode) throw new Error('anchor not materialized');
+      const e = await f.server.tools.proposeExcerpt(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        parent_anchor_id: anchorNode.id,
+        content: `excerpt ${i}`,
+        quoted_span: { text: 'span', offset: 0 },
+      });
+      excerptIds.push(e.proposal_id);
+    }
+    return excerptIds;
+  }
+
+  it('clusters reviewers who co-vote on shared proposals into one stratum', async () => {
+    // Two reviewers (carol, dave) co-vote accept on three primer
+    // excerpts; clustering should put them in the same stratum. erin
+    // (no shared history) is a singleton. With stratum_target_count=2
+    // and an eligible pool of {carol, dave} only, the target proposal
+    // must surface as stratification_degraded — there's only one
+    // stratum reachable.
+    const f = fixture({
+      review: {
+        votes_to_accept: 10,
+        votes_to_reject: 10,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+      },
+    });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const carolCaller: Caller = { identity_id: carol.id };
+    const daveCaller: Caller = { identity_id: dave.id };
+    await f.server.tools.setCapacity(carolCaller, {
+      cause_id: f.cause_id,
+      rate: 5,
+      kinds: ['review'],
+    });
+    await f.server.tools.setCapacity(daveCaller, {
+      cause_id: f.cause_id,
+      rate: 5,
+      kinds: ['review'],
+    });
+
+    // Three priming excerpts plus the target. Carol and Dave vote
+    // accept on the priming three (shared history); the target stays
+    // unvoted.
+    const [p0, p1, p2, targetId] = await seedExcerpts(f, 4);
+    if (!p0 || !p1 || !p2 || !targetId) throw new Error('seed mismatch');
+    for (const pid of [p0, p1, p2]) {
+      await f.server.tools.castReviewVote(carolCaller, {
+        proposal_id: pid as never,
+        decision: 'accept',
+        rationale: 'looks fine',
+      });
+      await f.server.tools.castReviewVote(daveCaller, {
+        proposal_id: pid as never,
+        decision: 'accept',
+        rationale: 'agreed',
+      });
+    }
+
+    const { proposals } = await f.server.tools.queryProposals(f.caller, {
+      status: 'staged',
+    });
+    const target = proposals.find((p) => p.id === targetId);
+    expect(target).toBeDefined();
+    // Eligible pool is {carol, dave}, both clustered → one reachable
+    // stratum, below stratum_target_count=2 → degraded.
+    expect(target?.stratification_degraded).toBe(true);
+  });
+
+  it('treats reviewers with no shared history as singleton strata (not degraded)', async () => {
+    // Same shape as above but the two reviewers never co-vote — they
+    // each have only their own vote history. Each is its own
+    // singleton stratum; the eligible pool covers two strata; not
+    // degraded.
+    const f = fixture({
+      review: {
+        votes_to_accept: 10,
+        votes_to_reject: 10,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+      },
+    });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const carolCaller: Caller = { identity_id: carol.id };
+    const daveCaller: Caller = { identity_id: dave.id };
+    await f.server.tools.setCapacity(carolCaller, {
+      cause_id: f.cause_id,
+      rate: 5,
+      kinds: ['review'],
+    });
+    await f.server.tools.setCapacity(daveCaller, {
+      cause_id: f.cause_id,
+      rate: 5,
+      kinds: ['review'],
+    });
+
+    const [p0, p1, p2, targetId] = await seedExcerpts(f, 4);
+    if (!p0 || !p1 || !p2 || !targetId) throw new Error('seed mismatch');
+    // Carol votes on p0, p1; Dave votes on p1, p2. Only p1 is shared
+    // — below the min_shared=2 floor, so no edge forms.
+    await f.server.tools.castReviewVote(carolCaller, {
+      proposal_id: p0 as never,
+      decision: 'accept',
+      rationale: 'a',
+    });
+    await f.server.tools.castReviewVote(carolCaller, {
+      proposal_id: p1 as never,
+      decision: 'accept',
+      rationale: 'a',
+    });
+    await f.server.tools.castReviewVote(daveCaller, {
+      proposal_id: p1 as never,
+      decision: 'accept',
+      rationale: 'a',
+    });
+    await f.server.tools.castReviewVote(daveCaller, {
+      proposal_id: p2 as never,
+      decision: 'accept',
+      rationale: 'a',
+    });
+
+    const { proposals } = await f.server.tools.queryProposals(f.caller, {
+      status: 'staged',
+    });
+    const target = proposals.find((p) => p.id === targetId);
+    expect(target?.stratification_degraded).toBe(false);
+  });
+
+  it('leaves stratification_degraded undefined when stratification is disabled', async () => {
+    const f = fixture(); // defaults: stratification_enabled = false
+    const [targetId] = await seedExcerpts(f, 1);
+    if (!targetId) throw new Error('seed mismatch');
+    const { proposals } = await f.server.tools.queryProposals(f.caller, {
+      status: 'staged',
+    });
+    const target = proposals.find((p) => p.id === targetId);
+    expect(target).toBeDefined();
+    expect(target?.stratification_degraded).toBeUndefined();
+  });
+
+  it('cross-stratum draw skips a co-stratum reviewer when one is already routed', async () => {
+    // Carol and Dave are clustered (co-voted on 3 primer excerpts).
+    // Carol picks up the target via request_assignment first. Dave's
+    // request_assignment then has no eligible review task — the
+    // target is the only candidate, and Carol-already-routed +
+    // Dave-co-stratum-with-Carol means it's skipped for Dave.
+    // Erin (singleton) can pick the target up.
+    //
+    // votes_to_X = 2 so the priming co-accepts (2 per proposal) drive
+    // each priming proposal to status=accepted, removing them from the
+    // frontier. Their votes still inform clustering — vote history
+    // survives proposal resolution. The target (4th excerpt) is the
+    // only staged proposal at the time of the request_assignment
+    // calls below.
+    const f = fixture({
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+      },
+    });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erin = f.server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const carolCaller: Caller = { identity_id: carol.id };
+    const daveCaller: Caller = { identity_id: dave.id };
+    const erinCaller: Caller = { identity_id: erin.id };
+    for (const c of [carolCaller, daveCaller, erinCaller]) {
+      await f.server.tools.setCapacity(c, {
+        cause_id: f.cause_id,
+        rate: 5,
+        kinds: ['review'],
+      });
+    }
+
+    const [p0, p1, p2, targetId] = await seedExcerpts(f, 4);
+    if (!p0 || !p1 || !p2 || !targetId) throw new Error('seed mismatch');
+    for (const pid of [p0, p1, p2]) {
+      await f.server.tools.castReviewVote(carolCaller, {
+        proposal_id: pid as never,
+        decision: 'accept',
+        rationale: 'a',
+      });
+      await f.server.tools.castReviewVote(daveCaller, {
+        proposal_id: pid as never,
+        decision: 'accept',
+        rationale: 'a',
+      });
+    }
+
+    // Carol pulls first: gets the target excerpt.
+    const carolAssign = await f.server.tools.requestAssignment(carolCaller, {
+      cause_id: f.cause_id,
+    });
+    if (carolAssign.task.kind !== 'review') throw new Error('expected review task');
+    expect(carolAssign.task.proposal_id).toBe(targetId);
+
+    // Dave pulls next: cross-stratum skip blocks the target. The only
+    // remaining frontier review item is the target (the priming three
+    // already have votes from both carol and dave, so they are
+    // filtered out by the already-voted gate). With the target
+    // skipped, Dave gets not_found — the eligible frontier is empty
+    // for him.
+    await expect(
+      f.server.tools.requestAssignment(daveCaller, { cause_id: f.cause_id }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+
+    // Erin (singleton stratum, distinct from Carol's cluster) still
+    // gets the target: cross-stratum check passes.
+    const erinAssign = await f.server.tools.requestAssignment(erinCaller, {
+      cause_id: f.cause_id,
+    });
+    if (erinAssign.task.kind !== 'review') throw new Error('expected review task');
+    expect(erinAssign.task.proposal_id).toBe(targetId);
+  });
+
+  it('tightens convergence threshold on a stratification-degraded proposal', async () => {
+    // Eligible pool = {carol, dave}, both clustered → 1 stratum
+    // reachable; target stratum_count=2 → degraded. With votes_to_X=2
+    // and stratification_degraded_extra=1, the effective threshold
+    // is 3. Two coalition rejects on the target excerpt do not drive
+    // it to rejected — the proposal stays staged.
+    const f = fixture({
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+      },
+    });
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const carolCaller: Caller = { identity_id: carol.id };
+    const daveCaller: Caller = { identity_id: dave.id };
+    for (const c of [carolCaller, daveCaller]) {
+      await f.server.tools.setCapacity(c, {
+        cause_id: f.cause_id,
+        rate: 5,
+        kinds: ['review'],
+      });
+    }
+
+    // Priming: three co-rejects build the cluster signal. Each
+    // priming proposal lands at status=rejected after the second
+    // vote, but their votes still exist in the store and still inform
+    // clustering. Three priming proposals (rather than two) keeps the
+    // shared-vote count strictly above the min_shared floor.
+    const [p0, p1, p2, targetId] = await seedExcerpts(f, 4);
+    if (!p0 || !p1 || !p2 || !targetId) throw new Error('seed mismatch');
+    for (const pid of [p0, p1, p2]) {
+      await f.server.tools.castReviewVote(carolCaller, {
+        proposal_id: pid as never,
+        decision: 'reject',
+        rationale: 'underpowered',
+      });
+      await f.server.tools.castReviewVote(daveCaller, {
+        proposal_id: pid as never,
+        decision: 'reject',
+        rationale: 'underpowered',
+      });
+    }
+
+    // Target excerpt: both coalition members reject. Without the
+    // degraded-tightening, this would be 2 rejects >= votes_to_reject
+    // = 2 and the proposal would converge to rejected. With the
+    // degraded flag firing (eligible pool covers only the clustered
+    // stratum), the threshold is 3 and the proposal stays staged.
+    await f.server.tools.castReviewVote(carolCaller, {
+      proposal_id: targetId as never,
+      decision: 'reject',
+      rationale: 'underpowered',
+    });
+    await f.server.tools.castReviewVote(daveCaller, {
+      proposal_id: targetId as never,
+      decision: 'reject',
+      rationale: 'underpowered',
+    });
+
+    const target = f.server.store.proposals.get(targetId as never);
+    expect(target?.status).toBe('staged');
+  });
+});

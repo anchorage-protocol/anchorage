@@ -51,6 +51,7 @@ import {
   RequestAssignmentInput,
   type RequestAssignmentOutput,
   type ReviewBatchItem,
+  type ReviewDecision,
   type ReviewVote,
   SetCapacityInput,
   type SetCapacityOutput,
@@ -176,6 +177,42 @@ export interface ReviewConfig {
   // calibration despite holding bias) are an open testbed target that
   // builds on this seam, not a regression of it.
   calibration_aware_convergence: boolean;
+  // Stratified-by-history reviewer assignment (PRD §Reviewer
+  // assignment). When true, the assignment selector partitions the
+  // eligible reviewer pool into vote-pattern co-occurrence clusters
+  // and prefers draws across clusters; convergence reads the same
+  // partition to mark proposals that lost their diversity defense as
+  // stratification-degraded and tighten thresholds. Defaults to off
+  // so existing scenarios that don't sweep stratification are
+  // unaffected.
+  stratification_enabled: boolean;
+  // Two reviewers are co-stratum when they have voted on at least
+  // this many shared past proposals AND their pairwise agreement on
+  // those shared proposals is >= stratum_agreement_threshold. Below
+  // the shared-proposal floor, the pair is treated as no-edge — the
+  // signal isn't there yet. Smaller floors detect bias clusters
+  // earlier but accept more noise; the testbed sweeps this.
+  stratum_min_shared_proposals: number;
+  // Pairwise agreement threshold for cluster-edge formation. 1.0 is
+  // "always voted the same way on every shared proposal"; 0.5 is
+  // chance for binary vote outcomes. Default 0.8 — high enough to
+  // distinguish coordinated bias from independent agreement on
+  // strongly-grounded proposals, low enough to detect a coalition
+  // that doesn't perfectly synchronize.
+  stratum_agreement_threshold: number;
+  // Target distinct strata count per proposal. When the eligible
+  // pool can't furnish at least this many strata, the proposal is
+  // marked stratification-degraded and convergence tightens.
+  // Defaults to votes_to_accept — same target as the redundant-
+  // peer-review invariant.
+  stratum_target_count: number;
+  // Extra distinct-reviewer count and weighted-sum required for
+  // convergence on a stratification-degraded proposal. PRD commits
+  // "tighter" without committing the shape; v0 uses a fixed additive
+  // bump over both the count and the weighted-sum thresholds for
+  // testability. Multiplicative tightening is a future testbed
+  // sweep.
+  stratification_degraded_extra: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -190,6 +227,11 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   calibration_pass_gain: 1,
   calibration_fail_loss: 1,
   calibration_aware_convergence: false,
+  stratification_enabled: false,
+  stratum_min_shared_proposals: 3,
+  stratum_agreement_threshold: 0.8,
+  stratum_target_count: 2,
+  stratification_degraded_extra: 1,
 };
 
 export interface ServerDeps {
@@ -1059,6 +1101,44 @@ export class Server {
             }
           }
           if (voted) continue;
+
+          // Cross-stratum draw rule (PRD §Reviewer assignment, "prefer
+          // not-yet-represented strata first"). When stratification is
+          // enabled, skip this proposal for this caller if a co-stratum
+          // reviewer is already routed to it (via offered/accepted
+          // assignment OR an existing vote). The selector falls through
+          // to the next frontier item, which is the only point in the
+          // pull model where "another reviewer should take this slot"
+          // can be expressed. Falls back to per-stratum saturation only
+          // when the pool is otherwise exhausted; the v0 graceful-
+          // degradation comes from convergence tightening on the
+          // stratification-degraded flag rather than a second pass
+          // through this loop.
+          if (this.review.stratification_enabled) {
+            const route = this.locateProposalForReview(target);
+            if (route) {
+              const strata = this.computeReviewerStrata(route.cause_id, route.sub_topic_id);
+              const callerStratum = this.stratumIdOf(identity.id, strata);
+              const routedReviewers = new Set<IdentityId>();
+              for (const a of this.store.assignments.values()) {
+                if (a.task.kind !== 'review') continue;
+                if (a.task.proposal_id !== target.id) continue;
+                if (a.status !== 'offered' && a.status !== 'accepted') continue;
+                routedReviewers.add(a.contributor_id);
+              }
+              for (const v of this.store.reviewVotes.values()) {
+                if (v.proposal_id === target.id) routedReviewers.add(v.reviewer_id);
+              }
+              let coStratumAlreadyRouted = false;
+              for (const rid of routedReviewers) {
+                if (this.stratumIdOf(rid, strata) === callerStratum) {
+                  coStratumAlreadyRouted = true;
+                  break;
+                }
+              }
+              if (coStratumAlreadyRouted) continue;
+            }
+          }
         }
 
         // No double-offer: skip items where the caller already holds
@@ -1660,7 +1740,12 @@ export class Server {
         if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
         return a.id.localeCompare(b.id);
       });
-      return { proposals };
+      // Project the derived stratification-degraded flag at read-path
+      // (PRD §Reviewer assignment: "visible to the contributor"). No-op
+      // when stratification is disabled or the proposal has reached a
+      // terminal status — projectStratificationFlag handles both.
+      const projected = proposals.map((p) => this.projectStratificationFlag(p));
+      return { proposals: projected };
     },
 
     // PRD §Reputation line 248: contributors see their own raw scores
@@ -2044,18 +2129,24 @@ export class Server {
             : 1;
       }
     }
-    if (
-      acceptCount >= this.review.votes_to_accept &&
-      acceptWeight >= this.review.votes_to_accept
-    ) {
+    // Stratification-degraded tightening (PRD §Reviewer assignment).
+    // When the eligible pool can't furnish stratum_target_count
+    // distinct strata, both convergence thresholds bump by the
+    // configured extra. This is the seam that makes the small-sub-
+    // topic case slower-but-not-capturable: a coalition that fits the
+    // pool can't drive convergence at the standard threshold because
+    // the threshold itself moved.
+    const degraded = this.isProposalStratificationDegraded(proposal);
+    const acceptThreshold =
+      this.review.votes_to_accept + (degraded ? this.review.stratification_degraded_extra : 0);
+    const rejectThreshold =
+      this.review.votes_to_reject + (degraded ? this.review.stratification_degraded_extra : 0);
+    if (acceptCount >= acceptThreshold && acceptWeight >= acceptThreshold) {
       this.acceptStaged(proposal);
       this.applyReputationUpdates(proposal, 'accepted');
       return;
     }
-    if (
-      rejectCount >= this.review.votes_to_reject &&
-      rejectWeight >= this.review.votes_to_reject
-    ) {
+    if (rejectCount >= rejectThreshold && rejectWeight >= rejectThreshold) {
       const now = this.clock.now();
       this.store.proposals.set(proposal.id, { ...proposal, status: 'rejected', updated_at: now });
       this.applyReputationUpdates(proposal, 'rejected');
@@ -2206,6 +2297,181 @@ export class Server {
     const rec = this.store.calibrationRecords.get(key);
     if (!rec) return 1;
     return Math.max(0, 1 + rec.passes - rec.fails);
+  }
+
+  // Vote-pattern co-occurrence clustering (PRD §Reviewer assignment,
+  // v0 stratum primitive). Two reviewers fall in the same cluster
+  // when they have voted on >= stratum_min_shared_proposals shared
+  // past proposals AND their pairwise vote agreement on those shared
+  // proposals is >= stratum_agreement_threshold. Connected components
+  // over those pairwise edges are the strata. Reviewers below the
+  // shared-history floor sit in singleton strata, which is the
+  // honest-by-default behavior: a brand-new reviewer with no shared
+  // history is independent until they prove otherwise.
+  //
+  // The function is keyed on (cause_id, sub_topic_id) because PRD
+  // commits stratification at the per-(cause, sub-topic) level; vote
+  // history elsewhere doesn't speak to bias zones in *this* sub-topic.
+  // Members are returned as a Map identity -> stratum id; absence
+  // means the identity has no votes in this scope and would be its
+  // own singleton stratum if drawn into one.
+  //
+  // Computed on-the-fly per call. Cheap for v0 testbed pool sizes;
+  // a per-(cause, sub-topic) cache with vote-cast invalidation is the
+  // production move once pool sizes warrant it.
+  private computeReviewerStrata(causeId: CauseId, subTopicId: SubTopicId): Map<IdentityId, string> {
+    // Per-reviewer vote history scoped to (cause, sub-topic):
+    // proposal_id -> decision, but only for proposals whose home
+    // sub-topic matches subTopicId AND whose cause matches causeId.
+    // Use the same locateProposalForReview routing the rest of the
+    // server uses so membership-cause-routing stays consistent.
+    const reviewerVotes = new Map<IdentityId, Map<ProposalId, ReviewDecision>>();
+    for (const v of this.store.reviewVotes.values()) {
+      const proposal = this.store.proposals.get(v.proposal_id);
+      if (!proposal) continue;
+      const route = this.locateProposalForReview(proposal);
+      if (!route) continue;
+      if (route.cause_id !== causeId) continue;
+      if (route.sub_topic_id !== subTopicId) continue;
+      // revise votes carry no agreement signal in either direction —
+      // they mean "needs work, not yet" rather than a position. Drop
+      // them from cluster computation.
+      if (v.decision === 'revise') continue;
+      let perReviewer = reviewerVotes.get(v.reviewer_id);
+      if (!perReviewer) {
+        perReviewer = new Map();
+        reviewerVotes.set(v.reviewer_id, perReviewer);
+      }
+      // Defensive: if a reviewer has multiple non-revise votes on the
+      // same proposal (current double-vote guard prevents this, but
+      // future revote semantics may relax it), the latest cast wins —
+      // it's the reviewer's standing position.
+      perReviewer.set(v.proposal_id, v.decision);
+    }
+
+    // Pairwise edge build. We iterate reviewers in a stable order to
+    // make cluster id assignment deterministic — same vote state =
+    // same cluster ids.
+    const reviewers = [...reviewerVotes.keys()].sort();
+    const adjacency = new Map<IdentityId, Set<IdentityId>>();
+    for (const r of reviewers) adjacency.set(r, new Set());
+    for (let i = 0; i < reviewers.length; i++) {
+      const a = reviewers[i];
+      if (!a) continue;
+      const va = reviewerVotes.get(a);
+      if (!va) continue;
+      for (let j = i + 1; j < reviewers.length; j++) {
+        const b = reviewers[j];
+        if (!b) continue;
+        const vb = reviewerVotes.get(b);
+        if (!vb) continue;
+        let shared = 0;
+        let agreed = 0;
+        for (const [pid, decisionA] of va) {
+          const decisionB = vb.get(pid);
+          if (!decisionB) continue;
+          shared += 1;
+          if (decisionA === decisionB) agreed += 1;
+        }
+        if (shared < this.review.stratum_min_shared_proposals) continue;
+        if (agreed / shared < this.review.stratum_agreement_threshold) continue;
+        adjacency.get(a)?.add(b);
+        adjacency.get(b)?.add(a);
+      }
+    }
+
+    // Connected-components over the agreement graph. Component id is
+    // the lexicographically smallest identity in the component, which
+    // gives stable ids across calls.
+    const cluster = new Map<IdentityId, string>();
+    for (const r of reviewers) {
+      if (cluster.has(r)) continue;
+      const queue: IdentityId[] = [r];
+      const componentId = r;
+      while (queue.length > 0) {
+        const cur = queue.shift();
+        if (!cur) continue;
+        if (cluster.has(cur)) continue;
+        cluster.set(cur, componentId);
+        const neighbors = adjacency.get(cur);
+        if (!neighbors) continue;
+        for (const next of neighbors) {
+          if (!cluster.has(next)) queue.push(next);
+        }
+      }
+    }
+    return cluster;
+  }
+
+  // Stratum a given identity occupies in (cause, sub-topic). Returns
+  // the cluster id from computeReviewerStrata, or — if the identity
+  // has no votes in scope yet — a singleton-stratum id keyed on the
+  // identity itself. Singleton ids are formatted distinctly so they
+  // can never collide with a multi-member cluster id.
+  private stratumIdOf(identityId: IdentityId, strata: Map<IdentityId, string>): string {
+    return strata.get(identityId) ?? `singleton:${identityId}`;
+  }
+
+  // Eligible-pool snapshot for a proposal: every identity that has
+  // declared cause-level capacity covering review work, minus the
+  // proposer (PRD §Reviewer assignment conflict-of-interest invariant
+  // mirrored from cast_review_vote). Used by the stratification-
+  // degraded check to count reachable strata.
+  //
+  // Doesn't filter on rep tier yet — v0 has no rep gate at the
+  // assignment surface; that lands when sufficient-rep eligibility
+  // does. Doesn't filter out identities who already voted, either —
+  // their vote already counted, and the diversity question is about
+  // whether the *pool* could have been diverse, not about who is
+  // still pullable right now.
+  private eligibleReviewerPool(proposal: Proposal): IdentityId[] {
+    const route = this.locateProposalForReview(proposal);
+    if (!route) return [];
+    const pool: IdentityId[] = [];
+    for (const cap of this.store.capacities.values()) {
+      if (cap.cause_id !== route.cause_id) continue;
+      if (!cap.kinds.includes('review')) continue;
+      if (cap.identity_id === proposal.proposer_id) continue;
+      pool.push(cap.identity_id);
+    }
+    return pool;
+  }
+
+  // Stratification-degraded check (PRD §Reviewer assignment). True
+  // when the eligible reviewer pool covers fewer than
+  // stratum_target_count distinct strata. False when stratification
+  // is disabled (the flag's behavior is opt-in, mirroring the
+  // calibration-aware-convergence pattern). A reviewer with no votes
+  // in scope counts as their own singleton stratum, so a thin-history
+  // pool is *not* automatically degraded — each reviewer is a stratum
+  // until they prove correlated. The degradation case is a pool with
+  // history that has already collapsed into too few clusters.
+  private isProposalStratificationDegraded(proposal: Proposal): boolean {
+    if (!this.review.stratification_enabled) return false;
+    const route = this.locateProposalForReview(proposal);
+    if (!route) return false;
+    const pool = this.eligibleReviewerPool(proposal);
+    if (pool.length === 0) return true;
+    const strata = this.computeReviewerStrata(route.cause_id, route.sub_topic_id);
+    const reachable = new Set<string>();
+    for (const identityId of pool) {
+      reachable.add(this.stratumIdOf(identityId, strata));
+    }
+    return reachable.size < this.review.stratum_target_count;
+  }
+
+  // Project the stratification-degraded flag onto a Proposal record at
+  // read-path time. Returns the input record unchanged when the flag
+  // is disabled or the proposal is past staging — terminal proposals
+  // don't need a derived diversity signal, and stamping one would
+  // muddle their record.
+  private projectStratificationFlag(proposal: Proposal): Proposal {
+    if (!this.review.stratification_enabled) return proposal;
+    if (proposal.status !== 'staged') return proposal;
+    return {
+      ...proposal,
+      stratification_degraded: this.isProposalStratificationDegraded(proposal),
+    };
   }
 
   // Apply the result of materialize() to the store. Centralized so the

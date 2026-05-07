@@ -130,6 +130,17 @@ export const Proposal = z
     payload: ProposalPayload,
     created_at: Timestamp,
     updated_at: Timestamp,
+    // PRD §Reviewer assignment: derived flag projected at the read-
+    // path (query_proposals) when the eligible reviewer pool for this
+    // proposal cannot furnish the configured number of distinct
+    // strata. Not persisted — it is computed from current vote-history
+    // clusters and the current eligible pool every time a proposal is
+    // surfaced. Convergence reads the same derived signal to tighten
+    // thresholds. Absent (undefined) when stratification is disabled
+    // or the proposal has reached a terminal status; false when the
+    // pool is diverse enough; true when the diversity floor is not
+    // met.
+    stratification_degraded: z.boolean().optional(),
   })
   .strict();
 export type Proposal = z.infer<typeof Proposal>;
