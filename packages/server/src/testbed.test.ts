@@ -923,6 +923,157 @@ describe('testbed: honest-strong archetype', () => {
     expect(erinScore).toBeGreaterThan(Math.min(carolScore, daveScore));
   });
 
+  it('calibration-aware convergence closes the strategic-coalition convergence half', async () => {
+    // Sequel to the calibration-injection scenario above. Same setup
+    // (two well-grounded excerpts, honest reviewer + 2-of-3 biased
+    // coalition, calibration injected every 2nd review-task offer);
+    // the only change is calibration_aware_convergence=true. The
+    // convergence-layer half of the strategic-coalition vector — the
+    // one calibration alone could not close — closes here: the
+    // bias-misaligned "no effect" excerpt is no longer rejected,
+    // because the coalition's calibration record went sour and their
+    // votes carry zero weight at convergence time.
+    //
+    // What this defense does: a reviewer's per-(cause, sub-topic)
+    // calibration record (passes minus fails) determines their vote
+    // weight at convergence. Convergence requires both ≥ N distinct
+    // reviewers AND ≥ N weighted sum on either side — so a coalition
+    // member with a negative calibration record contributes 0 to the
+    // weighted sum even when they contribute 1 to the distinct count.
+    // They can hold a convergence open, but they cannot drive it.
+    //
+    // What this defense does not do: stop a calibration-aware
+    // adversary that holds bias on real proposals while voting
+    // ground-truth on calibration items (PRD line 281). That's an
+    // open testbed target that builds on this seam, not a regression
+    // of it.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        calibration_inject_every_n: 2,
+        calibration_aware_convergence: true,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    for (let i = 1; i <= 2; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) =>
+        anchorId.endsWith('1') || anchorId.endsWith('a')
+          ? {
+              content: 'treatment X works for stage III',
+              quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+            }
+          : {
+              content: 'treatment X has no effect for stage IV',
+              quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+            },
+    };
+    await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    // Erin runs first so she accumulates a positive calibration record
+    // (acceptAllDecider passes every calibration item, which is the
+    // ground-truth-correct vote since calibration items are accepted-
+    // from-history). When the coalition arrives, Erin's vote weight
+    // is already > 1.
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    const biased = payloadBiasedDecider({
+      acceptIf: (payload) => 'content' in payload && payload.content.includes('works'),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    await runHonestReviewer(carolClient, { cause_id: cause.id, rate: 5, decide: biased });
+    await runHonestReviewer(daveClient, { cause_id: cause.id, rate: 5, decide: biased });
+
+    // Headline assertion: the bias-misaligned excerpt is no longer
+    // rejected. It stays staged — the coalition can hold convergence
+    // open, but cannot drive it past threshold once their calibration
+    // record has dropped their weight to zero. The pre-defense
+    // scenario above asserts `noEffect.status === 'rejected'`; this
+    // is the regression handle that says the convergence half closed.
+    const excerpts = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    expect(excerpts).toHaveLength(2);
+    const works = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('works'),
+    );
+    const noEffect = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('no effect'),
+    );
+    // The bias-aligned "works" excerpt still converges to accepted —
+    // it has Erin's high-weight accept plus a coalition accept, both
+    // distinct, both positive-weight (Carol's first vote on works
+    // happens before her calibration record has gone sour). The
+    // defense isn't symmetric and isn't trying to be: well-grounded
+    // claims that happen to align with bias are still well-grounded.
+    expect(works?.status).toBe('accepted');
+    // The bias-misaligned "no effect" excerpt stays staged.
+    expect(noEffect?.status).toBe('staged');
+
+    // Materialization follows: works has a node, no-effect doesn't
+    // (it would only materialize on convergence to accepted).
+    const excerptNodes = [...server.store.nodes.values()].filter((n) => n.kind === 'excerpt');
+    expect(excerptNodes).toHaveLength(1);
+    expect(excerptNodes[0]?.content).toContain('works');
+
+    // Reputation ledger continues to bite the way the calibration-
+    // injection scenario established: Erin strictly positive, both
+    // coalition members strictly less than Erin. The convergence
+    // defense compounds rather than replaces the rep-ledger one.
+    const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
+    const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
+    const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
+    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    expect(erinScore).toBeGreaterThan(0);
+    expect(erinScore).toBeGreaterThan(carolScore);
+    expect(erinScore).toBeGreaterThan(daveScore);
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),

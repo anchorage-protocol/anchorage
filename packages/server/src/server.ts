@@ -154,6 +154,28 @@ export interface ReviewConfig {
   // calibration item. PRD line 203 + line 246: failing calibration
   // and inaccurate reviews both deduct rep.
   calibration_fail_loss: number;
+  // Calibration-aware convergence: when true, resolveByConvergence
+  // weights votes by the reviewer's per-(cause, sub-topic) calibration
+  // record (passes minus fails) at convergence time. Convergence
+  // requires both a minimum count of distinct reviewers AND a minimum
+  // *weighted* sum, both equal to votes_to_X. The two conditions
+  // collapse to today's count-based behavior when every reviewer's
+  // weight is 1 (calibration record (0,0)) and only differ once
+  // calibration history starts moving weights. Defaults to off so the
+  // existing scenarios that count votes 1:1 are unaffected.
+  //
+  // The defense closes the convergence half of the strategic-coalition
+  // attack: a coalition whose bias misfires on calibration items pays
+  // for it twice — once on the rep ledger (already wired) and once at
+  // convergence, where their reduced weight no longer drives a
+  // bias-aligned suppression past the threshold. The seam relies on
+  // the calibration corpus being non-trivial for the bias predicate
+  // (PRD §Calibration batches: calibration items "drawn from the
+  // graph's own validated history" are by construction not bias-
+  // engineered). Calibration-aware adversaries (PRD line 281: passing
+  // calibration despite holding bias) are an open testbed target that
+  // builds on this seam, not a regression of it.
+  calibration_aware_convergence: boolean;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -167,6 +189,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   calibration_inject_every_n: 0,
   calibration_pass_gain: 1,
   calibration_fail_loss: 1,
+  calibration_aware_convergence: false,
 };
 
 export interface ServerDeps {
@@ -1809,6 +1832,17 @@ export class Server {
               ? this.review.calibration_pass_gain
               : -this.review.calibration_fail_loss;
           this.bumpReputation(identity.id, causeId, subTopicId, delta);
+          // Track the pass/fail counts separately from the rep ledger.
+          // The convergence-layer defense reads this when calibration-
+          // aware vote weighting is enabled; keeping it on a separate
+          // counter avoids conflating calibration signal with
+          // convergence-vote-accuracy rep, which a coalition can farm.
+          this.bumpCalibrationRecord(
+            identity.id,
+            causeId,
+            subTopicId,
+            parsed.decision === 'accept' ? 'pass' : 'fail',
+          );
         }
         return { vote_id: vote.id };
       }
@@ -1978,19 +2012,50 @@ export class Server {
     if (proposal.payload.kind === 'sub_topic' || proposal.payload.kind === 'change_of_home') {
       return;
     }
-    let accepts = 0;
-    let rejects = 0;
+    // Distinct-reviewer count (the redundant-peer-review invariant)
+    // and weighted sum (the calibration-aware bias-resistance signal)
+    // run in parallel. With calibration_aware_convergence off, weights
+    // are uniformly 1, so the weighted sum equals the count and the
+    // two conditions collapse to today's "two distinct accepts ⇒
+    // accepted" behavior. With it on, a reviewer whose calibration
+    // record went sour contributes 0 to the weighted sum but still 1
+    // to the distinct count — meaning one cred-zero reject can hold a
+    // convergence open without itself being able to drive it.
+    const weighted = this.review.calibration_aware_convergence;
+    let acceptCount = 0;
+    let rejectCount = 0;
+    let acceptWeight = 0;
+    let rejectWeight = 0;
+    const causeId = weighted ? this.reputationCauseFor(proposal) : null;
+    const subTopicId = weighted ? this.reputationSubTopicFor(proposal) : null;
     for (const v of this.store.reviewVotes.values()) {
       if (v.proposal_id !== proposalId) continue;
-      if (v.decision === 'accept') accepts += 1;
-      else if (v.decision === 'reject') rejects += 1;
+      if (v.decision === 'accept') {
+        acceptCount += 1;
+        acceptWeight +=
+          weighted && causeId && subTopicId
+            ? this.calibrationVoteWeight(v.reviewer_id, causeId, subTopicId)
+            : 1;
+      } else if (v.decision === 'reject') {
+        rejectCount += 1;
+        rejectWeight +=
+          weighted && causeId && subTopicId
+            ? this.calibrationVoteWeight(v.reviewer_id, causeId, subTopicId)
+            : 1;
+      }
     }
-    if (accepts >= this.review.votes_to_accept) {
+    if (
+      acceptCount >= this.review.votes_to_accept &&
+      acceptWeight >= this.review.votes_to_accept
+    ) {
       this.acceptStaged(proposal);
       this.applyReputationUpdates(proposal, 'accepted');
       return;
     }
-    if (rejects >= this.review.votes_to_reject) {
+    if (
+      rejectCount >= this.review.votes_to_reject &&
+      rejectWeight >= this.review.votes_to_reject
+    ) {
       const now = this.clock.now();
       this.store.proposals.set(proposal.id, { ...proposal, status: 'rejected', updated_at: now });
       this.applyReputationUpdates(proposal, 'rejected');
@@ -2110,6 +2175,37 @@ export class Server {
       score: (existing?.score ?? 0) + delta,
       updated_at: now,
     });
+  }
+
+  private bumpCalibrationRecord(
+    identityId: IdentityId,
+    causeId: CauseId,
+    subTopicId: SubTopicId,
+    outcome: 'pass' | 'fail',
+  ): void {
+    const key = `${identityId}|${causeId}|${subTopicId}` as const;
+    const existing = this.store.calibrationRecords.get(key) ?? { passes: 0, fails: 0 };
+    this.store.calibrationRecords.set(key, {
+      passes: existing.passes + (outcome === 'pass' ? 1 : 0),
+      fails: existing.fails + (outcome === 'fail' ? 1 : 0),
+    });
+  }
+
+  // Vote weight for a reviewer at convergence time when calibration-
+  // aware convergence is enabled. weight = max(0, 1 + passes - fails)
+  // — base of 1 collapses to count-mode when every reviewer has zero
+  // calibration history, so the flag is a strict superset of the
+  // count behavior. Negative net record clips to 0: a reviewer whose
+  // calibration record went sour cannot move convergence at all.
+  private calibrationVoteWeight(
+    identityId: IdentityId,
+    causeId: CauseId,
+    subTopicId: SubTopicId,
+  ): number {
+    const key = `${identityId}|${causeId}|${subTopicId}` as const;
+    const rec = this.store.calibrationRecords.get(key);
+    if (!rec) return 1;
+    return Math.max(0, 1 + rec.passes - rec.fails);
   }
 
   // Apply the result of materialize() to the store. Centralized so the

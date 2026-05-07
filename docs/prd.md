@@ -204,6 +204,8 @@ Calibration items arrive on the same surface as real review work — `request_as
 
 Reviewers who fail calibration lose reputation; the calibration corpus grows as the graph grows.
 
+The reviewer's calibration record is also available to the convergence layer as a vote-weighting signal: a per-(cause, sub-topic) net-passes count that scales the weight a reviewer's vote carries when the server tallies convergence. Convergence requires both a minimum count of distinct reviewers (the redundant-peer-review invariant) and a minimum *weighted* sum (the bias-resistance signal); a reviewer whose calibration record went sour can hold a convergence open but cannot drive it. This compounds with the rep-ledger penalty rather than replacing it: a coalition that misfires on calibration items pays once on the rep ledger and once at convergence. Calibration-aware adversaries — bias on real proposals, ground-truth on calibration items (a known PRD §Adversary-testbed target) — bypass this layer; they remain testbed work that builds on the seam, not regressions of it. Specific weight functions and minimum-count thresholds are testbed-tuned.
+
 **Specific calibration items in active rotation are operationally private.** Published items are burned. Methodology — including the rotation regime and the sampling-distribution defenses against batch-level correlation attacks — is fully public; specific tuning is not.
 
 ### Reviewer-as-staking

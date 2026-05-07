@@ -47,6 +47,18 @@ export class MemoryStore {
   // pattern. The composite key keeps lookups O(1); the values are
   // updated on convergence in resolveByConvergence.
   readonly reputations = new Map<`${IdentityId}|${CauseId}|${SubTopicId}`, Reputation>();
+  // Per-(identity, cause, sub_topic) calibration record: passes minus
+  // fails on calibration items. Updated on calibration `cast_review_vote`
+  // and read by the convergence layer when calibration-aware vote
+  // weighting is enabled. Tracked separately from the rep ledger
+  // because rep also moves on convergence-vote accuracy — which a
+  // strategic coalition can farm by voting with the outcome it itself
+  // drives. Calibration record only moves on votes scored against
+  // ground truth, so it is not farmable that way.
+  readonly calibrationRecords = new Map<
+    `${IdentityId}|${CauseId}|${SubTopicId}`,
+    { passes: number; fails: number }
+  >();
   // Server-observed verification metadata (content hashes, eventually
   // span offsets and provenance). Keyed by proposal_id because that is
   // when verification ran; copied onto the materialized node at
