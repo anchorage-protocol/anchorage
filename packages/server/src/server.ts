@@ -104,39 +104,39 @@ const SeedSubTopicInput = z
   .strict();
 type SeedSubTopicInput = z.infer<typeof SeedSubTopicInput>;
 
-// Vote-aggregation thresholds and reputation weights (PRD lines 339,
+// Vote-aggregation thresholds and reputation weights (PRD §What's deliberately not specified here,
 // testbed-tuned). Defaults here are starting points for the testbed to
 // swap as it sweeps; they are deliberately small so basic walking-
 // skeleton scenarios converge inside one or two votes and produce
 // observable reputation deltas.
 export interface ReviewConfig {
   // Number of `accept` votes needed before the proposal auto-accepts
-  // (without curator action). PRD line 179: convergent vote merges.
+  // (without curator action). PRD §The contribution flow (Resolve step): convergent vote merges.
   votes_to_accept: number;
   // Number of `reject` votes needed before the proposal auto-rejects.
   votes_to_reject: number;
   // Reputation gain to the proposer when their proposal converges to
-  // accepted (PRD §Reputation line 245: "Earned through confirmed
+  // accepted (PRD §Reputation: "Earned through confirmed
   // contributions"). Multiplied by `contributor_initiated_factor` for
-  // proposals not tied to an assignment_id (PRD line 244).
+  // proposals not tied to an assignment_id (PRD §Reputation).
   proposer_accepted_gain: number;
   // Reputation loss to the proposer when their proposal converges to
-  // rejected (PRD line 246: "Lost through reverted contributions").
+  // rejected (PRD §Reputation: "Lost through reverted contributions").
   proposer_rejected_loss: number;
   // Reputation gain to a reviewer who voted with the converged
-  // outcome (PRD line 245: "reviewing accurately").
+  // outcome (PRD §Reputation: "reviewing accurately").
   reviewer_accurate_gain: number;
   // Reputation loss to a reviewer who voted against the converged
-  // outcome (PRD line 246: "inaccurate reviews").
+  // outcome (PRD §Reputation: "inaccurate reviews").
   reviewer_inaccurate_loss: number;
   // Multiplier applied to *proposer* gain/loss when the proposal was
-  // contributor-initiated rather than assignment-driven. PRD line
-  // 244: "Contributor-initiated work earns sub-topic rep at a
-  // substantially reduced weight." 0 ≤ factor ≤ 1; defaults to 0.5.
+  // contributor-initiated rather than assignment-driven. PRD
+  // §Reputation: "Contributor-initiated work earns sub-topic rep at
+  // a substantially reduced weight." 0 ≤ factor ≤ 1; defaults to 0.5.
   contributor_initiated_factor: number;
   // Calibration injection cadence. PRD §Calibration batches: reviewer
   // batches mix real proposals with calibration items drawn from
-  // validated history; PRD line 288 settles that calibration arrives
+  // validated history; PRD §Why assignment-driven contribution closes several attack surfaces settles that calibration arrives
   // via the same assignment surface as real work, so it is structurally
   // indistinguishable from "the rest of the work." 0 disables; N>0 means
   // every Nth review-task offer to a given (caller, cause) is replaced
@@ -145,14 +145,14 @@ export interface ReviewConfig {
   // scenarios remain unaffected.
   calibration_inject_every_n: number;
   // Reputation gain when a reviewer correctly accepts a calibration
-  // item (PRD line 203: "Reviewers who fail calibration lose
+  // item (PRD §Calibration batches: "Reviewers who fail calibration lose
   // reputation" — the dual gain is the symmetric incentive). Smaller
   // than reviewer_accurate_gain by default so calibration is a
   // confirmation channel, not a rep-laundering one.
   calibration_pass_gain: number;
   // Reputation loss when a reviewer rejects (or asks for revision on,
   // by the contrapositive — but revise is a no-op here, see below) a
-  // calibration item. PRD line 203 + line 246: failing calibration
+  // calibration item. PRD §Calibration batches + §Reputation: failing calibration
   // and inaccurate reviews both deduct rep.
   calibration_fail_loss: number;
   // Calibration-aware convergence: when true, resolveByConvergence
@@ -173,7 +173,7 @@ export interface ReviewConfig {
   // the calibration corpus being non-trivial for the bias predicate
   // (PRD §Calibration batches: calibration items "drawn from the
   // graph's own validated history" are by construction not bias-
-  // engineered). Calibration-aware adversaries (PRD line 281: passing
+  // engineered). Calibration-aware adversaries (PRD §Adversary taxonomy (Strategic adversary): passing
   // calibration despite holding bias) are an open testbed target that
   // builds on this seam, not a regression of it.
   calibration_aware_convergence: boolean;
@@ -732,7 +732,7 @@ export class Server {
 
   // Pick a calibration target for a reviewer in this cause. Calibration
   // items are accepted-from-history proposals (PRD §Calibration batches
-  // line 201: "drawn from the graph's own validated history — proposals
+  // PRD §Calibration batches: "drawn from the graph's own validated history — proposals
   // that survived multiple confirmations and have been stable"). The
   // task wears the same `review` shape as a real review task; the
   // accepted-status seam is what tells `cast_review_vote` to score
@@ -772,7 +772,7 @@ export class Server {
       candidates.push(p);
     }
     if (candidates.length === 0) return null;
-    // Recency bias matches `fetchCalibrationBatch` (PRD line 201:
+    // Recency bias matches `fetchCalibrationBatch` (PRD §Calibration batches:
     // "biased toward fresh-but-validated history"). Tiebreak by id
     // for replay determinism.
     candidates.sort((a, b) => {
@@ -785,7 +785,7 @@ export class Server {
   // Locate the (cause, sub-topic) for review-routing of a staged
   // proposal. Curator-only kinds (`sub_topic`, `change_of_home`)
   // return null — they are not surfaced to the reviewer pool.
-  // Membership routes to the *target* sub-topic per PRD line 130.
+  // Membership routes to the *target* sub-topic per PRD §Write-path tools (propose_membership).
   // Supersedes routes to the from-node's home (the home owns the node
   // being deactivated).
   private locateProposalForReview(
@@ -923,7 +923,7 @@ export class Server {
   };
 
   readonly tools = {
-    // PRD §Capacity and assignment line 110: set_capacity declares the
+    // PRD §Capacity and assignment (set_capacity): set_capacity declares the
     // contributor's availability at the cause level — a maximum rate
     // (a cap, not a schedule) and which kinds of work they will accept.
     // Sub-topic granularity is deliberately not allowed; it would
@@ -953,7 +953,7 @@ export class Server {
       return { ok: true };
     },
 
-    // PRD §Capacity and assignment line 112: request_assignment pulls
+    // PRD §Capacity and assignment (request_assignment): request_assignment pulls
     // a task from the frontier within the caller's declared capacity.
     // The system selects across all sub-topics in the cause based on
     // frontier priority; expertise fit and capacity-balancing are v1
@@ -977,11 +977,11 @@ export class Server {
     //   1. Caller has a capacity record for the cause.
     //   2. The work kind is in the caller's declared kinds (and the
     //      optional `kind` argument, treated here as a strict filter
-    //      rather than the soft preference PRD line 112 describes —
+    //      rather than the soft preference PRD §Capacity and assignment (request_assignment) describes —
     //      v0 simplification; the soft path lands when expertise-fit
     //      logic does).
     //   3. Outstanding assignments (offered + accepted) for the
-    //      caller in this cause are below the rate cap (PRD line 111:
+    //      caller in this cause are below the rate cap (PRD §Capacity and assignment:
     //      "rate caps how many will be granted in a window"; v0
     //      windows are "currently outstanding").
     //   4. Caller isn't the proposer of a needs_review task — same
@@ -1038,7 +1038,7 @@ export class Server {
         ? new Set<WorkKind>([parsed.kind])
         : allowedKinds;
 
-      // Calibration injection. PRD §Calibration batches + line 288:
+      // Calibration injection. PRD §Calibration batches + §Why assignment-driven contribution closes several attack surfaces:
       // calibration items arrive on the same assignment surface as real
       // review work, structurally indistinguishable to the reviewer.
       // Cadence is config-driven so the testbed can sweep it; baseline
@@ -1145,7 +1145,7 @@ export class Server {
         // an outstanding (offered/accepted) assignment for the same
         // target. Submitted assignments are fine — that's a different
         // proposal that will land separately. Declined assignments
-        // also block re-offer to the same contributor: PRD line 115
+        // also block re-offer to the same contributor: PRD §Capacity and assignment (decline)
         // expects the system to respect "outside my wheelhouse" as a
         // stable signal, not retry the same target on the same
         // contributor in a loop. Different contributors get the
@@ -1178,7 +1178,7 @@ export class Server {
       );
     },
 
-    // PRD §Capacity and assignment line 114: accept_assignment moves
+    // PRD §Capacity and assignment (accept_assignment): accept_assignment moves
     // an offered assignment to `accepted`. Idempotent under the same
     // contributor: re-accepting an already-accepted assignment is a
     // no-op error rather than silent — the contributor likely
@@ -1195,13 +1195,13 @@ export class Server {
       return { ok: true };
     },
 
-    // PRD §Capacity and assignment line 114-115: decline_assignment
+    // PRD §Capacity and assignment (accept_assignment)-115: decline_assignment
     // moves an offered assignment to `declined`. Reason is required
     // and persisted — pattern-decline is an abuse signal handled at
-    // the curator layer (PRD line 162: "suspicious patterns ... flag
+    // the curator layer (PRD §Verification engine (Rate limits and abuse signals): "suspicious patterns ... flag
     // for curator review"), and the reason is what a curator inspects
     // when a pattern surfaces. Declining individual assignments is
-    // explicitly non-punitive on its own (PRD line 115).
+    // explicitly non-punitive on its own (PRD §Capacity and assignment (decline)).
     declineAssignment: async (
       caller: Caller,
       input: DeclineAssignmentInput,
@@ -1219,7 +1219,7 @@ export class Server {
       return { ok: true };
     },
 
-    // PRD §Capacity and assignment line 116-117: submit_assigned_
+    // PRD §Capacity and assignment (submit_assigned_proposal): submit_assigned_
     // proposal fulfills an *accepted* propose-kind assignment by
     // staging the proposal under it. Review-kind assignments are
     // fulfilled via cast_review_vote with assignment_id set, not
@@ -1347,10 +1347,10 @@ export class Server {
       return { proposal_id: proposal.id };
     },
 
-    // PRD §Write-path tools (line 124): propose_excerpt stages an
+    // PRD §Write-path tools (propose_excerpt): propose_excerpt stages an
     // excerpt proposal under an existing accepted anchor, and the
     // server matches `quoted_span` against the resolved source —
-    // mismatch rejects at write time, not at review time (line 159).
+    // mismatch rejects at write time, not at review time (PRD §Verification engine, Span verification).
     // The verifier owns the source-fetching boundary; the test
     // FakeVerifier holds source fixtures, the production verifier
     // will fetch. Schema-level checks (non-empty `text`,
@@ -1455,7 +1455,7 @@ export class Server {
     // from an old node to its replacement. Unlike the other propose_*
     // tools the input doesn't carry a cause_id — the cause is implicit
     // in the nodes, and re-passing it would just create a surface for
-    // inconsistency. Both nodes must be active (PRD §Edges line 74:
+    // inconsistency. Both nodes must be active (PRD §Edges:
     // "the `to` end must be active at proposal time"; we additionally
     // require the `from` end to be active because superseding an
     // already-superseded node is meaningless). Cycle prevention runs
@@ -1525,7 +1525,7 @@ export class Server {
     // existing node is in scope for an additional sub-topic in the same
     // cause. Membership is what lets a single node serve multiple sub-
     // topics without duplication, forking supersedes chains, or
-    // smuggling lineage (PRD line 82). Reviewed by the *target* sub-
+    // smuggling lineage (PRD §Edges). Reviewed by the *target* sub-
     // topic's reviewer pool — that's the pool with the expertise to
     // judge the scope claim — but reviewer assignment lives downstream
     // of this tool.
@@ -1588,7 +1588,7 @@ export class Server {
     // sub-topic to a different one within the same cause. Rare in
     // practice — most apparent "wrong sub-topic" cases turn out to be
     // membership-needed cases, which is why the membership tool is the
-    // first thing contributors should reach for. PRD line 131 marks
+    // first thing contributors should reach for. PRD §Write-path tools (propose_change_of_home) marks
     // this curator-approved; today every proposal is curator-mediated,
     // and when the review loop lands change_of_home stays on the
     // curator path while other proposal kinds move to the reviewer
@@ -1639,7 +1639,7 @@ export class Server {
     // propose_sub_topic stages the proposal; the SubTopic itself is not
     // materialized until a curator decision (accept-as-active via
     // curator.acceptProposal, or defer-as-proposed via
-    // curator.deferSubTopic, per PRD line 218). v1 will add auto-
+    // curator.deferSubTopic, per PRD §Sub-topic creation). v1 will add auto-
     // discovery; the tool surface stays the same.
     proposeSubTopic: async (
       caller: Caller,
@@ -1669,7 +1669,7 @@ export class Server {
       return { proposal_id: proposal.id };
     },
 
-    // PRD §Read-path tools and resources line 146: query_frontier
+    // PRD §Read-path tools and resources (query_frontier): query_frontier
     // returns an ordered list of frontier items (work to be done),
     // optionally filtered by cause, sub-topic, or kind. The frontier
     // is derived from current graph state — see deriveFrontier — so
@@ -1691,13 +1691,13 @@ export class Server {
       return { items };
     },
 
-    // PRD §Read-path tools and resources line 147: query_proposals
+    // PRD §Read-path tools and resources (query_proposals): query_proposals
     // returns proposal records, optionally filtered by status, sub-
     // topic, or assignment-to-me. The sub-topic filter routes through
     // locateProposalForReview so the result for a given sub-topic
     // includes membership proposals targeting that sub-topic — which
     // matches where review pressure actually applies (PRD §Scope
-    // membership line 80: memberships are evaluated by reviewers from
+    // membership: memberships are evaluated by reviewers from
     // the target sub-topic).
     queryProposals: async (
       caller: Caller,
@@ -1748,7 +1748,7 @@ export class Server {
       return { proposals: projected };
     },
 
-    // PRD §Reputation line 248: contributors see their own raw scores
+    // PRD §Reputation: contributors see their own raw scores
     // (otherwise they can't reason about where they sit relative to
     // tier gates); other contributors see only tiers via a separate
     // public read-path. v0 returns the caller's per-sub-topic scores
@@ -1774,14 +1774,14 @@ export class Server {
       return { entries };
     },
 
-    // PRD §cast_review_vote (line 133): reviewer records a vote with
+    // PRD §Write-path tools (cast_review_vote): reviewer records a vote with
     // required rationale. With assignment_id set, the vote fulfills a
     // review-kind assignment and accrues full assigned-review reputation;
     // without it, the review is contributor-initiated and weighted lower.
     // Self-review is rejected as a conflict-of-interest invariant: the
     // whole point of redundant peer review is that a contributor's own
     // claim be evaluated by other reviewers (PRD §Reviewer assignment
-    // and the broader spirit of PRD line 246's stance on self-acting on
+    // and the broader spirit of PRD §Reputation's stance on self-acting on
     // one's own work). Double-voting on the same proposal is rejected
     // for the same reason a vote tally needs to be coherent.
     castReviewVote: async (
@@ -1900,11 +1900,11 @@ export class Server {
       if (isCalibration) {
         // Calibration scoring against ground truth. The proposal
         // survived to acceptance in validated history, so the
-        // expected vote is `accept`. PRD line 203: "Reviewers who
-        // fail calibration lose reputation"; line 246: "rejected
+        // expected vote is `accept`. PRD §Calibration batches: "Reviewers who
+        // fail calibration lose reputation"; PRD §Reputation: "rejected
         // calibration items both decrease reputation." `revise` is a
         // no-op for symmetry with the convergence-driven rep path,
-        // which also doesn't move rep on revise (PRD line 245-246
+        // which also doesn't move rep on revise (PRD §Reputation-246
         // are silent on revise; treating it as no-op preserves the
         // "reviewer asked for more" signal without forcing it onto
         // a binary scoring axis). The vote does not run convergence
@@ -1934,7 +1934,7 @@ export class Server {
 
       // Convergence check: enough accept-votes auto-accepts; enough
       // reject-votes auto-rejects. Threshold is server-config so the
-      // testbed can sweep it (PRD line 339 names this as a tuned
+      // testbed can sweep it (PRD §What's deliberately not specified here names this as a tuned
       // parameter). Curator-only kinds short-circuit inside
       // resolveByConvergence and are unaffected.
       this.resolveByConvergence(proposal.id);
@@ -1952,7 +1952,7 @@ export class Server {
     //
     // v0 sampling: take up to CALIBRATION_BATCH_SIZE accepted
     // proposals routed to the requested sub-topic, biased toward
-    // recency (PRD line 201: "calibration sampling is biased toward
+    // recency (PRD §Calibration batches: "calibration sampling is biased toward
     // fresh-but-validated history"). Rotation policy and adversary-
     // resistant distribution mixing are testbed territory; this is
     // the seam they tune against.
@@ -2019,7 +2019,7 @@ export class Server {
       return this.acceptStaged(proposal);
     },
 
-    // PRD §Sub-topic creation line 218: "Curator accepts as `active`,
+    // PRD §Sub-topic creation: "Curator accepts as `active`,
     // defers as `proposed`, or rejects." This is the deferral path —
     // the curator has decided to record the sub-topic but hold off on
     // activation pending more evidence (corpus density, articulable
@@ -2064,7 +2064,7 @@ export class Server {
   // status flip, and apply the materialization. Shared between the
   // curator's manual path (curator.acceptProposal) and the auto-
   // convergence path that fires after enough accept-votes accumulate
-  // (PRD line 179: convergent vote merges).
+  // (PRD §The contribution flow (Resolve step): convergent vote merges).
   private acceptStaged(proposal: Proposal): { node_id?: NodeId; sub_topic_id?: SubTopicId } {
     const result = this.materialize(proposal, 'active');
     const now = this.clock.now();
@@ -2077,7 +2077,7 @@ export class Server {
   }
 
   // After a review vote lands, check whether the proposal has reached
-  // either convergence threshold and resolve it if so. PRD line 179:
+  // either convergence threshold and resolve it if so. PRD §The contribution flow (Resolve step):
   // convergent vote merges; divergent vote routes to a richer path.
   // The richer-path branch — more reviewers / curator escalation /
   // open_question carry-forward — isn't implemented in v0; this is
@@ -2087,7 +2087,7 @@ export class Server {
   // resolution.
   //
   // Some proposal kinds are curator-only (sub_topic, change_of_home
-  // per PRD lines 131, 218) and are excluded from auto-resolution
+  // per PRD §Write-path tools (propose_change_of_home) and §Sub-topic creation) and are excluded from auto-resolution
   // even if votes accumulate against them — the votes can still be
   // recorded as a signal for the curator, but they don't move the
   // proposal's status.
@@ -2154,12 +2154,12 @@ export class Server {
   }
 
   // Update per-(identity, cause, sub_topic) reputation in response to
-  // a proposal converging. PRD §Reputation lines 244-246:
+  // a proposal converging. PRD §Reputation:
   //
   //   - Proposer's home-sub-topic rep moves with the outcome:
   //     +proposer_accepted_gain on accept, -proposer_rejected_loss on
   //     reject. Contributor-initiated proposals (no assignment_id)
-  //     are scaled by `contributor_initiated_factor` per PRD line
+  //     are scaled by `contributor_initiated_factor` per PRD §Reputation
   //     244's "substantially reduced weight" rule.
   //   - Reviewers who voted *with* the converged outcome get
   //     +reviewer_accurate_gain in the home sub-topic; reviewers who
@@ -2174,7 +2174,7 @@ export class Server {
   //   - revise votes count for neither tier and earn no rep movement
   //     (they remain available for the divergence-resolution path
   //     when that lands).
-  //   - Self-supersedes carve-outs (PRD line 246) don't apply yet —
+  //   - Self-supersedes carve-outs (PRD §Reputation) don't apply yet —
   //     supersedes acceptance updates the from-node's status but
   //     doesn't flow back into this path; supersedes-driven
   //     reputation lands when survivorship weighting does.
@@ -2185,7 +2185,7 @@ export class Server {
     if (!causeId) return;
 
     // Proposer delta. Contributor-initiated (no assignment_id) earns
-    // reduced weight per PRD line 244.
+    // reduced weight per PRD §Reputation.
     const proposerFactor = proposal.assignment_id ? 1 : this.review.contributor_initiated_factor;
     const proposerDelta =
       outcome === 'accepted'
@@ -2505,7 +2505,7 @@ export class Server {
   //   `subTopicCreates` — newly created sub-topics (sub_topic kind).
   // The `subTopicStatus` argument lets the same materialization path
   // produce a SubTopic with different statuses for the curator's two
-  // accept variants (PRD line 218: accept-as-active or defer-as-
+  // accept variants (PRD §Sub-topic creation: accept-as-active or defer-as-
   // proposed). Other kinds ignore it.
   // Kinds without a materialization path throw `invalid_state` until
   // their path lands.
@@ -2645,7 +2645,7 @@ export class Server {
         created_at: now,
         rationale: proposal.payload.rationale,
       };
-      // The active-node rule (PRD §Nodes line 69) defines a node as
+      // The active-node rule (PRD §Nodes) defines a node as
       // inactive iff it is the `from` of a supersedes edge. We make
       // that explicit on the node's status field too — keeping status
       // and edge state in sync means callers don't have to walk edges

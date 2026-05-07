@@ -12,8 +12,8 @@ import { type AnchorageClient, AnchorageClientError } from '../client.js';
 // calibration as soon as a calibration item is reject-worthy in
 // context).
 //
-// The rationale string is part of the contract — PRD line 134
-// requires a rationale on every vote. The `decide` callback supplies
+// The rationale string is part of the contract — PRD §Write-path
+// tools (cast_review_vote) requires a rationale on every vote. The `decide` callback supplies
 // it alongside the decision.
 
 export interface ReviewDecisionWithRationale {
@@ -57,22 +57,23 @@ export const acceptAllDecider: ReviewDecider = {
 
 // A common decider: reject everything. The "principled adversary"
 // shape is "accept everything," but reject-all is useful as the
-// counterpart for testing the rejection-convergence path. PRD's
-// adversary taxonomy (line 303 area) includes the lazy-reject
-// pattern as a wedge against productive consensus.
+// counterpart for testing the rejection-convergence path. PRD
+// §Adversary taxonomy includes the lazy-reject pattern as a wedge
+// against productive consensus.
 export const rejectAllDecider: ReviewDecider = {
   decide: () => ({ decision: 'reject', rationale: 'declined as out of scope' }),
 };
 
 // Payload-biased decider: votes accept when `acceptIf(payload)` is
 // true, reject otherwise. The strategic-adversary archetype (PRD
-// line 306 — "hidden-objective model — instructed to bias the graph
-// toward outcome X while passing calibration") is built from this
-// primitive: the predicate is the hidden objective. Coalitions are
-// just N reviewers sharing the same predicate — assignment is
-// system-driven so the coalition's leverage is vote bias, not vote
-// selection (PRD line 287: "Coalition pre-arrangement closed by
-// construction").
+// §Adversary taxonomy, Strategic adversary — "hidden-objective
+// model — instructed to bias the graph toward outcome X while
+// passing calibration") is built from this primitive: the predicate
+// is the hidden objective. Coalitions are just N reviewers sharing
+// the same predicate — assignment is system-driven so the
+// coalition's leverage is vote bias, not vote selection (PRD §Why
+// assignment-driven contribution closes several attack surfaces:
+// "Coalition pre-arrangement closed by construction").
 //
 // The rationale strings are surfaced over the wire and visible to
 // reviewers and curators. A real strategic adversary would phrase
@@ -147,8 +148,9 @@ export async function runHonestReviewer(
       proposal_id: reviewProposalId,
     });
 
-    // To decide the reviewer needs the proposal payload. PRD line
-    // 195 (ReviewBatchItem) is the canonical reviewer view; for v0
+    // To decide the reviewer needs the proposal payload.
+    // ReviewBatchItem (PRD §Calibration batches) is the canonical
+    // reviewer view; for v0
     // we get it via query_proposals filtered to assigned-to-me, then
     // look up the specific proposal_id. We deliberately do *not*
     // filter by status here: a review-kind assignment may target a

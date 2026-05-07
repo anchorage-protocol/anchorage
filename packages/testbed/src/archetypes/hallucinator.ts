@@ -1,7 +1,7 @@
 import type { CauseId } from '@anchorage/contracts';
 import { type AnchorageClient, AnchorageClientError } from '../client.js';
 
-// hallucinator: PRD adversary taxonomy line 305 — "high-temperature
+// hallucinator: PRD §Adversary taxonomy (Hallucinator) — "high-temperature
 // model with no grounding discipline. Should be caught at the
 // verification engine (span mismatch, unresolved citations) before
 // review." This archetype is the operational test of that claim. It

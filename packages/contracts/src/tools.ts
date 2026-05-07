@@ -202,7 +202,7 @@ export const FetchCalibrationBatchOutput = z.object({ items: z.array(ReviewBatch
 export type FetchCalibrationBatchOutput = z.infer<typeof FetchCalibrationBatchOutput>;
 
 // Reputation read. Returns the *caller's own* per-sub-topic scores
-// in a cause. PRD line 248: "Eligibility tiers public; numeric
+// in a cause. PRD §Reputation: "Eligibility tiers public; numeric
 // reputation private" — the contributor sees their own raw numbers
 // (otherwise they can't reason about where they sit relative to
 // tier gates), but other contributors see only tiers (which the

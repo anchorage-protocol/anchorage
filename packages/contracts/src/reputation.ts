@@ -10,7 +10,7 @@ import { Timestamp } from './timestamps.js';
 //
 // PRD names a *two-component* model: a slow-decay demonstrated-
 // competence component and a fast-decay recent-activity component
-// (line 243). v0 ships a single scalar that maps onto neither
+// (§Reputation). v0 ships a single scalar that maps onto neither
 // directly — time-windowing and decay are testbed-tuned and land
 // alongside the testbed sweeps that need them. The contract leaves
 // room: future versions add `demonstrated` and `recent` fields and

@@ -716,7 +716,7 @@ describe('tools.proposeSubTopic', () => {
     expect(p.payload.name).toBe('lynch-surveillance');
     expect(p.status).toBe('staged');
     // The SubTopic itself is NOT created at propose time — it lives
-    // only as a payload until a curator decision (PRD line 218).
+    // only as a payload until a curator decision (PRD §Sub-topic creation).
     expect(
       [...f.server.store.subTopics.values()].find((s) => s.name === 'lynch-surveillance'),
     ).toBeUndefined();
@@ -1691,7 +1691,7 @@ describe('tools.castReviewVote', () => {
       { identity_id: carol.id },
       { proposal_id, decision: 'accept', rationale: 'x' },
     );
-    // Curator-only — votes don't move it (PRD lines 131, 218).
+    // Curator-only — votes don't move it (PRD §Write-path tools, propose_change_of_home + §Sub-topic creation).
     expect(f.server.store.proposals.get(proposal_id)?.status).toBe('staged');
   });
 
@@ -1887,7 +1887,7 @@ describe('tools.castReviewVote', () => {
 describe('calibration loop', () => {
   // PRD §Calibration batches: reviewer batches mix real proposals with
   // calibration items drawn from validated history; calibration arrives
-  // on the same assignment surface as real review work (PRD line 288).
+  // on the same assignment surface as real review work (PRD §Why assignment-driven contribution closes several attack surfaces).
   // These tests exercise the seam end-to-end at the tool layer:
   // request_assignment injects an accepted-from-history proposal as a
   // review task; cast_review_vote scores against ground truth and

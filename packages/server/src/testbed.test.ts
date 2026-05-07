@@ -487,7 +487,7 @@ describe('testbed: honest-strong archetype', () => {
   });
 
   it('catches the hallucinator at the verifier, before reviewers see anything', async () => {
-    // PRD adversary taxonomy line 305: hallucinated submissions
+    // PRD §Adversary taxonomy (Hallucinator): hallucinated submissions
     // "Should be caught at the verification engine (span mismatch,
     // unresolved citations) before review." Operationalized: the
     // FakeVerifier holds source content for two PMIDs; the
@@ -641,15 +641,16 @@ describe('testbed: honest-strong archetype', () => {
   });
 
   it('surfaces the strategic-coalition attack: bias flips both convergence and rep', async () => {
-    // PRD adversary taxonomy line 306: a strategic adversary biases
-    // the graph toward outcome X. Line 309: a coalition is N of them
-    // sharing the bias. With pure-vote convergence and reputation
-    // tracked against the converged outcome, a 2-of-3 coalition
-    // wins both ledgers — the well-grounded honest excerpt is
-    // suppressed AND the honest reviewer is punished for voting
-    // honestly. This is the open attack surface PRD names; later
-    // phases close it via calibration (line 304: "Lazy. Reviewer
-    // that votes without reading. Should be caught by calibration")
+    // PRD §Adversary taxonomy (Strategic adversary): a strategic
+    // adversary biases the graph toward outcome X. The Coalition
+    // bullet in the same section: a coalition is N of them sharing
+    // the bias. With pure-vote convergence and reputation tracked
+    // against the converged outcome, a 2-of-3 coalition wins both
+    // ledgers — the well-grounded honest excerpt is suppressed AND
+    // the honest reviewer is punished for voting honestly. This is
+    // the open attack surface PRD names; later phases close it via
+    // calibration (the Lazy bullet in the same section: "votes
+    // without reading. Should be caught by calibration")
     // by seeding batches with proposals of known ground truth, so
     // the strategic adversary's bias visibly diverges from the
     // calibrated outcome rather than just from honest reviewers'
@@ -787,8 +788,9 @@ describe('testbed: honest-strong archetype', () => {
     // (two well-grounded excerpts, one honest reviewer + a 2-of-3
     // biased coalition); the only change is calibration injection
     // turned on at the server (every 2nd review-task offer is a
-    // calibration item drawn from validated history). PRD line 203:
-    // "Reviewers who fail calibration lose reputation" — this is the
+    // calibration item drawn from validated history). PRD
+    // §Calibration batches: "Reviewers who fail calibration lose
+    // reputation" — this is the
     // mechanism the named defense relies on.
     //
     // The defense is honest about its scope: it does *not* prevent
@@ -806,8 +808,10 @@ describe('testbed: honest-strong archetype', () => {
     // catches the just-converged "works" excerpt as calibration on
     // his second offer and accepts it, since "works" matches his
     // predicate). This is the calibration-aware adversary case PRD
-    // line 281 names ("strategic adversary ... while passing
-    // calibration"); patient/sweep variants are testbed work that
+    // §Adversary taxonomy (Strategic adversary) names ("hidden-
+    // objective model — instructed to bias the graph toward outcome
+    // X while passing calibration"); patient/sweep variants are
+    // testbed work that
     // builds on this seam, not regressions of it.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
@@ -944,7 +948,8 @@ describe('testbed: honest-strong archetype', () => {
     //
     // What this defense does not do: stop a calibration-aware
     // adversary that holds bias on real proposals while voting
-    // ground-truth on calibration items (PRD line 281). That's an
+    // ground-truth on calibration items (PRD §Adversary taxonomy,
+    // Strategic adversary). That's an
     // open testbed target that builds on this seam, not a regression
     // of it.
     const sources = new Map<string, string>([
@@ -1074,13 +1079,14 @@ describe('testbed: honest-strong archetype', () => {
     expect(erinScore).toBeGreaterThan(daveScore);
   });
 
-  it('calibration-aware coalition bypasses both defenses (PRD line 281)', async () => {
+  it('calibration-aware coalition bypasses both defenses (PRD §Adversary taxonomy, Strategic adversary)', async () => {
     // The naive strategic-coalition tests above use a globally-applied
     // bias predicate ("accept iff content includes 'works'"), which
     // misfires on the paper-1 / paper-2 calibration corpus and gets
-    // caught by both calibration defenses. PRD line 281 names the
-    // realistic version of the archetype: "strategic adversary
-    // ... while passing calibration." This test is the regression
+    // caught by both calibration defenses. PRD §Adversary taxonomy
+    // (Strategic adversary) names the realistic version of the
+    // archetype: "instructed to bias the graph toward outcome X
+    // while passing calibration." This test is the regression
     // handle for that vector.
     //
     // The trick is that a real strategic adversary's bias is narrow.
@@ -1244,9 +1250,10 @@ describe('testbed: honest-strong archetype', () => {
   });
 
   it('pool-size scaling closes the calibration-aware coalition with sufficient honest reviewers', async () => {
-    // PRD line 195: convergence and divergence thresholds are claim-
-    // class-aware; high-stakes classes draw larger pools and tighter
-    // thresholds. The previous test surfaces the standing open vector:
+    // PRD §Reviewer assignment: convergence and divergence
+    // thresholds are claim-class-aware; high-stakes classes draw
+    // larger pools and tighter thresholds. The previous test
+    // surfaces the standing open vector:
     // a 2-of-3 calibration-aware coalition bypasses both calibration
     // defenses against a single honest reviewer at votes_to_X = 2.
     // This test is the regression handle on the pool-size lever:
@@ -1266,8 +1273,9 @@ describe('testbed: honest-strong archetype', () => {
     //
     // What the lever doesn't do: it doesn't help on small sub-topics
     // where the eligible pool can't furnish K+1 honest reviewers
-    // (PRD line 311 names this directly — "how the regime degrades
-    // on small sub-topics where the floor isn't reached"). And the
+    // (PRD §Adversary taxonomy, Coalition bullet — "how the regime
+    // degrades on small sub-topics where the floor isn't reached").
+    // And the
     // assignment-time stratification work that closes that
     // degradation is still the next defense target.
     const sources = new Map<string, string>([

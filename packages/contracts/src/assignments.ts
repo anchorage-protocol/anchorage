@@ -81,7 +81,7 @@ export const Assignment = z
     // propose-kind tasks) or that the review vote attached to (for
     // review-kind tasks). Set on transition to `submitted`.
     fulfilled_by: ProposalId.optional(),
-    // reason given on decline (PRD §Capacity and assignment line 114).
+    // reason given on decline (PRD §Capacity and assignment).
     // Set on transition to `declined`. Persisted because pattern-
     // declines are an abuse signal handled at the curator layer —
     // the reason is what the curator inspects when patterns surface.

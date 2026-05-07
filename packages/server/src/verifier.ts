@@ -19,7 +19,7 @@ export interface VerifiedRef {
 
 export interface Verifier {
   verifyExternalRef(ref: ExternalRef): Promise<VerifiedRef>;
-  // PRD §Verification engine line 159: for excerpts, the quoted span
+  // PRD §Verification engine: for excerpts, the quoted span
   // must be a substring of the fetched source after normalization.
   // Failure rejects at write time, not at review time. Production
   // implementations fetch the source for `ref` and match `span.text`
@@ -86,7 +86,7 @@ export class FakeVerifier implements Verifier {
 // Light normalization for span matching: collapse runs of whitespace
 // (including newlines) to a single space and trim. Enough to absorb
 // reflow differences between the source and a contributor's quote.
-// The full normalization spec PRD line 159 references will land with
+// The full normalization spec PRD §Verification engine references will land with
 // the verification engine; this is the test-fixture rule, not the
 // spec.
 function normalize(s: string): string {

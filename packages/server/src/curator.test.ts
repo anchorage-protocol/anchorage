@@ -278,7 +278,7 @@ describe('curator.acceptProposal', () => {
     expect(updated?.home_sub_topic_id).toBe(f.sub_topic_id);
     expect(updated?.status).toBe('active');
     // No edges are created — memberships are a node property, not an
-    // edge type (PRD §Edges line 76).
+    // edge type (PRD §Edges).
     expect(f.server.store.edges.size).toBe(0);
   });
 

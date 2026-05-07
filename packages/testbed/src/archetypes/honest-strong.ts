@@ -1,10 +1,10 @@
 import type { CauseId, WorkKind } from '@anchorage/contracts';
 import { type AnchorageClient, AnchorageClientError } from '../client.js';
 
-// honest-strong: a competent, well-intentioned contributor (PRD's
-// adversary taxonomy line 303 names this archetype as "frontier-model
-// honest contributor on hard synthesis tasks. Should succeed even on
-// cases where simpler contributors stall."). For the v0 walking
+// honest-strong: a competent, well-intentioned contributor (PRD
+// §Adversary taxonomy names this archetype as "Honest-strong:
+// frontier-model honest contributor on hard synthesis tasks. Should
+// succeed even on cases where simpler contributors stall."). For the v0 walking
 // skeleton the archetype is much narrower than that aspirational
 // definition: it pulls excerpt assignments under an active cause and
 // fulfills them with verbatim spans pulled from a fixture map.
@@ -108,8 +108,8 @@ export async function runHonestStrong(
 
     if (offered.task.kind !== 'excerpt') {
       // v0 only handles excerpt tasks. Decline cleanly so the
-      // assignment doesn't sit forever (PRD line 115: declining
-      // outside-wheelhouse is non-punitive).
+      // assignment doesn't sit forever (PRD §Capacity and assignment:
+      // declining outside-wheelhouse is non-punitive).
       await client.declineAssignment({
         assignment_id: offered.assignment_id,
         reason: `honest-strong v0 doesn't handle ${offered.task.kind} tasks`,
