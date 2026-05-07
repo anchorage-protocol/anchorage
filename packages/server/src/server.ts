@@ -227,11 +227,27 @@ export interface ReviewConfig {
   // priming collapses honest reviewers into one cluster, strangling
   // the cross-stratum draw rule. Does *not* close the decorrelating-
   // coalition vector, since a pair that disagrees on every shared
-  // proposal still has weighted_agreement = 0; that vector remains
-  // open and is named in the PRD as the next testbed target.
-  // Defaults to off so existing scenarios that rely on raw cluster
-  // semantics are unaffected.
+  // proposal still has weighted_agreement = 0; that vector is closed
+  // by stratum_anti_correlation_threshold below. Defaults to off so
+  // existing scenarios that rely on raw cluster semantics are
+  // unaffected.
   stratum_contention_weighted: boolean;
+  // Anti-correlation edge formation (PRD §Reviewer assignment,
+  // "detecting anti-correlation as a separate cue"). When > 0, a
+  // pair edges into the same stratum when their (weighted)
+  // disagreement ratio meets this threshold — i.e., they
+  // systematically vote the *opposite* way on shared proposals.
+  // Coalition members deliberately decorrelating to defeat the
+  // co-occurrence cluster look unmistakably anti-correlated; treating
+  // that as co-stratum closes the cross-stratum gate against them.
+  // The brand-new-reviewer raw-shared floor still applies, and when
+  // stratum_contention_weighted is on the disagreement ratio is
+  // weighted by per-proposal contention exactly the way agreement is.
+  // 0 disables (default) — existing scenarios are unaffected. 1.0 is
+  // "always voted the opposite way on every shared proposal"; values
+  // below 1.0 admit organic disagreement as honest false positives,
+  // which is the signal/cost trade-off the testbed sweeps.
+  stratum_anti_correlation_threshold: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -252,6 +268,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   stratum_target_count: 2,
   stratification_degraded_extra: 1,
   stratum_contention_weighted: false,
+  stratum_anti_correlation_threshold: 0,
 };
 
 export interface ServerDeps {
@@ -2436,17 +2453,34 @@ export class Server {
           }
         }
         if (shared < this.review.stratum_min_shared_proposals) continue;
+        // Compute both the agreement and disagreement ratios up-front
+        // (in raw or contention-weighted form) so the agreement-edge
+        // and anti-correlation-edge checks share their ratio source
+        // and can never disagree on what "shared" means.
+        let agreementRatio = 0;
+        let disagreementRatio = 0;
+        let signalAvailable = false;
         if (this.review.stratum_contention_weighted) {
-          // Weighted shared must be strictly positive — a pair whose
-          // entire shared history sits on unanimous proposals carries
-          // no signal in either direction and gets no edge. The brand-
-          // new-reviewer floor is preserved by the raw shared count
-          // check above; this is the additional weighted gate.
-          if (weightedShared <= 0) continue;
-          if (weightedAgreed / weightedShared < this.review.stratum_agreement_threshold) continue;
+          if (weightedShared > 0) {
+            agreementRatio = weightedAgreed / weightedShared;
+            disagreementRatio = (weightedShared - weightedAgreed) / weightedShared;
+            signalAvailable = true;
+          }
         } else {
-          if (agreed / shared < this.review.stratum_agreement_threshold) continue;
+          agreementRatio = agreed / shared;
+          disagreementRatio = (shared - agreed) / shared;
+          signalAvailable = true;
         }
+        // No signal: the pair's entire shared history sits on
+        // unanimous proposals (under contention weighting). Brand-new-
+        // reviewer floor is preserved by the raw shared-count check
+        // above; this is the additional gate that prevents a
+        // contention-zero history from forming either kind of edge.
+        if (!signalAvailable) continue;
+        const positiveEdge = agreementRatio >= this.review.stratum_agreement_threshold;
+        const antiThreshold = this.review.stratum_anti_correlation_threshold;
+        const negativeEdge = antiThreshold > 0 && disagreementRatio >= antiThreshold;
+        if (!positiveEdge && !negativeEdge) continue;
         adjacency.get(a)?.add(b);
         adjacency.get(b)?.add(a);
       }

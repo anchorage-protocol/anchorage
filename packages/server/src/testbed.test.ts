@@ -2261,6 +2261,201 @@ describe('testbed: honest-strong archetype', () => {
     expect(contestedVotes.every((v) => v.decision === 'accept')).toBe(true);
   });
 
+  it('anti-correlation detection closes the decorrelating-coalition bypass', async () => {
+    // Companion to the vote-decorrelating-coalition test above. Same
+    // 3-reviewer pool (Erin honest, Carol+Dave coalition that
+    // disagrees on every priming proposal), same calibration-aware
+    // bias predicate, same contested no-effect excerpt. The only
+    // change is `stratum_anti_correlation_threshold: 1.0`.
+    //
+    // The decorrelating coalition's signal is unmistakable in the
+    // anti-correlation channel: 3 shared priming proposals, 0 agreed
+    // — the disagreement ratio is 1.0, exactly what perfect
+    // decorrelation looks like. Treating that as a co-stratum edge
+    // pulls Carol+Dave into one cluster despite zero positive
+    // correlation. The cross-stratum draw rule then fires against
+    // the coalition: when Dave requests an assignment after Carol
+    // has voted on the contested item, Dave's stratum equals
+    // Carol's, the gate trips, and Dave is routed away.
+    //
+    // Headline: contested stays staged. The tally lands at 1 accept
+    // (Erin) + 1 reject (Carol), neither threshold reached, and the
+    // bias-suppression vector closes. Anti-correlation as a separate
+    // cue catches what the positive-only co-occurrence primitive
+    // can't.
+    //
+    // Cost / failure mode: anti-correlation will produce false
+    // positives if two honest reviewers happen to systematically
+    // disagree on shared proposals. The threshold is testbed-tuned;
+    // 1.0 (perfect decorrelation only) is the cleanest defense
+    // against the strict coalition variant; weaker thresholds
+    // catch noisier adversaries at the cost of admitting more
+    // honest false positives. The next testbed target on this seam
+    // is a coalition that mixes some agreement *and* some
+    // disagreement on non-bias-zone proposals, sitting in the gap
+    // between the two thresholds.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+        stratum_anti_correlation_threshold: 1.0,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erinClient = await wireArchetype(server, erin.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    for (const c of [{ identity_id: carol.id }, { identity_id: dave.id }]) {
+      await server.tools.setCapacity(c, {
+        cause_id: cause.id,
+        rate: 5,
+        kinds: ['review'],
+      });
+    }
+
+    // PRIMING with decorrelation: Carol accepts, Dave rejects on
+    // each — exactly the move that defeated the positive-only
+    // cluster primitive. Now anti-correlation fires.
+    for (let i = 0; i < 3; i++) {
+      const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        {
+          proposal_id: excerpt.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with my read of the literature',
+        },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: dave.id },
+        {
+          proposal_id: excerpt.proposal_id,
+          decision: 'reject',
+          rationale: 'underpowered, methodological concerns',
+        },
+      );
+      const after = server.store.proposals.get(excerpt.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(excerpt.proposal_id);
+      }
+    }
+
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    const calAwareBiased = payloadBiasedDecider({
+      acceptIf: (payload) =>
+        'content' in payload &&
+        (!payload.content.includes('treatment') || payload.content.includes('works')),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    // Carol runs. Anti-correlation edge has formed (3 shared, 0
+    // agreed → disagreement ratio 1.0 ≥ threshold 1.0). Carol and
+    // Dave are now in the same cluster. Carol pulls the contested
+    // item (Erin singleton, no co-stratum routed yet) and votes
+    // reject.
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+    // Dave runs. Carol's vote put Carol in routedReviewers; Dave's
+    // stratum equals Carol's via the anti-correlation edge; the
+    // cross-stratum gate trips and Dave is routed away from the
+    // contested slot. He idles.
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+
+    const target = server.store.proposals.get(contested.proposal_id);
+    expect(target?.status).toBe('staged');
+    const noEffectNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'excerpt' && n.content.includes('no effect'),
+    );
+    expect(noEffectNode).toBeUndefined();
+    const contestedVotes = [...server.store.reviewVotes.values()].filter(
+      (v) => v.proposal_id === contested.proposal_id,
+    );
+    expect(contestedVotes).toHaveLength(2);
+    expect(contestedVotes.map((v) => v.reviewer_id).sort()).toEqual([carol.id, erin.id].sort());
+    const erinVote = contestedVotes.find((v) => v.reviewer_id === erin.id);
+    const carolVote = contestedVotes.find((v) => v.reviewer_id === carol.id);
+    expect(erinVote?.decision).toBe('accept');
+    expect(carolVote?.decision).toBe('reject');
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
