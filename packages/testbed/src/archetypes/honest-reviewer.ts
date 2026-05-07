@@ -98,6 +98,27 @@ export function payloadBiasedDecider(config: PayloadBiasedDeciderConfig): Review
   };
 }
 
+// Payload-conditional decline: returns null (decline the
+// assignment) when `declineIf(payload)` is true, falling through to
+// `fallback` otherwise. The "decline-pattern abuse" archetype (PRD
+// §Adversary testbed: declining everything outside the adversary's
+// preferred sub-topic) is a one-line composition built on this:
+// declineIf returns true for proposals outside the adversary's
+// preferred shape, fallback is whatever vote they cast on the
+// shape they accept. The decline path is non-punitive on its own
+// (PRD §Capacity and assignment) — it is the *pattern* that the
+// curator-side decline-pattern projection picks up.
+export interface PayloadDecliningDeciderConfig {
+  declineIf: (payload: ProposalPayload) => boolean;
+  fallback: ReviewDecider;
+}
+
+export function payloadDecliningDecider(config: PayloadDecliningDeciderConfig): ReviewDecider {
+  return {
+    decide: (payload) => (config.declineIf(payload) ? null : config.fallback.decide(payload)),
+  };
+}
+
 export async function runHonestReviewer(
   client: AnchorageClient,
   config: HonestReviewerConfig,

@@ -4,6 +4,7 @@ import {
   type HallucinationFabricator,
   acceptAllDecider,
   payloadBiasedDecider,
+  payloadDecliningDecider,
   rejectAllDecider,
   runHallucinator,
   runHonestReviewer,
@@ -2753,13 +2754,13 @@ describe('testbed: honest-strong archetype', () => {
     // Dave's decline pattern: declines anything mentioning "no
     // effect" (returns null from decide → archetype calls
     // decline_assignment with reason "outside expertise"). Accepts
-    // the rest.
-    const decliner: import('@anchorage/testbed').ReviewDecider = {
-      decide: (payload) => {
-        if ('content' in payload && payload.content.includes('no effect')) return null;
-        return { decision: 'accept', rationale: 'spot-checked, looks correct' };
-      },
-    };
+    // the rest. payloadDecliningDecider composes the predicate +
+    // fallback so the abuse shape ("decline outside my preferred
+    // shape, vote normally on the rest") is a one-line archetype.
+    const decliner = payloadDecliningDecider({
+      declineIf: (payload) => 'content' in payload && payload.content.includes('no effect'),
+      fallback: acceptAllDecider,
+    });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 10,

@@ -18,6 +18,8 @@ export {
   type HonestReviewerResult,
   payloadBiasedDecider,
   type PayloadBiasedDeciderConfig,
+  payloadDecliningDecider,
+  type PayloadDecliningDeciderConfig,
   rejectAllDecider,
   type ReviewDecider,
   type ReviewDecisionWithRationale,
