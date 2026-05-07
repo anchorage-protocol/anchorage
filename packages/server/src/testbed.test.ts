@@ -1074,6 +1074,175 @@ describe('testbed: honest-strong archetype', () => {
     expect(erinScore).toBeGreaterThan(daveScore);
   });
 
+  it('calibration-aware coalition bypasses both defenses (PRD line 281)', async () => {
+    // The naive strategic-coalition tests above use a globally-applied
+    // bias predicate ("accept iff content includes 'works'"), which
+    // misfires on the paper-1 / paper-2 calibration corpus and gets
+    // caught by both calibration defenses. PRD line 281 names the
+    // realistic version of the archetype: "strategic adversary
+    // ... while passing calibration." This test is the regression
+    // handle for that vector.
+    //
+    // The trick is that a real strategic adversary's bias is narrow.
+    // It only fires inside the contested topic; anything outside —
+    // including, by construction, every item in the calibration corpus
+    // (which is broader than any one adversary's agenda) — is voted
+    // ground-truth-correctly. The adversary doesn't need to identify
+    // calibration items at all, which is the property the
+    // indistinguishability commitment (PRD §Calibration batches)
+    // protects against. They just need to keep their bias zone
+    // narrower than the calibration sampler's.
+    //
+    // Modeled here as a payload-biased decider whose predicate is
+    // "accept anything outside the zone (no 'treatment' token) OR
+    // anything in-zone-and-aligned (contains 'works')". The paper-1
+    // / paper-2 calibration items pass the first clause; the works
+    // excerpt passes the second; the no-effect excerpt fails both.
+    //
+    // Headline result: both defenses go quiet against this archetype.
+    // The convergence layer still flips no-effect to rejected (the
+    // coalition's calibration record stays clean, so their convergence
+    // weights stay at full strength), and the rep ledger no longer
+    // dominates honest reviewers — the coalition gains rep on every
+    // calibration item AND on the bias-driven convergence outcomes.
+    // This is the open testbed target the convergence-aware defense
+    // commit's ROADMAP entry named.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        calibration_inject_every_n: 2,
+        calibration_aware_convergence: true,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    for (let i = 1; i <= 2; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) =>
+        anchorId.endsWith('1') || anchorId.endsWith('a')
+          ? {
+              content: 'treatment X works for stage III',
+              quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+            }
+          : {
+              content: 'treatment X has no effect for stage IV',
+              quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+            },
+    };
+    await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    // Zone-aware bias: accept everything outside the bias zone (no
+    // 'treatment' token — captures the calibration corpus by
+    // construction) OR aligned-and-in-zone. The second clause is the
+    // bias proper; the first is what makes the adversary calibration-
+    // aware without needing to identify calibration items.
+    const calAwareBiased = payloadBiasedDecider({
+      acceptIf: (payload) =>
+        'content' in payload &&
+        (!payload.content.includes('treatment') || payload.content.includes('works')),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiased,
+    });
+
+    // Convergence flips both ways: works to accepted, no-effect to
+    // rejected. The calibration-aware convergence defense doesn't bite
+    // because the coalition's calibration record stays at (passes>0,
+    // fails=0), so their convergence weights are ≥ 1 and the weighted-
+    // sum threshold is reached. Compare against the previous test,
+    // where the same coalition's weights collapsed to 0 and no-effect
+    // stayed staged. This is the regression handle on the open vector.
+    const excerpts = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    const works = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('works'),
+    );
+    const noEffect = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('no effect'),
+    );
+    expect(works?.status).toBe('accepted');
+    expect(noEffect?.status).toBe('rejected');
+
+    // Materialization mirrors the suppressed-excerpt baseline: only
+    // the bias-aligned excerpt becomes a node.
+    const excerptNodes = [...server.store.nodes.values()].filter((n) => n.kind === 'excerpt');
+    expect(excerptNodes).toHaveLength(1);
+    expect(excerptNodes[0]?.content).toContain('works');
+
+    // Reputation: the coalition's rep dominance returns. Erin gets
+    // +1 from works (accurate) and -1 from no-effect (inaccurate against
+    // the converged reject), netting 0 from convergence; she still
+    // accumulates calibration passes (accept-all is ground-truth on
+    // every calibration item). The coalition gets +1 from each
+    // converged outcome (both biased votes were "accurate" against
+    // the bias-driven outcome) AND keeps its calibration passes
+    // because narrow bias never fires on the calibration corpus.
+    // So at least one coalition member's score is strictly above
+    // Erin's. The honest-dominance property the prior commit
+    // established does not hold against this archetype — the rep-
+    // ledger half is also bypassed.
+    const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
+    const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
+    const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
+    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    expect(Math.max(carolScore, daveScore)).toBeGreaterThan(erinScore);
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
