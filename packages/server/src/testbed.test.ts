@@ -2955,6 +2955,265 @@ describe('testbed: honest-strong archetype', () => {
     expect(archivedAgain).toEqual([]);
   });
 
+  // Parameter sweep over the (coalition decorrelation rate,
+  // stratum_anti_correlation_threshold) plane. PRD §Adversary
+  // testbed (Architecture, "Parameter sweeps") commits this shape
+  // as a Phase 1 exit-criterion piece: governance-tunable knobs
+  // swept over reasonable ranges, attack-success measured, results
+  // published. This is the simplest concrete sweep — two adversary
+  // strategies times three defense thresholds — and it asserts the
+  // matrix of outcomes a contributor can verify by reading the test
+  // names alone.
+  //
+  // The decorrelation pattern is the priming-vote sequence Carol
+  // and Dave cast on four neutral excerpts. At rate 1.0 they
+  // disagree on every priming item (perfect decorrelation); at rate
+  // 0.5 they mix (two agreed, two disagreed) — the mixed-strategy
+  // shape that defeated single-ratio cluster signals in the
+  // standalone test above.
+  //
+  // Expected outcomes are derived from the cluster primitive:
+  //   - threshold 0 disables anti-correlation entirely → bypass
+  //     open at any rate → contested converges to rejected.
+  //   - threshold 0.5 fires when disagreement_ratio >= 0.5, which
+  //     covers both rates → bypass closed → contested staged.
+  //   - threshold 1.0 fires only at perfect decorrelation → bypass
+  //     closed at rate 1.0, open at rate 0.5.
+  //
+  // The sweep helper is a parametrized scenario factory: same
+  // identities, same anchors, same contested item, different
+  // priming patterns and review configs. Production sweeps would
+  // run more cells and aggregate attack-success-rate; v0 asserts
+  // the per-cell outcome directly so the matrix is locked in as
+  // an invariant.
+  interface SweepCell {
+    name: string;
+    decorrelation_rate: 0.5 | 1.0;
+    pattern: Array<['accept' | 'reject', 'accept' | 'reject']>;
+    anti_correlation_threshold: number;
+    expected_status: 'staged' | 'rejected';
+  }
+  const sweepCells: SweepCell[] = [
+    {
+      name: 'rate=0.5 threshold=0 (anti-corr disabled, bypass open)',
+      decorrelation_rate: 0.5,
+      pattern: [
+        ['accept', 'accept'],
+        ['accept', 'reject'],
+        ['reject', 'accept'],
+        ['reject', 'reject'],
+      ],
+      anti_correlation_threshold: 0,
+      expected_status: 'rejected',
+    },
+    {
+      name: 'rate=0.5 threshold=0.5 (defense fires at boundary)',
+      decorrelation_rate: 0.5,
+      pattern: [
+        ['accept', 'accept'],
+        ['accept', 'reject'],
+        ['reject', 'accept'],
+        ['reject', 'reject'],
+      ],
+      anti_correlation_threshold: 0.5,
+      expected_status: 'staged',
+    },
+    {
+      name: 'rate=0.5 threshold=1.0 (mixed-strategy gap, bypass open)',
+      decorrelation_rate: 0.5,
+      pattern: [
+        ['accept', 'accept'],
+        ['accept', 'reject'],
+        ['reject', 'accept'],
+        ['reject', 'reject'],
+      ],
+      anti_correlation_threshold: 1.0,
+      expected_status: 'rejected',
+    },
+    {
+      name: 'rate=1.0 threshold=0 (anti-corr disabled, bypass open)',
+      decorrelation_rate: 1.0,
+      pattern: [
+        ['accept', 'reject'],
+        ['accept', 'reject'],
+        ['accept', 'reject'],
+        ['accept', 'reject'],
+      ],
+      anti_correlation_threshold: 0,
+      expected_status: 'rejected',
+    },
+    {
+      name: 'rate=1.0 threshold=0.5 (defense fires)',
+      decorrelation_rate: 1.0,
+      pattern: [
+        ['accept', 'reject'],
+        ['accept', 'reject'],
+        ['accept', 'reject'],
+        ['accept', 'reject'],
+      ],
+      anti_correlation_threshold: 0.5,
+      expected_status: 'staged',
+    },
+    {
+      name: 'rate=1.0 threshold=1.0 (defense fires at perfect decorrelation)',
+      decorrelation_rate: 1.0,
+      pattern: [
+        ['accept', 'reject'],
+        ['accept', 'reject'],
+        ['accept', 'reject'],
+        ['accept', 'reject'],
+      ],
+      anti_correlation_threshold: 1.0,
+      expected_status: 'staged',
+    },
+  ];
+  it.each(sweepCells)(
+    'parameter sweep: $name → contested $expected_status',
+    async ({ pattern, anti_correlation_threshold, expected_status }) => {
+      const sources = new Map<string, string>([
+        ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+        ['2', 'arm B: treatment X has no effect in stage IV patients'],
+      ]);
+      const server = new Server({
+        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+        idGen: new SeededIdGen('h'),
+        verifier: new FakeVerifier(new Set(), new Map(), sources),
+        review: {
+          votes_to_accept: 2,
+          votes_to_reject: 2,
+          stratification_enabled: true,
+          stratum_min_shared_proposals: 2,
+          stratum_agreement_threshold: 1.0,
+          stratum_anti_correlation_threshold: anti_correlation_threshold,
+          stratum_target_count: 2,
+          stratification_degraded_extra: 1,
+        },
+      });
+      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+      const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+      const subTopic = server.bootstrap.seedSubTopic({
+        cause_id: cause.id,
+        name: 'treatment-X',
+        description: 'x',
+        scope_query: 'x',
+      });
+      const aliceCaller = { identity_id: alice.id };
+      const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper 1',
+        external_ref: { kind: 'pmid', value: '1' },
+      });
+      server.curator.acceptProposal(anchor1.proposal_id);
+      const anchor1Node = [...server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === 'paper 1',
+      );
+      if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+      const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper 2',
+        external_ref: { kind: 'pmid', value: '2' },
+      });
+      server.curator.acceptProposal(anchor2.proposal_id);
+      const anchor2Node = [...server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === 'paper 2',
+      );
+      if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+      const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+      const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+      const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+      const erinClient = await wireArchetype(server, erin.id);
+      const carolClient = await wireArchetype(server, carol.id);
+      const daveClient = await wireArchetype(server, dave.id);
+      for (const c of [{ identity_id: carol.id }, { identity_id: dave.id }]) {
+        await server.tools.setCapacity(c, {
+          cause_id: cause.id,
+          rate: 5,
+          kinds: ['review'],
+        });
+      }
+
+      // PRIMING: priming pattern drives the cluster signal.
+      for (let i = 0; i < pattern.length; i++) {
+        const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          parent_anchor_id: anchor1Node.id,
+          content: `treatment X works for stage III ${i}`,
+          quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+        });
+        const cell = pattern[i];
+        if (!cell) throw new Error('pattern out of range');
+        const [carolVote, daveVote] = cell;
+        await server.tools.castReviewVote(
+          { identity_id: carol.id },
+          {
+            proposal_id: excerpt.proposal_id,
+            decision: carolVote,
+            rationale:
+              carolVote === 'accept'
+                ? 'consistent with my read of the literature'
+                : 'underpowered, methodological concerns',
+          },
+        );
+        await server.tools.castReviewVote(
+          { identity_id: dave.id },
+          {
+            proposal_id: excerpt.proposal_id,
+            decision: daveVote,
+            rationale:
+              daveVote === 'accept'
+                ? 'consistent with my read of the literature'
+                : 'underpowered, methodological concerns',
+          },
+        );
+        const after = server.store.proposals.get(excerpt.proposal_id);
+        if (after?.status === 'staged') {
+          server.curator.acceptProposal(excerpt.proposal_id);
+        }
+      }
+
+      const contested = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor2Node.id,
+        content: 'treatment X has no effect for stage IV',
+        quoted_span: {
+          text: 'treatment X has no effect in stage IV patients',
+          offset: 0,
+        },
+      });
+
+      const calAwareBiased = payloadBiasedDecider({
+        acceptIf: (payload) =>
+          'content' in payload &&
+          (!payload.content.includes('treatment') || payload.content.includes('works')),
+        rationaleAccept: 'consistent with prevailing evidence',
+        rationaleReject: 'underpowered, methodological concerns',
+      });
+      await runHonestReviewer(erinClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: acceptAllDecider,
+      });
+      await runHonestReviewer(carolClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: calAwareBiased,
+      });
+      await runHonestReviewer(daveClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: calAwareBiased,
+      });
+
+      const target = server.store.proposals.get(contested.proposal_id);
+      expect(target?.status).toBe(expected_status);
+    },
+  );
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
