@@ -14,7 +14,10 @@ export class SystemClock implements Clock {
 
 // Advances by `tickMs` on each call, starting from `start`. Useful for
 // tests that need monotonic, distinct timestamps without depending on
-// wall-clock resolution.
+// wall-clock resolution. `advance(ms)` lets a test jump the clock
+// forward explicitly without consuming a tick — needed by scenarios
+// that exercise time-dependent server behavior (reputation decay,
+// divergence-closure archival) on a deterministic horizon.
 export class FakeClock implements Clock {
   private current: number;
   constructor(
@@ -27,5 +30,9 @@ export class FakeClock implements Clock {
     const t = Timestamp.parse(new Date(this.current).toISOString());
     this.current += this.tickMs;
     return t;
+  }
+  advance(ms: number): void {
+    if (ms < 0) throw new Error(`FakeClock.advance: negative ms (${ms})`);
+    this.current += ms;
   }
 }

@@ -1719,7 +1719,9 @@ describe('tools.castReviewVote', () => {
     const { entries } = await f.server.tools.queryReputation(f.caller, {
       cause_id: f.cause_id,
     });
-    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, score: 0.5 }]);
+    expect(entries).toEqual([
+      { sub_topic_id: f.sub_topic_id, demonstrated: 0.5, recent: 0.5 },
+    ]);
   });
 
   it('debits the proposer when their proposal converges to rejected', async () => {
@@ -1744,7 +1746,9 @@ describe('tools.castReviewVote', () => {
       cause_id: f.cause_id,
     });
     // -1 * 0.5 = -0.5 (contributor-initiated factor).
-    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, score: -0.5 }]);
+    expect(entries).toEqual([
+      { sub_topic_id: f.sub_topic_id, demonstrated: -0.5, recent: -0.5 },
+    ]);
   });
 
   it('credits accurate reviewers and debits inaccurate ones on convergence', async () => {
@@ -1778,17 +1782,17 @@ describe('tools.castReviewVote', () => {
       { identity_id: bob.id },
       { cause_id: f.cause_id },
     );
-    expect(bobE).toEqual([{ sub_topic_id: f.sub_topic_id, score: 1 }]);
+    expect(bobE).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: 1, recent: 1 }]);
     const { entries: carolE } = await f.server.tools.queryReputation(
       { identity_id: carol.id },
       { cause_id: f.cause_id },
     );
-    expect(carolE).toEqual([{ sub_topic_id: f.sub_topic_id, score: 1 }]);
+    expect(carolE).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: 1, recent: 1 }]);
     const { entries: daveE } = await f.server.tools.queryReputation(
       { identity_id: dave.id },
       { cause_id: f.cause_id },
     );
-    expect(daveE).toEqual([{ sub_topic_id: f.sub_topic_id, score: -1 }]);
+    expect(daveE).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: -1, recent: -1 }]);
   });
 
   it('uses full proposer weight when the proposal was assignment-driven', async () => {
@@ -1845,7 +1849,7 @@ describe('tools.castReviewVote', () => {
     const { entries } = await f.server.tools.queryReputation(bobCaller, {
       cause_id: f.cause_id,
     });
-    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, score: 1 }]);
+    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: 1, recent: 1 }]);
   });
 
   it('does not move reputation on revise votes', async () => {
@@ -1948,7 +1952,7 @@ describe('calibration loop', () => {
     const { entries } = await f.server.tools.queryReputation(bobCaller, {
       cause_id: f.cause_id,
     });
-    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, score: 2 }]);
+    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: 2, recent: 2 }]);
   });
 
   it('reject on a calibration item subtracts calibration_fail_loss', async () => {
@@ -1970,7 +1974,7 @@ describe('calibration loop', () => {
     const { entries } = await f.server.tools.queryReputation(bobCaller, {
       cause_id: f.cause_id,
     });
-    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, score: -3 }]);
+    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: -3, recent: -3 }]);
   });
 
   it('revise on a calibration item moves no reputation', async () => {
@@ -2025,7 +2029,9 @@ describe('calibration loop', () => {
     const { entries: bobEntries } = await f.server.tools.queryReputation(bobCaller, {
       cause_id: f.cause_id,
     });
-    expect(bobEntries).toEqual([{ sub_topic_id: f.sub_topic_id, score: -1 }]);
+    expect(bobEntries).toEqual([
+      { sub_topic_id: f.sub_topic_id, demonstrated: -1, recent: -1 },
+    ]);
   });
 
   it('rejects voting on an accepted proposal without an assignment_id', async () => {
@@ -2098,6 +2104,187 @@ describe('calibration loop', () => {
     await expect(
       f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id }),
     ).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
+
+describe('two-component reputation decay', () => {
+  // PRD §Reputation: demonstrated-competence (slow-decay) and
+  // recent-activity (fast-decay) move together on every reputation
+  // event; the half-lives applied at read time are what produces the
+  // differential. The test pins three properties of the v0
+  // bookkeeping:
+  //   - default half-lives are Infinity (no decay; both fields equal
+  //     the cumulative bump).
+  //   - finite half-lives apply exponential decay on read, with each
+  //     component decaying independently per its own half-life.
+  //   - subsequent bumps land on the freshly-decayed value, so the
+  //     stored snapshot stays a faithful at-bump-time anchor.
+  // Eligibility and assignment gates that would *consume* these
+  // components are deliberately not wired in v0 — they're the next
+  // testbed slice. This is the bookkeeping-correctness handle that
+  // those slices read against.
+  it('decays demonstrated and recent on read with their respective half-lives', async () => {
+    // tickMs=0 — auto-advance per now() call would otherwise eat
+    // into the half-life across the dozen-odd clock reads each tool
+    // call performs. This test cares only about deliberate advances.
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 0);
+    const server = new Server({
+      clock,
+      idGen: new SeededIdGen('d'),
+      verifier: new FakeVerifier(),
+      review: {
+        // Demonstrated stays effectively unchanged across the test's
+        // simulated horizon; recent has a 60s half-life so a 60s
+        // advance halves it cleanly.
+        demonstrated_half_life_seconds: Infinity,
+        recent_half_life_seconds: 60,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const aliceCred = server.bootstrap.bindAgentCredential({
+      identity_id: alice.id,
+      label: 'desktop',
+    });
+    const aliceCaller: Caller = { identity_id: alice.id, agent_credential_id: aliceCred.id };
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'mrd',
+      description: 'mrd',
+      scope_query: 'mrd',
+    });
+
+    // Land a +2 reputation bump via two converged accepts on alice's
+    // contributor-initiated proposals (each contributes +1 *
+    // contributor_initiated_factor = 0.5; we use direct rep movement
+    // via reviewer accuracy for cleaner deltas — alice reviews two
+    // accepted proposals that survive convergence). Skip the ceremony
+    // and use a curator path that nudges rep directly: two assigned
+    // reviews of bob's proposals that converge with alice's vote.
+    //
+    // Simplest: alice proposes one anchor with assignment-driven
+    // weight via the bootstrap path, but that requires capacity etc.
+    // Instead, exercise the public surface: alice is the proposer
+    // (gain +0.5 contributor-initiated on accept) and we run two
+    // accepts. After two converged accepts, alice has demonstrated =
+    // recent = 1.0.
+    for (let i = 1; i <= 2; i++) {
+      const { proposal_id } = await server.tools.proposeAnchor(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: `paper ${i}`,
+        external_ref: { kind: 'pmid', value: String(i) },
+      });
+      const bob = server.bootstrap.mintIdentity({ display_name: `bob-${i}` });
+      const carol = server.bootstrap.mintIdentity({ display_name: `carol-${i}` });
+      await server.tools.castReviewVote(
+        { identity_id: bob.id },
+        { proposal_id, decision: 'accept', rationale: 'b' },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        { proposal_id, decision: 'accept', rationale: 'c' },
+      );
+    }
+    const initial = await server.tools.queryReputation(aliceCaller, { cause_id: cause.id });
+    expect(initial.entries).toEqual([
+      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
+    ]);
+
+    // Jump 60s forward — one recent-half-life. demonstrated stays at
+    // 1.0 (Infinity half-life); recent halves to 0.5.
+    clock.advance(60_000);
+    const afterOne = await server.tools.queryReputation(aliceCaller, { cause_id: cause.id });
+    const afterOneEntry = afterOne.entries[0];
+    expect(afterOneEntry?.demonstrated).toBe(1);
+    expect(afterOneEntry?.recent).toBeCloseTo(0.5, 10);
+
+    // Jump another 60s — recent halves again to 0.25; demonstrated
+    // unchanged.
+    clock.advance(60_000);
+    const afterTwo = await server.tools.queryReputation(aliceCaller, { cause_id: cause.id });
+    const afterTwoEntry = afterTwo.entries[0];
+    expect(afterTwoEntry?.demonstrated).toBe(1);
+    expect(afterTwoEntry?.recent).toBeCloseTo(0.25, 10);
+  });
+
+  it('lands subsequent bumps on the freshly-decayed snapshot', async () => {
+    // Successive bumps must not compound stale values. After a decay
+    // window, the next bump should add to the decayed value, not the
+    // pre-decay one — otherwise two-component reputation degenerates
+    // back to a cumulative-since-creation tally.
+    // tickMs=0 — auto-advance per now() call would otherwise eat
+    // into the half-life across the dozen-odd clock reads each tool
+    // call performs. This test cares only about deliberate advances.
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 0);
+    const server = new Server({
+      clock,
+      idGen: new SeededIdGen('d2'),
+      verifier: new FakeVerifier(),
+      review: {
+        demonstrated_half_life_seconds: Infinity,
+        recent_half_life_seconds: 60,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const aliceCred = server.bootstrap.bindAgentCredential({
+      identity_id: alice.id,
+      label: 'desktop',
+    });
+    const aliceCaller: Caller = { identity_id: alice.id, agent_credential_id: aliceCred.id };
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'mrd',
+      description: 'mrd',
+      scope_query: 'mrd',
+    });
+
+    // First +0.5 bump (one contributor-initiated accept).
+    const first = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    await server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id: first.proposal_id, decision: 'accept', rationale: 'b' },
+    );
+    await server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id: first.proposal_id, decision: 'accept', rationale: 'c' },
+    );
+
+    // Advance 60s — recent halves to 0.25 (pre-bump 0.5 → 0.25).
+    clock.advance(60_000);
+
+    // Second +0.5 bump.
+    const second = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    await server.tools.castReviewVote(
+      { identity_id: dave.id },
+      { proposal_id: second.proposal_id, decision: 'accept', rationale: 'd' },
+    );
+    await server.tools.castReviewVote(
+      { identity_id: erin.id },
+      { proposal_id: second.proposal_id, decision: 'accept', rationale: 'e' },
+    );
+
+    // demonstrated = 0.5 + 0.5 = 1.0 (no decay).
+    // recent = decay(0.5) + 0.5 = 0.25 + 0.5 = 0.75.
+    const after = await server.tools.queryReputation(aliceCaller, { cause_id: cause.id });
+    const entry = after.entries[0];
+    expect(entry?.demonstrated).toBeCloseTo(1, 10);
+    expect(entry?.recent).toBeCloseTo(0.75, 10);
   });
 });
 

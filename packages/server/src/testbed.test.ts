@@ -438,14 +438,22 @@ describe('testbed: synthetic populations against the wired surface', () => {
       decide: acceptAllDecider,
     });
 
-    // Bob's excerpt was assignment-driven, so full weight: +1.
+    // Bob's excerpt was assignment-driven, so full weight: +1. Default
+    // half-lives are Infinity so demonstrated and recent both equal
+    // the cumulative bump.
     const bobRep = await bobClient.queryReputation({ cause_id: cause.id });
-    expect(bobRep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+    expect(bobRep.entries).toEqual([
+      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
+    ]);
     // Carol and Dave each voted with the converged outcome → +1.
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
-    expect(carolRep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+    expect(carolRep.entries).toEqual([
+      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
+    ]);
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    expect(daveRep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+    expect(daveRep.entries).toEqual([
+      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
+    ]);
   });
 
   it('catches a lazy-accepter reviewer: rep moves down when honest rejecters converge', async () => {
@@ -517,11 +525,17 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // outcome); honest-1 and honest-2 gained (accurate rejects);
     // alice (proposer) lost contributor-initiated proposer-loss.
     const lazyRep = await lazyClient.queryReputation({ cause_id: cause.id });
-    expect(lazyRep.entries).toEqual([{ sub_topic_id: subTopic.id, score: -1 }]);
+    expect(lazyRep.entries).toEqual([
+      { sub_topic_id: subTopic.id, demonstrated: -1, recent: -1 },
+    ]);
     const honest1Rep = await honest1Client.queryReputation({ cause_id: cause.id });
-    expect(honest1Rep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+    expect(honest1Rep.entries).toEqual([
+      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
+    ]);
     const honest2Rep = await honest2Client.queryReputation({ cause_id: cause.id });
-    expect(honest2Rep.entries).toEqual([{ sub_topic_id: subTopic.id, score: 1 }]);
+    expect(honest2Rep.entries).toEqual([
+      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
+    ]);
   });
 
   it('catches the hallucinator at the verifier, before reviewers see anything', async () => {
@@ -930,7 +944,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // honestly on both well-grounded excerpts, the system credits
     // her with nothing.
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
-    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
     expect(erinScore).toBe(0);
 
     // The strategic pair both come out positive — they voted with
@@ -939,8 +953,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // valid work.
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
-    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
     expect(carolScore).toBeGreaterThan(0);
     expect(daveScore).toBeGreaterThan(0);
 
@@ -1082,9 +1096,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
-    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
 
     // Headline inversion: in the no-calibration scenario above,
     // erinScore was 0 and the coalition was strictly positive on
@@ -1245,9 +1259,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
-    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
     expect(erinScore).toBeGreaterThan(0);
     expect(erinScore).toBeGreaterThan(carolScore);
     expect(erinScore).toBeGreaterThan(daveScore);
@@ -1410,9 +1424,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
-    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
     expect(Math.max(carolScore, daveScore)).toBeGreaterThan(erinScore);
   });
 
@@ -1574,9 +1588,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
-    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
     expect(erinScore).toBeGreaterThan(carolScore);
     expect(erinScore).toBeGreaterThan(daveScore);
   });
@@ -3468,7 +3482,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(contestedVotes.map((v) => v.reviewer_id).sort()).toEqual([carol.id, erin.id].sort());
   });
 
-  it('patient-adversary archetype: drift cost is constant; buffer accumulation has no recency bound (PRD §Reputation, two-component)', async () => {
+  it('patient-adversary archetype: two-component bookkeeping exposes the recent-activity drain that assignment-gating will consume (PRD §Reputation)', async () => {
     // PRD §Adversary taxonomy (Patient adversary): "Strategic
     // adversary with a long horizon — builds reputation honestly for
     // months before drift attempts. Tests whether per-(cause, sub-
@@ -3476,12 +3490,16 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // drift." PRD §Reputation names the defenses: two-component
     // reputation — a slow-decay demonstrated-competence component
     // gating eligibility tiers, plus a fast-decay recent-activity
-    // component gating assignment. Neither component, nor decay
-    // itself, is wired in v0; reputation is a single cumulative
-    // score with no time dependence. This scenario pins the open
-    // seam by measurement, parallel to the honest-weak archetype's
-    // friction-rate scenario — name the archetype, observe the gap,
-    // defer the defense to the iteration that adds it.
+    // component gating assignment.
+    //
+    // Two-component bookkeeping is now wired (PRD §Reputation):
+    // every reputation event moves both components together; on
+    // read, each component decays exponentially per its own half-
+    // life. What is *not* yet wired is the gating layer on top of
+    // either component — eligibility tiers driven by demonstrated,
+    // assignment draws filtered by recent. Those land when the
+    // testbed picks thresholds; this scenario is the regression
+    // handle that says "the lever the next slice consumes is real."
     //
     // Setup: the same calibration-aware predicate the existing
     // calibration-aware-coalition tests use (accept anchors and
@@ -3498,33 +3516,43 @@ describe('testbed: synthetic populations against the wired surface', () => {
     //
     // Defenses on: calibration injection + calibration-aware
     // convergence — the convergence half closed in the strategic-
-    // coalition tests above. Stratification is left off so the
-    // measurement is on the rep ledger and calibration weight, not
-    // on the cluster-signal layer.
+    // coalition tests above. Plus finite recent-component half-life
+    // so the drain is observable inside the test horizon;
+    // demonstrated half-life stays Infinity so the long-priming
+    // buffer is unambiguous. Stratification is left off so the
+    // measurement is on the rep ledger and decay layer, not on the
+    // cluster-signal layer.
     //
     // Headline assertions:
     //   - Contested target converges to accepted: distinct-count +
     //     weighted-sum gates absorb Carol's lone reject when two
     //     honest reviewers accept.
-    //   - Carol's post-drift reputation in this (cause, sub-topic)
-    //     is strongly positive — many times the per-drift cost.
+    //   - Immediately after the drift, Carol's demonstrated and
+    //     recent are both strongly positive and approximately equal
+    //     — the bookkeeping is symmetric on bump.
+    //   - After a quiet window passes (Carol stops being recently
+    //     active between drift attempts, which is the patient-
+    //     adversary's defining signature), her recent component
+    //     decays toward zero while demonstrated is preserved. The
+    //     gap is the measurement an assignment-gating slice will
+    //     read against.
     //   - Carol's calibration record is all-passes; her vote weight
     //     at convergence stays well above the fresh-reviewer floor
     //     of 1.
     //
-    // The seam: drift cost is a constant `reviewer_inaccurate_loss`
-    // (one rep point) per misaligned vote. The buffer Carol built
-    // grows linearly with priming + calibration count and never
-    // decays — there is no recency component on either reputation
-    // or calibration weight in v0. Carol's effective drift bandwidth
-    // is bounded only by total accumulated buffer, with no defense
-    // that bounds it as a function of recent activity, cumulative
-    // drift count, or item stakes. Two-component reputation (slow-
-    // decay competence + fast-decay activity per PRD §Reputation)
-    // and class-aware thresholds (PRD §Reputation, "review-credit
-    // normalized by claim difficulty") are the named defenses and
-    // are future testbed iterations, not regressions of this
-    // scenario.
+    // The seam: drift cost is still a constant
+    // `reviewer_inaccurate_loss` (one rep point) per misaligned
+    // vote, and there is still no live gate that *consumes* either
+    // component to deny Carol assignment when her recent has drained.
+    // Carol's effective drift bandwidth, measured as cumulative
+    // buffer over per-drift cost, is unchanged from pre-decay v0
+    // — that lever is downstream of this slice. What this scenario
+    // pins instead is the *gap* between demonstrated and recent
+    // after a quiet window: a long-priming adversary cannot keep
+    // both components elevated without continuing to be active, and
+    // visible activity is detectable (PRD §Reputation, §Identity).
+    // Class-aware thresholds (PRD §Reputation, "review-credit
+    // normalized by claim difficulty") remain a future iteration.
     const PRIMING_COUNT = 4;
     const sources = new Map<string, string>();
     for (let i = 1; i <= PRIMING_COUNT; i++) {
@@ -3535,13 +3563,26 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
     sources.set('99', 'arm B: treatment X has no effect in stage IV patients');
 
+    // tickMs=0 — auto-advance per now() call would otherwise eat
+    // into the recent half-life across the dozen-odd clock reads each
+    // tool call performs. The scenario only cares about deliberate
+    // clock advances between bookkeeping phases; the ordering needs
+    // are met by SeededIdGen tiebreakers.
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 0);
+    const RECENT_HALF_LIFE_SECONDS = 60;
     const server = new Server({
-      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      clock,
       idGen: new SeededIdGen('p'),
       verifier: new FakeVerifier(new Set(), new Map(), sources),
       review: {
         calibration_inject_every_n: 2,
         calibration_aware_convergence: true,
+        // Demonstrated stays put across the test horizon — the long-
+        // priming buffer is unambiguous. Recent halves on a 60s
+        // clock so the drain is observable on a small number of
+        // deliberate advances.
+        demonstrated_half_life_seconds: Infinity,
+        recent_half_life_seconds: RECENT_HALF_LIFE_SECONDS,
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
@@ -3654,12 +3695,16 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // matched ground-truth on, -reviewer_inaccurate_loss for the one
     // drift. The PRD §Reputation §244 contributor-initiated factor
     // doesn't apply — these are reviewer rep movements, not
-    // proposer ones. The headline pin is that the drift cost is a
-    // small fraction of the buffer.
+    // proposer ones. Both components see the same bumps; with no
+    // time advanced yet, demonstrated and recent should be equal
+    // (recent decay over the auto-tick=0 clock is identity).
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
-    expect(carolScore).toBeGreaterThan(0);
-    expect(carolScore).toBeGreaterThan(server.review.reviewer_inaccurate_loss * 2);
+    const carolEntry = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id);
+    const carolDemonstrated = carolEntry?.demonstrated ?? 0;
+    const carolRecent = carolEntry?.recent ?? 0;
+    expect(carolDemonstrated).toBeGreaterThan(0);
+    expect(carolDemonstrated).toBeGreaterThan(server.review.reviewer_inaccurate_loss * 2);
+    expect(carolRecent).toBe(carolDemonstrated);
 
     // Carol's calibration record is all-passes — her predicate
     // matches every anchor calibration item ("paper N" content
@@ -3678,18 +3723,39 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const carolWeight = Math.max(0, 1 + (carolCal?.passes ?? 0) - (carolCal?.fails ?? 0));
     expect(carolWeight).toBeGreaterThan(1);
 
-    // The architectural pin, expressed as a ratio: Carol's drift
-    // bandwidth = floor(carolScore / reviewer_inaccurate_loss). She
-    // could repeat this drift many times before her observable
-    // reputation returns to a fresh-reviewer state, with no defense
-    // in v0 that bounds the count as a function of when the priming
-    // happened or how high the contested item's stakes are. Decay,
-    // two-component reputation, and class-aware thresholds (all PRD
-    // §Reputation) are the named defenses; this assertion is the
-    // regression handle that says "a future iteration that wires
-    // any of them should make this expectation tighten."
-    const driftBandwidth = Math.floor(carolScore / server.review.reviewer_inaccurate_loss);
+    // Cumulative buffer over per-drift cost: Carol's drift bandwidth
+    // measured by the slow-decay component is the same as a single
+    // cumulative tally would give. No live gate yet *consumes* the
+    // demonstrated component to deny her further assignment, so this
+    // pin remains exactly as wide as before the two-component slice
+    // landed — and intentionally so. Eligibility tiers gating on
+    // demonstrated and assignment filters gating on recent are the
+    // next testbed iteration; their landing should be what tightens
+    // this number, not the bookkeeping change underneath them.
+    const driftBandwidth = Math.floor(carolDemonstrated / server.review.reviewer_inaccurate_loss);
     expect(driftBandwidth).toBeGreaterThan(1);
+
+    // The new measurement: advance the clock past several recent
+    // half-lives (Carol stops being recently active — the patient-
+    // adversary's defining behavior between drift attempts) and re-
+    // read. Demonstrated should be unchanged; recent should fall
+    // toward zero. The gap is the lever. A future assignment-gating
+    // slice that requires recent ≥ some threshold for a draw closes
+    // the patient-adversary loop on this side: Carol can keep
+    // demonstrated high indefinitely, but cannot keep recent high
+    // without continuing to vote — and the votes themselves are
+    // observable.
+    const QUIET_HALF_LIVES = 6;
+    clock.advance(RECENT_HALF_LIFE_SECONDS * QUIET_HALF_LIVES * 1000);
+    const carolRepAfter = await carolClient.queryReputation({ cause_id: cause.id });
+    const carolEntryAfter = carolRepAfter.entries.find((e) => e.sub_topic_id === subTopic.id);
+    expect(carolEntryAfter?.demonstrated ?? 0).toBe(carolDemonstrated);
+    // After 6 half-lives, recent has fallen by 2^6 = 64x. A 1% margin
+    // of error is generous against floating-point precision but
+    // bites if decay accidentally degenerates back to identity.
+    const expectedRecent = carolRecent * Math.pow(0.5, QUIET_HALF_LIVES);
+    expect(carolEntryAfter?.recent ?? 0).toBeCloseTo(expectedRecent, 8);
+    expect(carolEntryAfter?.recent ?? 0).toBeLessThan(carolDemonstrated * 0.05);
   });
 
   // Parameter sweep over the (coalition pattern, anti-correlation

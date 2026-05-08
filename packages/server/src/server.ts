@@ -47,6 +47,7 @@ import {
   type QueryProposalsOutput,
   QueryReputationInput,
   type QueryReputationOutput,
+  type Reputation,
   type ReputationEntry,
   RequestAssignmentInput,
   type RequestAssignmentOutput,
@@ -61,6 +62,7 @@ import {
   type SubmitAssignedProposalOutput,
   type SupersedesEdge,
   type SynthesisNode,
+  type Timestamp,
   type WorkKind,
 } from '@anchorage/contracts';
 import { z } from 'zod';
@@ -248,6 +250,27 @@ export interface ReviewConfig {
   // below 1.0 admit organic disagreement as honest false positives,
   // which is the signal/cost trade-off the testbed sweeps.
   stratum_anti_correlation_threshold: number;
+  // Half-life (in seconds) of the *demonstrated*-competence reputation
+  // component. PRD §Reputation: "A demonstrated-competence component,
+  // slow-decay, gates eligibility tiers." Applied as exponential decay
+  // on read (and on write, to land subsequent bumps on a freshly
+  // decayed value). Default `Infinity` means no decay — preserves the
+  // single-cumulative-score behavior of pre-two-component scenarios so
+  // tests that don't care about decay are unaffected. The testbed
+  // sweeps the production value alongside attack-success-rate
+  // measurements.
+  demonstrated_half_life_seconds: number;
+  // Half-life (in seconds) of the *recent*-activity reputation
+  // component. PRD §Reputation: "A recent-activity component, fast-
+  // decay, gates assignment." Same decay shape as demonstrated, only
+  // shorter — what's currently active is what's recently bumped.
+  // Default `Infinity` for the same back-compat reason as demonstrated.
+  // In production, the gap between the two half-lives is the
+  // patient-adversary defense lever: a long-priming adversary can
+  // stockpile demonstrated but cannot keep recent high without
+  // actually being recently active, and visible activity is detectable
+  // (PRD §Reputation).
+  recent_half_life_seconds: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -269,6 +292,8 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   stratification_degraded_extra: 1,
   stratum_contention_weighted: false,
   stratum_anti_correlation_threshold: 0,
+  demonstrated_half_life_seconds: Infinity,
+  recent_half_life_seconds: Infinity,
 };
 
 export interface ServerDeps {
@@ -284,6 +309,18 @@ export interface ServerDeps {
 // the right value is testbed-tuned and changes alongside the broader
 // batch-sizing knob.
 const CALIBRATION_BATCH_SIZE = 3;
+
+// Exponential decay of a reputation component magnitude. `Infinity`
+// half-life and zero elapsed both collapse to identity; finite
+// half-lives apply value * 0.5^(elapsed/halfLife). Sign is preserved
+// — a negative reputation balance decays toward zero from below the
+// same way a positive one decays toward zero from above.
+function decayValue(value: number, elapsedSeconds: number, halfLifeSeconds: number): number {
+  if (value === 0) return 0;
+  if (!Number.isFinite(halfLifeSeconds)) return value;
+  if (elapsedSeconds <= 0) return value;
+  return value * Math.pow(0.5, elapsedSeconds / halfLifeSeconds);
+}
 
 interface MaterializationResult {
   node: Node | null;
@@ -1800,11 +1837,17 @@ export class Server {
       const parsed = QueryReputationInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireActiveCause(parsed.cause_id);
+      const now = this.clock.now();
       const entries: ReputationEntry[] = [];
       for (const r of this.store.reputations.values()) {
         if (r.identity_id !== identity.id) continue;
         if (r.cause_id !== parsed.cause_id) continue;
-        entries.push({ sub_topic_id: r.sub_topic_id, score: r.score });
+        const decayed = this.decayedReputation(r, now);
+        entries.push({
+          sub_topic_id: r.sub_topic_id,
+          demonstrated: decayed.demonstrated,
+          recent: decayed.recent,
+        });
       }
       // Stable order so testbed assertions don't depend on Map
       // iteration order.
@@ -2421,13 +2464,44 @@ export class Server {
     const key = `${identityId}|${causeId}|${subTopicId}` as const;
     const existing = this.store.reputations.get(key);
     const now = this.clock.now();
+    // Decay-then-add: bring the existing snapshot forward to `now`
+    // before applying the bump, so subsequent reads at any time decay
+    // from a fresh anchor and successive bumps don't compound stale
+    // values. PRD §Reputation: both components move together on every
+    // event; differential behavior is the half-life, not the bump.
+    const base = existing
+      ? this.decayedReputation(existing, now)
+      : { demonstrated: 0, recent: 0 };
     this.store.reputations.set(key, {
       identity_id: identityId,
       cause_id: causeId,
       sub_topic_id: subTopicId,
-      score: (existing?.score ?? 0) + delta,
+      demonstrated: base.demonstrated + delta,
+      recent: base.recent + delta,
       updated_at: now,
     });
+  }
+
+  // Project a stored reputation snapshot to its decayed values at
+  // `now`. Exponential decay parameterized by the per-component half-
+  // life from review config — `Infinity` half-life collapses to no
+  // decay (the v0 default and the back-compat path for existing
+  // scenarios). Negative values decay toward zero from below the same
+  // way positive ones decay toward zero from above; the multiplier is
+  // applied to magnitude regardless of sign.
+  private decayedReputation(
+    rep: Reputation,
+    now: Timestamp,
+  ): { demonstrated: number; recent: number } {
+    const elapsedMs = Date.parse(now) - Date.parse(rep.updated_at);
+    if (elapsedMs <= 0) {
+      return { demonstrated: rep.demonstrated, recent: rep.recent };
+    }
+    const elapsedSeconds = elapsedMs / 1000;
+    return {
+      demonstrated: decayValue(rep.demonstrated, elapsedSeconds, this.review.demonstrated_half_life_seconds),
+      recent: decayValue(rep.recent, elapsedSeconds, this.review.recent_half_life_seconds),
+    };
   }
 
   private bumpCalibrationRecord(

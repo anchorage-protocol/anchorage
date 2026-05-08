@@ -208,9 +208,22 @@ export type FetchCalibrationBatchOutput = z.infer<typeof FetchCalibrationBatchOu
 // tier gates), but other contributors see only tiers (which the
 // public read-path will surface through a separate resource once
 // tiers are defined).
+//
+// Each entry returns both reputation components per PRD §Reputation:
+// `demonstrated` (slow-decay competence, intended to gate eligibility
+// tiers) and `recent` (fast-decay activity, intended to gate
+// assignment). Values are decayed forward to the server's current
+// time before return — clients see the live numbers, not the
+// snapshots at last bump.
 export const QueryReputationInput = z.object({ cause_id: CauseId }).strict();
 export type QueryReputationInput = z.infer<typeof QueryReputationInput>;
-export const ReputationEntry = z.object({ sub_topic_id: SubTopicId, score: z.number() }).strict();
+export const ReputationEntry = z
+  .object({
+    sub_topic_id: SubTopicId,
+    demonstrated: z.number(),
+    recent: z.number(),
+  })
+  .strict();
 export type ReputationEntry = z.infer<typeof ReputationEntry>;
 export const QueryReputationOutput = z.object({ entries: z.array(ReputationEntry) }).strict();
 export type QueryReputationOutput = z.infer<typeof QueryReputationOutput>;
