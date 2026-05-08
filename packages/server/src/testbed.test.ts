@@ -3294,6 +3294,262 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(archivedAgain).toEqual([]);
   });
 
+  it('multi-proposal coalition: distributed lone-rejects with paired declines stall both contested targets, divergence-closure archives them', async () => {
+    // The seam the mixed-strategy-coalition headline pinned by name:
+    // "a coalition that avoids co-voting on any contentious item."
+    // Co-voting on a contentious proposal is what every cluster-signal
+    // refinement (agreement, anti-correlation, contention-weighted)
+    // computes against; if the coalition never has both members vote
+    // on the same contentious proposal, the cluster signal has nothing
+    // to act on. The constraint that makes this *sound* tight —
+    // suppressing the contested target inherently creates a contentious
+    // item — is navigated by distribution: each coalition member
+    // solo-rejects a *different* contested target and declines the
+    // other. With paired-decline as the routing primitive, each
+    // contested target sees one coalition reject and one honest
+    // accept; neither converges; Carol and Dave share zero voting
+    // history, so the cluster signal stays silent by construction.
+    //
+    // The wired closure stack does not catch this:
+    //   - cluster signal (contention-weighted, anti-correlation 1.0,
+    //     agreement 1.0): silent — Carol and Dave share no proposals,
+    //     so no edge metric has data to fire.
+    //   - calibration-aware convergence: silent — a single biased
+    //     reject per target never builds up a weighted reject sum
+    //     against the honest accept on that target.
+    //   - assignment gates (recent / demonstrated): inert at the v0
+    //     defaults this test runs; turning the demonstrated gate on
+    //     would close a *fresh* multi-proposal coalition (the sybil-
+    //     shaped variant), not a *patient* one primed first via
+    //     contributor-initiated voting.
+    //   - decline-pattern projection: surfaces both Carol and Dave to
+    //     the curator (each declined half their offered review tasks),
+    //     but the projection is a *visibility* surface, not an
+    //     assignment-time gate.
+    //
+    // The terminal outcome is the divergence-closure sweep above:
+    // both contested targets archive as `unresolved-archived` once
+    // the window expires, which from the proposer's perspective is
+    // the suppression result the coalition is driving toward —
+    // neither target accepts.
+    //
+    // Candidate v0+ defenses that would close this seam (none wired):
+    //   - pool-size enforcement: ensure the eligible-pool size for a
+    //     proposal is large enough that a single biased lone-reject
+    //     cannot persist a tie until the divergence window expires.
+    //   - decline-pattern → assignment-gate: a curator-tunable
+    //     threshold on `declinePatterns` that gates `request_assignment`
+    //     rather than just surfacing a list (PRD §Capacity and
+    //     assignment leaves the punitive consequence open in v0).
+    //   - multi-proposal staling pattern: detect "the same identity is
+    //     the lone rejecter on a stalled proposal across N proposals"
+    //     as its own coalition signal, complementary to the per-pair
+    //     cluster signal that needs co-occurrence to fire.
+    //
+    // None of these is in the v0 surface, so this scenario stands
+    // alone rather than feeding an aggregate-ASR cube. Once one of
+    // the candidate defenses lands, the cube template wraps this
+    // pattern alongside the existing two cubes.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+      ['3', 'arm C: treatment X has no effect in stage IV patients across the second cohort'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('h'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        // Strongest cluster-signal stack on, to make the headline
+        // load-bearing: this seam evades it not by tuning, but by
+        // construction (no shared history → no edge data).
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_anti_correlation_threshold: 1.0,
+        contention_weighted_edges: true,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+      },
+    });
+
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    // Two anchors so each contested target has a distinct parent and
+    // a distinct content shape the coalition deciders can key on.
+    const anchorA = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchorA.proposal_id);
+    const anchorANode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchorANode) throw new Error('paper 2 anchor not materialized');
+    const anchorB = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 3',
+      external_ref: { kind: 'pmid', value: '3' },
+    });
+    server.curator.acceptProposal(anchorB.proposal_id);
+    const anchorBNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 3',
+    );
+    if (!anchorBNode) throw new Error('paper 3 anchor not materialized');
+
+    // Two contested targets, distinguishable by cohort label. Each
+    // member's decider keys on the cohort to take exactly one and
+    // decline the other — the explicit "no co-voting on the
+    // contentious item" rule.
+    const targetA = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorANode.id,
+      content: 'treatment X has no effect for stage IV cohort A',
+      quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+    });
+    const targetB = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorBNode.id,
+      content: 'treatment X has no effect for stage IV cohort B',
+      quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+    });
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erinClient = await wireArchetype(server, erin.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+
+    // Carol takes cohort A (votes reject), declines cohort B. Dave
+    // mirrors. Both fall through to a strategic-bias decider for
+    // anything not labeled with the partner's cohort, keeping the
+    // archetype's hidden objective consistent with the strategic
+    // taxonomy elsewhere in this file.
+    const biasFallback = payloadBiasedDecider({
+      acceptIf: (payload) => 'content' in payload && !payload.content.includes('no effect'),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    const carolDecider = payloadDecliningDecider({
+      declineIf: (payload) => 'content' in payload && payload.content.includes('cohort B'),
+      fallback: biasFallback,
+    });
+    const daveDecider = payloadDecliningDecider({
+      declineIf: (payload) => 'content' in payload && payload.content.includes('cohort A'),
+      fallback: biasFallback,
+    });
+
+    // Erin runs first, accepts everything. Both targets sit at 1
+    // accept, awaiting redundancy.
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: carolDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: daveDecider,
+    });
+
+    // Each contested target sits at 1 accept + 1 reject — tied below
+    // both convergence thresholds (votes_to_accept=2, votes_to_reject=2).
+    // No further honest capacity to break the tie: Erin already voted,
+    // Dave declined targetA, Carol declined targetB, and the assignment
+    // surface treats decline as a stable signal (no re-offer to the
+    // same contributor — PRD §Capacity and assignment).
+    expect(server.store.proposals.get(targetA.proposal_id)?.status).toBe('staged');
+    expect(server.store.proposals.get(targetB.proposal_id)?.status).toBe('staged');
+    const targetAVotes = [...server.store.reviewVotes.values()].filter(
+      (v) => v.proposal_id === targetA.proposal_id,
+    );
+    const targetBVotes = [...server.store.reviewVotes.values()].filter(
+      (v) => v.proposal_id === targetB.proposal_id,
+    );
+    expect(targetAVotes).toHaveLength(2);
+    expect(targetBVotes).toHaveLength(2);
+    // No co-voting on either contentious target: Dave never voted on
+    // targetA, Carol never voted on targetB. This is the by-construction
+    // condition that keeps the cluster signal silent.
+    expect(targetAVotes.some((v) => v.reviewer_id === carol.id && v.decision === 'reject')).toBe(
+      true,
+    );
+    expect(targetAVotes.some((v) => v.reviewer_id === erin.id && v.decision === 'accept')).toBe(
+      true,
+    );
+    expect(targetAVotes.some((v) => v.reviewer_id === dave.id)).toBe(false);
+    expect(targetBVotes.some((v) => v.reviewer_id === dave.id && v.decision === 'reject')).toBe(
+      true,
+    );
+    expect(targetBVotes.some((v) => v.reviewer_id === erin.id && v.decision === 'accept')).toBe(
+      true,
+    );
+    expect(targetBVotes.some((v) => v.reviewer_id === carol.id)).toBe(false);
+
+    // Curator-side decline-pattern projection: each coalition member
+    // was offered both targets and declined the partner's cohort,
+    // landing at offers=2, declines=1 — a 0.5 decline rate. The
+    // honest reviewer's rate is 0. The projection's *default*
+    // small-sample floor (min_offers=3, the v0 default that filters
+    // out reviewers whose decline-rate is statistically meaningless)
+    // hides the coalition entirely at this scale: a 2-target run
+    // sits below the floor by construction, and the curator-tunable
+    // threshold a real instance would set is operationally private.
+    // The visibility handle exists, but a small-N coalition lives
+    // under it without a curator who has *also* dropped the
+    // small-sample threshold to the small-N regime — and that drop
+    // surfaces every casual decliner alongside the coalition.
+    const defaultPatterns = server.curator.declinePatterns(cause.id);
+    expect(defaultPatterns).toEqual([]);
+    const surfaced = server.curator.declinePatterns(cause.id, {
+      min_offers: 2,
+      min_rate: 0.3,
+    });
+    expect(surfaced.map((p) => p.identity_id).sort()).toEqual([carol.id, dave.id].sort());
+    for (const p of surfaced) {
+      expect(p.offers).toBe(2);
+      expect(p.declines).toBe(1);
+      expect(p.decline_rate).toBeCloseTo(0.5);
+    }
+
+    // Time passes well past the divergence window, then the sweep
+    // runs. Both stalled targets archive — the terminal outcome of
+    // the seam. From the proposer's perspective neither target was
+    // accepted; the coalition's distributed lone-reject succeeded at
+    // suppression-by-archival.
+    server.clock.advance(120_000);
+    const archived = server.curator.archiveStaleProposals({
+      window_seconds: 60,
+      cause_id: cause.id,
+    });
+    expect(archived.sort()).toEqual([targetA.proposal_id, targetB.proposal_id].sort());
+    expect(server.store.proposals.get(targetA.proposal_id)?.status).toBe('unresolved-archived');
+    expect(server.store.proposals.get(targetB.proposal_id)?.status).toBe('unresolved-archived');
+  });
+
   it('contention-weighted + anti-correlation together close the mixed-strategy gap', async () => {
     // Companion to the mixed-strategy-coalition test above. The
     // standalone mixed strategy defeats each refinement individually
