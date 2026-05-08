@@ -4,9 +4,9 @@
   "private": true,
   "license": "AGPL-3.0",
   "description": "Anchorage protocol monorepo — contracts, server, and adversary testbed.",
-  "packageManager": "pnpm@10.33.3",
+  "packageManager": "pnpm@10.33.4",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "build": "tsc -b",
@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
-    "@types/node": "^22.10.0",
+    "@types/node": "^24.12.3",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
