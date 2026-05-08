@@ -55,7 +55,7 @@ Concurrent Phase 0 + Phase 1. Design docs are settled.
 
 The v0 MCP tool surface is fully implemented and runs end-to-end through the actual MCP transport. The testbed exercises it against a roster of synthetic archetypes — from honest contributors of varying competence to coordinated adversarial coalitions — with reputation, calibration, and convergence outcomes observable over the wire.
 
-Two parameter-sweep cubes aggregate attack-success-rate per defense config as the Phase-1-exit-criterion shape. Live-fetch verification (PMID/DOI/URL resolution) stays a stub until the testbed needs it.
+A growing set of parameter-sweep cubes aggregate attack-success-rate per defense config as the Phase-1-exit-criterion shape. Live-fetch verification (PMID/DOI/URL resolution) stays a stub until the testbed needs it.
 
 See [ROADMAP.md](./ROADMAP.md) for phasing.
 
