@@ -1,33 +1,38 @@
 # Contributing to Anchorage
 
-Anchorage is in design phase. There is no code surface to contribute to yet — the most useful contributions today are *to the design itself*. This file describes how to do that, and what the contribution flow will look like as the project grows.
+Anchorage is in concurrent Phase 0 + Phase 1: the design docs and the adversary testbed co-evolve, with both the docs and the v0 MCP server / testbed harness open to contribution. This file describes the surfaces and the flow.
 
-## Right now: design contributions
+## Surfaces to contribute to
 
-The artifacts that exist today are documents: [README.md](./README.md), [docs/manifesto.md](./docs/manifesto.md), [docs/governance.md](./docs/governance.md), [ROADMAP.md](./ROADMAP.md), and (eventually) the PRD and seed-topic spec. These are the surface to contribute to.
+Three surfaces, roughly in order of how often they take changes today:
+
+1. **The design docs.** [README.md](./README.md), [docs/manifesto.md](./docs/manifesto.md), [docs/governance.md](./docs/governance.md), [docs/prd.md](./docs/prd.md), [docs/seed-topic.md](./docs/seed-topic.md), [ROADMAP.md](./ROADMAP.md). Pressure-testing, editorial sharpening, prior-art pointers — see priorities below.
+2. **The adversary testbed.** New synthetic archetypes, attack scenarios, parameter-sweep cubes that pin defense closures as CI-checked ASR properties, refinements of cluster-signal / assignment-gate / reputation primitives. The testbed is where governance changes are validated before they touch user-facing surfaces (see Phase 1 in [ROADMAP.md](./ROADMAP.md)).
+3. **The v0 MCP server.** Schema changes (in `packages/contracts`), tool implementations (in `packages/server`), and the MCP transport surface. Schema changes ride the docs-never-drift discipline — every commit that changes a contract updates both the contracts package and the matching PRD section in the same commit.
 
 The contributions we want, in priority order:
 
-1. **Pressure-testing the design.** Issues that name specific failure modes — *"this governance scheme is vulnerable to attack X because Y"*, *"this calibration approach has flaw Z"*, *"the credit-from-graph model breaks when W happens."* Concrete > abstract. Specific > philosophical.
+1. **Pressure-testing the design and the testbed.** Specific failure modes — *"this governance scheme is vulnerable to attack X because Y"*, *"this archetype's behavior misses pattern Z"*, *"the cluster signal collapses when W happens."* Concrete > abstract. Bonus points if the failure mode comes with a testbed scenario that pins it.
 
-2. **Seed cause and sub-topic candidates.** Once `docs/seed-topic.md` lands, suggestions that fit its criteria are valuable. Until then, criteria suggestions are also welcome.
+2. **New attack patterns and defense refinements.** A new adversary archetype, a new parameter-sweep cube measuring an interaction the existing cubes don't, or a refinement to one of the cluster-signal / calibration / assignment-gate primitives. See ROADMAP §Status for the current frontier.
 
-3. **Prior-art pointers.** Projects, papers, governance regimes, or simulation work we should be reading and citing. We try to list everything we owe to in the README's *Prior art* section; gaps there are real.
+3. **Seed cause and sub-topic candidates.** Suggestions that fit the criteria in [docs/seed-topic.md](./docs/seed-topic.md). Final v0 starter set is locked at instance-launch time, not now.
 
-4. **Editorial sharpening.** Places where the docs are vague, contradictory, or overclaim. Smaller patches welcome.
+4. **Prior-art pointers.** Projects, papers, governance regimes, or simulation work we should be reading and citing. We try to list everything we owe to in the README's *Prior art* section; gaps there are real.
 
-How to contribute:
+5. **Editorial sharpening.** Places where the docs are vague, contradictory, or overclaim. Smaller patches welcome.
+
+## How to contribute
 
 - **Open an issue.** Use the templates in [.github/ISSUE_TEMPLATE/](./.github/ISSUE_TEMPLATE/) — they help us route and respond.
 - **Or open a PR directly.** For editorial changes, just send the diff. For substantive design changes, an issue first is usually faster.
 
-## Later: code contributions
-
-Once there is code, the flow will be standard:
+## Code contribution flow
 
 - **PR-based.** Discussion in the PR; reviewer (initially the maintainer) merges or requests changes.
 - **DCO required.** Sign your commits with `git commit -s`. This is the [Developer Certificate of Origin](https://developercertificate.org/) — a lightweight assertion that you have the right to contribute the change. We do not require a CLA. Inbound = outbound (your contribution is licensed under the same terms as the project: AGPL-3.0 for code, CC BY-SA 4.0 for data).
-- **Tests required where they exist.** Adversary-testbed contributions especially need tests, since they're how we know governance changes work.
+- **Tests required.** Adversary-testbed and server changes both need tests; the testbed is how we know governance changes work, and the server's behavior is the surface the testbed exercises.
+- **Docs-never-drift.** Commits that change a contract (data model, tool surface, governance rule, parameter range) update the matching PRD section in the same commit. Commits that wire a new defense or close a new attack update ROADMAP §Status. The docs are the spec, not retrospective documentation.
 - **Direct push to `main`** for the maintainer; everyone else goes through PR review.
 
 ## Later: graph contributions (different from code)
