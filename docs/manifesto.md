@@ -58,6 +58,8 @@ Around the claim-graph substrate we add:
 
 - **Governance as continuous integration.** Every governance change — a new calibration ratio, a different reputation formula, a new reviewer-assignment algorithm — gets re-run against a simulated adversarial population before it ships. The testbed is permanent infrastructure, not a launch tool.
 
+The graph that grows out of this is the work product, the calibration corpus, the credit ledger, and the review queue at the same time — one artifact, four roles, all open.
+
 None of these are individually novel. The bet is that **assembled around the right unit of contribution, they compose into a system that is testable, hardenable, and credible enough to attract real contributors to real topics that real audiences care about**.
 
 ## Testability is the secret weapon
