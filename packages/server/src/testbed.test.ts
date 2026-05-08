@@ -3540,19 +3540,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
     //     at convergence stays well above the fresh-reviewer floor
     //     of 1.
     //
-    // The seam: drift cost is still a constant
-    // `reviewer_inaccurate_loss` (one rep point) per misaligned
-    // vote, and there is still no live gate that *consumes* either
-    // component to deny Carol assignment when her recent has drained.
-    // Carol's effective drift bandwidth, measured as cumulative
-    // buffer over per-drift cost, is unchanged from pre-decay v0
-    // — that lever is downstream of this slice. What this scenario
-    // pins instead is the *gap* between demonstrated and recent
-    // after a quiet window: a long-priming adversary cannot keep
-    // both components elevated without continuing to be active, and
-    // visible activity is detectable (PRD §Reputation, §Identity).
+    // This scenario is bookkeeping-only — it intentionally leaves
+    // `assignment_min_recent` at 0 so the *gate* that consumes the
+    // recent-component drain doesn't fire, and the cumulative-buffer
+    // drift bandwidth pins the pre-gate baseline. The companion
+    // scenario below ("assignment gate refuses a drained adversary")
+    // turns the gate on and shows drift bandwidth tightening to 1.
+    // Splitting the two keeps the bookkeeping pin readable as a
+    // standalone invariant — change the bookkeeping math and this
+    // test catches it without the gate-scenario noise.
+    //
     // Class-aware thresholds (PRD §Reputation, "review-credit
-    // normalized by claim difficulty") remain a future iteration.
+    // normalized by claim difficulty") and demonstrated-component
+    // eligibility-tier gating remain future iterations.
     const PRIMING_COUNT = 4;
     const sources = new Map<string, string>();
     for (let i = 1; i <= PRIMING_COUNT; i++) {
