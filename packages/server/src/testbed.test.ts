@@ -1,8 +1,8 @@
 import {
   AnchorageClient,
+  acceptAllDecider,
   type ContentProvider,
   type HallucinationFabricator,
-  acceptAllDecider,
   payloadBiasedDecider,
   payloadDecliningDecider,
   rejectAllDecider,
@@ -442,18 +442,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // half-lives are Infinity so demonstrated and recent both equal
     // the cumulative bump.
     const bobRep = await bobClient.queryReputation({ cause_id: cause.id });
-    expect(bobRep.entries).toEqual([
-      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
-    ]);
+    expect(bobRep.entries).toEqual([{ sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 }]);
     // Carol and Dave each voted with the converged outcome → +1.
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
-    expect(carolRep.entries).toEqual([
-      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
-    ]);
+    expect(carolRep.entries).toEqual([{ sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 }]);
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    expect(daveRep.entries).toEqual([
-      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
-    ]);
+    expect(daveRep.entries).toEqual([{ sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 }]);
   });
 
   it('catches a lazy-accepter reviewer: rep moves down when honest rejecters converge', async () => {
@@ -525,17 +519,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // outcome); honest-1 and honest-2 gained (accurate rejects);
     // alice (proposer) lost contributor-initiated proposer-loss.
     const lazyRep = await lazyClient.queryReputation({ cause_id: cause.id });
-    expect(lazyRep.entries).toEqual([
-      { sub_topic_id: subTopic.id, demonstrated: -1, recent: -1 },
-    ]);
+    expect(lazyRep.entries).toEqual([{ sub_topic_id: subTopic.id, demonstrated: -1, recent: -1 }]);
     const honest1Rep = await honest1Client.queryReputation({ cause_id: cause.id });
-    expect(honest1Rep.entries).toEqual([
-      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
-    ]);
+    expect(honest1Rep.entries).toEqual([{ sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 }]);
     const honest2Rep = await honest2Client.queryReputation({ cause_id: cause.id });
-    expect(honest2Rep.entries).toEqual([
-      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
-    ]);
+    expect(honest2Rep.entries).toEqual([{ sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 }]);
   });
 
   it('catches the hallucinator at the verifier, before reviewers see anything', async () => {
@@ -944,7 +932,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // honestly on both well-grounded excerpts, the system credits
     // her with nothing.
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
-    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const erinScore =
+      erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
     expect(erinScore).toBe(0);
 
     // The strategic pair both come out positive — they voted with
@@ -953,8 +942,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // valid work.
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
-    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const carolScore =
+      carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const daveScore =
+      daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
     expect(carolScore).toBeGreaterThan(0);
     expect(daveScore).toBeGreaterThan(0);
 
@@ -1096,9 +1087,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
-    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const erinScore =
+      erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const carolScore =
+      carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const daveScore =
+      daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
 
     // Headline inversion: in the no-calibration scenario above,
     // erinScore was 0 and the coalition was strictly positive on
@@ -1259,9 +1253,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
-    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const erinScore =
+      erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const carolScore =
+      carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const daveScore =
+      daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
     expect(erinScore).toBeGreaterThan(0);
     expect(erinScore).toBeGreaterThan(carolScore);
     expect(erinScore).toBeGreaterThan(daveScore);
@@ -1424,9 +1421,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
-    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const erinScore =
+      erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const carolScore =
+      carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const daveScore =
+      daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
     expect(Math.max(carolScore, daveScore)).toBeGreaterThan(erinScore);
   });
 
@@ -1588,9 +1588,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
-    const erinScore = erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
-    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
-    const daveScore = daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const erinScore =
+      erinRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const carolScore =
+      carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
+    const daveScore =
+      daveRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.demonstrated ?? 0;
     expect(erinScore).toBeGreaterThan(carolScore);
     expect(erinScore).toBeGreaterThan(daveScore);
   });
@@ -3753,7 +3756,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // After 6 half-lives, recent has fallen by 2^6 = 64x. A 1% margin
     // of error is generous against floating-point precision but
     // bites if decay accidentally degenerates back to identity.
-    const expectedRecent = carolRecent * Math.pow(0.5, QUIET_HALF_LIVES);
+    const expectedRecent = carolRecent * 0.5 ** QUIET_HALF_LIVES;
     expect(carolEntryAfter?.recent ?? 0).toBeCloseTo(expectedRecent, 8);
     expect(carolEntryAfter?.recent ?? 0).toBeLessThan(carolDemonstrated * 0.05);
   });
@@ -3967,9 +3970,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // The gate fires: Carol's recent is below threshold and she has
     // rep entries in the cause, so the bypass doesn't apply.
     // request_assignment surfaces `not_found` over the wire.
-    await expect(
-      carolClient.requestAssignment({ cause_id: cause.id }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    await expect(carolClient.requestAssignment({ cause_id: cause.id })).rejects.toMatchObject({
+      code: 'not_found',
+    });
 
     // Drift bandwidth: 1, not the cumulative-buffer figure the
     // bookkeeping scenario pinned. Carol can no longer pull a fresh
@@ -4087,9 +4090,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
       rate: 10,
       kinds: ['review', 'excerpt'],
     });
-    await expect(
-      eveClient.requestAssignment({ cause_id: cause.id }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    await expect(eveClient.requestAssignment({ cause_id: cause.id })).rejects.toMatchObject({
+      code: 'not_found',
+    });
 
     // Bootstrap path: contributor-initiated cast_review_vote. Eve
     // votes on staged excerpts directly (no assignment_id). She needs
@@ -4415,17 +4418,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
       expected_status: 'staged',
     },
   ];
-  it.each(sweepCells)(
-    'parameter sweep: $name → contested $expected_status',
-    async ({ pattern, anti_correlation_threshold, contention_weighted, expected_status }) => {
-      const result = await runDecorrelationScenario({
-        pattern,
-        anti_correlation_threshold,
-        contention_weighted,
-      });
-      expect(result.contested_status).toBe(expected_status);
-    },
-  );
+  it.each(sweepCells)('parameter sweep: $name → contested $expected_status', async ({
+    pattern,
+    anti_correlation_threshold,
+    contention_weighted,
+    expected_status,
+  }) => {
+    const result = await runDecorrelationScenario({
+      pattern,
+      anti_correlation_threshold,
+      contention_weighted,
+    });
+    expect(result.contested_status).toBe(expected_status);
+  });
 
   it('parameter sweep cube: attack-success-rate aggregates by defense config', () => {
     // PRD §Adversary testbed (Architecture, "Parameter sweeps"):

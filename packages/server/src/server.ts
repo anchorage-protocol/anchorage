@@ -56,10 +56,10 @@ import {
   type ReviewVote,
   SetCapacityInput,
   type SetCapacityOutput,
-  type SubTopic,
-  type SubTopicId,
   SubmitAssignedProposalInput,
   type SubmitAssignedProposalOutput,
+  type SubTopic,
+  type SubTopicId,
   type SupersedesEdge,
   type SynthesisNode,
   type Timestamp,
@@ -358,7 +358,7 @@ function decayValue(value: number, elapsedSeconds: number, halfLifeSeconds: numb
   if (value === 0) return 0;
   if (!Number.isFinite(halfLifeSeconds)) return value;
   if (elapsedSeconds <= 0) return value;
-  return value * Math.pow(0.5, elapsedSeconds / halfLifeSeconds);
+  return value * 0.5 ** (elapsedSeconds / halfLifeSeconds);
 }
 
 interface MaterializationResult {
@@ -1145,10 +1145,7 @@ export class Server {
       //
       // Default 0 on both leaves them inert; existing scenarios are
       // unaffected. Walked once across the caller's rep entries.
-      if (
-        this.review.assignment_min_recent > 0 ||
-        this.review.assignment_min_demonstrated > 0
-      ) {
+      if (this.review.assignment_min_recent > 0 || this.review.assignment_min_demonstrated > 0) {
         const now = this.clock.now();
         let maxRecent: number | null = null;
         let maxDemonstrated: number | null = null;
@@ -2575,9 +2572,7 @@ export class Server {
     // from a fresh anchor and successive bumps don't compound stale
     // values. PRD §Reputation: both components move together on every
     // event; differential behavior is the half-life, not the bump.
-    const base = existing
-      ? this.decayedReputation(existing, now)
-      : { demonstrated: 0, recent: 0 };
+    const base = existing ? this.decayedReputation(existing, now) : { demonstrated: 0, recent: 0 };
     this.store.reputations.set(key, {
       identity_id: identityId,
       cause_id: causeId,
@@ -2605,7 +2600,11 @@ export class Server {
     }
     const elapsedSeconds = elapsedMs / 1000;
     return {
-      demonstrated: decayValue(rep.demonstrated, elapsedSeconds, this.review.demonstrated_half_life_seconds),
+      demonstrated: decayValue(
+        rep.demonstrated,
+        elapsedSeconds,
+        this.review.demonstrated_half_life_seconds,
+      ),
       recent: decayValue(rep.recent, elapsedSeconds, this.review.recent_half_life_seconds),
     };
   }

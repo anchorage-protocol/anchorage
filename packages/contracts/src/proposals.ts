@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { CauseId } from './ids.js';
-import { AssignmentId, IdentityId, NodeId, ProposalId, SubTopicId } from './ids.js';
+import { AssignmentId, CauseId, IdentityId, NodeId, ProposalId, SubTopicId } from './ids.js';
 import { ExternalRef, QuotedSpan } from './nodes.js';
 import { Timestamp } from './timestamps.js';
 

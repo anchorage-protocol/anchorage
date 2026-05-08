@@ -2,7 +2,29 @@ import { PROTOCOL_VERSION } from '@anchorage/contracts';
 
 export const TESTBED_PROTOCOL_VERSION = PROTOCOL_VERSION;
 
-export { AnchorageClient, AnchorageClientError } from './client.js';
+export {
+  constantFabricator,
+  type HallucinatedExcerpt,
+  type HallucinationFabricator,
+  type HallucinatorAction,
+  type HallucinatorConfig,
+  type HallucinatorResult,
+  runHallucinator,
+} from './archetypes/hallucinator.js';
+export {
+  acceptAllDecider,
+  type HonestReviewerAction,
+  type HonestReviewerConfig,
+  type HonestReviewerResult,
+  type PayloadBiasedDeciderConfig,
+  type PayloadDecliningDeciderConfig,
+  payloadBiasedDecider,
+  payloadDecliningDecider,
+  type ReviewDecider,
+  type ReviewDecisionWithRationale,
+  rejectAllDecider,
+  runHonestReviewer,
+} from './archetypes/honest-reviewer.js';
 export {
   type ContentForExcerpt,
   type ContentProvider,
@@ -17,26 +39,4 @@ export {
   type HonestWeakResult,
   runHonestWeak,
 } from './archetypes/honest-weak.js';
-export {
-  acceptAllDecider,
-  type HonestReviewerAction,
-  type HonestReviewerConfig,
-  type HonestReviewerResult,
-  payloadBiasedDecider,
-  type PayloadBiasedDeciderConfig,
-  payloadDecliningDecider,
-  type PayloadDecliningDeciderConfig,
-  rejectAllDecider,
-  type ReviewDecider,
-  type ReviewDecisionWithRationale,
-  runHonestReviewer,
-} from './archetypes/honest-reviewer.js';
-export {
-  constantFabricator,
-  type HallucinatedExcerpt,
-  type HallucinationFabricator,
-  type HallucinatorAction,
-  type HallucinatorConfig,
-  type HallucinatorResult,
-  runHallucinator,
-} from './archetypes/hallucinator.js';
+export { AnchorageClient, AnchorageClientError } from './client.js';

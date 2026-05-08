@@ -1719,9 +1719,7 @@ describe('tools.castReviewVote', () => {
     const { entries } = await f.server.tools.queryReputation(f.caller, {
       cause_id: f.cause_id,
     });
-    expect(entries).toEqual([
-      { sub_topic_id: f.sub_topic_id, demonstrated: 0.5, recent: 0.5 },
-    ]);
+    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: 0.5, recent: 0.5 }]);
   });
 
   it('debits the proposer when their proposal converges to rejected', async () => {
@@ -1746,9 +1744,7 @@ describe('tools.castReviewVote', () => {
       cause_id: f.cause_id,
     });
     // -1 * 0.5 = -0.5 (contributor-initiated factor).
-    expect(entries).toEqual([
-      { sub_topic_id: f.sub_topic_id, demonstrated: -0.5, recent: -0.5 },
-    ]);
+    expect(entries).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: -0.5, recent: -0.5 }]);
   });
 
   it('credits accurate reviewers and debits inaccurate ones on convergence', async () => {
@@ -2029,9 +2025,7 @@ describe('calibration loop', () => {
     const { entries: bobEntries } = await f.server.tools.queryReputation(bobCaller, {
       cause_id: f.cause_id,
     });
-    expect(bobEntries).toEqual([
-      { sub_topic_id: f.sub_topic_id, demonstrated: -1, recent: -1 },
-    ]);
+    expect(bobEntries).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: -1, recent: -1 }]);
   });
 
   it('rejects voting on an accepted proposal without an assignment_id', async () => {
@@ -2187,9 +2181,7 @@ describe('two-component reputation decay', () => {
       );
     }
     const initial = await server.tools.queryReputation(aliceCaller, { cause_id: cause.id });
-    expect(initial.entries).toEqual([
-      { sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 },
-    ]);
+    expect(initial.entries).toEqual([{ sub_topic_id: subTopic.id, demonstrated: 1, recent: 1 }]);
 
     // Jump 60s forward — one recent-half-life. demonstrated stays at
     // 1.0 (Infinity half-life); recent halves to 0.5.

@@ -1,3 +1,4 @@
+import type { ExternalRef, ProposalPayload, QuotedSpan } from '@anchorage/contracts';
 import {
   AcceptAssignmentOutput,
   type AssignmentId,
@@ -20,12 +21,11 @@ import {
   type ReviewDecision,
   type ServerErrorCode,
   SetCapacityOutput,
-  type SubTopicId,
   SubmitAssignedProposalOutput,
+  type SubTopicId,
   type ToolName,
   type WorkKind,
 } from '@anchorage/contracts';
-import type { ExternalRef, ProposalPayload, QuotedSpan } from '@anchorage/contracts';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { ZodTypeAny, z } from 'zod';
 

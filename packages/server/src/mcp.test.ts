@@ -107,7 +107,7 @@ describe('mcp transport', () => {
   });
 
   it('runs the assignment loop end-to-end across the wire', async () => {
-    const { server, client, identity, cause, subTopic } = await fixtureWithClient();
+    const { server, identity, cause, subTopic } = await fixtureWithClient();
     // Alice seeds an orphan anchor (the loop "supplies" work); Bob
     // is the contributor that will pull and fulfill an assignment.
     const a = await server.tools.proposeAnchor(
