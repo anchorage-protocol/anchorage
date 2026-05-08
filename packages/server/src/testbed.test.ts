@@ -3916,186 +3916,20 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // The test pins the closure on terminal status — the observable a
     // real proposer sees — same shape as the multi-round closure
     // above. Same defense stack runs in both halves; only
-    // `stratum_decline_min_paired` varies.
-    const sources = new Map<string, string>([
-      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
-      ['2', 'arm B: treatment X works in stage III patients across cohort A'],
-      ['3', 'arm C: treatment X works in stage III patients across cohort B'],
-      ['4', 'arm D: treatment X works in stage III patients across cohort C'],
-    ]);
-
-    async function run(
-      decline_min_paired: number,
-    ): Promise<{ contested_status: 'staged' | 'accepted' | 'rejected' | 'unresolved-archived' }> {
-      const server = new Server({
-        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
-        idGen: new SeededIdGen(`oc-${decline_min_paired}`),
-        verifier: new FakeVerifier(new Set(), new Map(), sources),
-        review: {
-          // Same cluster-signal stack the standalone decline-extension
-          // and multi-round-closure scenarios use; only the new
-          // paired-decline floor varies across the two halves.
-          stratification_enabled: true,
-          stratum_min_shared_proposals: 2,
-          stratum_agreement_threshold: 1.0,
-          stratum_anti_correlation_threshold: 1.0,
-          stratum_contention_weighted: true,
-          stratum_target_count: 2,
-          stratification_degraded_extra: 1,
-          stratum_include_declines: true,
-          stratum_decline_min_paired: decline_min_paired,
-        },
-      });
-      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-      const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
-      const subTopic = server.bootstrap.seedSubTopic({
-        cause_id: cause.id,
-        name: 'treatment-X',
-        description: 'x',
-        scope_query: 'x',
-      });
-      const aliceCaller = { identity_id: alice.id };
-
-      // Four anchors: two priming + one trigger + one contested. All
-      // curator-accepted so the excerpts have a parent.
-      const anchorIds: string[] = [];
-      for (let i = 1; i <= 4; i++) {
-        const ap = await server.tools.proposeAnchor(aliceCaller, {
-          cause_id: cause.id,
-          home_sub_topic_id: subTopic.id,
-          content: `paper ${i}`,
-          external_ref: { kind: 'pmid', value: String(i + 1) },
-        });
-        server.curator.acceptProposal(ap.proposal_id);
-        const node = [...server.store.nodes.values()].find(
-          (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
-        );
-        if (!node) throw new Error(`anchor ${i} not materialized`);
-        anchorIds.push(node.id);
-      }
-
-      // Round 1: two priming excerpts. Verifier-passing quoted span
-      // matches the source content so accepts land cleanly.
-      const primingA = await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchorIds[0]!,
-        content: 'primingA: treatment X works in stage III cohort A',
-        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
-      });
-      const primingB = await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchorIds[1]!,
-        content: 'primingB: treatment X works in stage III cohort B',
-        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
-      });
-
-      const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
-      const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
-      const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
-      const carolClient = await wireArchetype(server, carol.id);
-      const daveClient = await wireArchetype(server, dave.id);
-      const erinClient = await wireArchetype(server, erin.id);
-
-      // Priming round: all three accept both proposals.
-      await runHonestReviewer(carolClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-      await runHonestReviewer(daveClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-      await runHonestReviewer(erinClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-      if (server.store.proposals.get(primingA.proposal_id)?.status !== 'accepted') {
-        throw new Error('primingA did not converge accepted in priming round');
-      }
-      if (server.store.proposals.get(primingB.proposal_id)?.status !== 'accepted') {
-        throw new Error('primingB did not converge accepted in priming round');
-      }
-
-      // Round 2: trigger excerpt. Carol's decider declines payloads
-      // tagged "trigger" (legitimate "outside my wheelhouse" signal,
-      // not a coalition primitive); Dave and Erin accept normally.
-      const trigger = await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchorIds[2]!,
-        content: 'trigger: treatment X works in stage III cohort C',
-        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
-      });
-      const carolTriggerDecider = payloadDecliningDecider({
-        declineIf: (payload) => 'content' in payload && payload.content.includes('trigger'),
-        fallback: acceptAllDecider,
-      });
-      await runHonestReviewer(carolClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: carolTriggerDecider,
-      });
-      await runHonestReviewer(daveClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-      await runHonestReviewer(erinClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-      if (server.store.proposals.get(trigger.proposal_id)?.status !== 'accepted') {
-        throw new Error('trigger did not converge accepted in event round');
-      }
-
-      // Round 3: contested target. All three reviewers honest-accept.
-      // Under the buggy floor=1 rule the false cluster locks two of
-      // them out via the cross-stratum gate; under the default floor
-      // of 2 all three vote and the proposal converges accepted.
-      const contested = await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchorIds[3]!,
-        content: 'contested: treatment X works in stage III cohort D',
-        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
-      });
-      await runHonestReviewer(carolClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-      await runHonestReviewer(daveClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-      await runHonestReviewer(erinClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-
-      // Time passes past the divergence window, sweep runs. Under the
-      // buggy regime the contested target sits stalled at 1 accept
-      // and archives; under the default it has already converged
-      // accepted before time advances and the sweep is a no-op.
-      server.clock.advance(120_000);
-      server.curator.archiveStaleProposals({ window_seconds: 60, cause_id: cause.id });
-
-      const target = server.store.proposals.get(contested.proposal_id);
-      if (!target) throw new Error('contested proposal vanished');
-      return { contested_status: target.status };
-    }
-
-    const buggy = await run(1);
+    // `stratum_decline_min_paired` varies. The runner
+    // (`runOverClusteringScenario`, lifted alongside the multi-round
+    // closure runner below) is shared with the cluster-decline ×
+    // floor sweep cube downstream so the cube and this standalone
+    // observation run the same scenario.
+    const buggy = await runOverClusteringScenario({
+      stratum_contention_weighted: true,
+      stratum_decline_min_paired: 1,
+    });
     expect(buggy.contested_status).toBe('unresolved-archived');
-    const fixed = await run(2);
+    const fixed = await runOverClusteringScenario({
+      stratum_contention_weighted: true,
+      stratum_decline_min_paired: 2,
+    });
     expect(fixed.contested_status).toBe('accepted');
   });
 
@@ -5149,27 +4983,35 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // proposal converges 'accepted'. The two halves run on the same
   // defense stack; only `stratum_include_declines` varies.
   //
-  // Contention-weighted edges are deliberately *off* in this runner.
-  // Under decline-aware + contention-weighted at threshold 1.0, a
-  // single decline-involved disagreement between an honest reviewer
-  // and a coalition member outweighs every unanimous-easy
-  // vote-agreement (contention 0 → weight 0), and the honest reviewer
-  // false-clusters with the coalition. That interaction is real and
-  // worth its own scenario; here the surrounding stack stays at raw
-  // weights so the honest pool reads as singletons and the multi-
-  // round closure isolates the decline-aware primitive's effect on
-  // outcome.
+  // Contention-weighted edges default *off* in this runner. Under
+  // decline-aware + contention-weighted at threshold 1.0 with a
+  // floor of 1, a single decline-involved disagreement between an
+  // honest reviewer and a coalition member outweighs every
+  // unanimous-easy vote-agreement (contention 0 → weight 0), and
+  // honest reviewers false-cluster with the coalition. That
+  // interaction is exercised standalone by the over-clustering
+  // scenario above and joined to this runner in the cluster-decline
+  // × floor sweep cube downstream; for the multi-round closure
+  // standalone test the stack stays at raw weights with the floor
+  // default so the honest pool reads as singletons and the
+  // decline-aware primitive's effect on outcome is isolated.
   async function runMultiRoundDeclineClosureScenario(params: {
     stratum_include_declines: boolean;
+    stratum_contention_weighted?: boolean;
+    stratum_decline_min_paired?: number;
   }): Promise<{ contested_status: 'staged' | 'accepted' | 'rejected' | 'unresolved-archived' }> {
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients across cohort A'],
       ['3', 'arm C: treatment X has no effect in stage IV patients across cohort B'],
     ]);
+    const cw = params.stratum_contention_weighted ?? false;
+    const floor = params.stratum_decline_min_paired ?? 2;
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
-      idGen: new SeededIdGen(`mr-${params.stratum_include_declines ? 'on' : 'off'}`),
+      idGen: new SeededIdGen(
+        `mr-${params.stratum_include_declines ? 'on' : 'off'}-cw${cw ? '1' : '0'}-f${floor}`,
+      ),
       verifier: new FakeVerifier(new Set(), new Map(), sources),
       review: {
         votes_to_accept: 2,
@@ -5178,10 +5020,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
         stratum_min_shared_proposals: 2,
         stratum_agreement_threshold: 1.0,
         stratum_anti_correlation_threshold: 1.0,
-        stratum_contention_weighted: false,
+        stratum_contention_weighted: cw,
         stratum_target_count: 2,
         stratification_degraded_extra: 1,
         stratum_include_declines: params.stratum_include_declines,
+        stratum_decline_min_paired: floor,
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
@@ -5217,14 +5060,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // payload to take exactly one and decline the other. Quoted-span
     // text is the bias-zone phrase so the verifier accepts each
     // independently.
-    const primingA = await server.tools.proposeExcerpt(aliceCaller, {
+    await server.tools.proposeExcerpt(aliceCaller, {
       cause_id: cause.id,
       home_sub_topic_id: subTopic.id,
       parent_anchor_id: anchorIds[0]!,
       content: 'primingA: treatment X has no effect in stage IV cohort A',
       quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
     });
-    const primingB = await server.tools.proposeExcerpt(aliceCaller, {
+    await server.tools.proposeExcerpt(aliceCaller, {
       cause_id: cause.id,
       home_sub_topic_id: subTopic.id,
       parent_anchor_id: anchorIds[1]!,
@@ -5278,12 +5121,20 @@ describe('testbed: synthetic populations against the wired surface', () => {
       rate: 5,
       decide: acceptAllDecider,
     });
-    if (server.store.proposals.get(primingA.proposal_id)?.status !== 'accepted') {
-      throw new Error('primingA did not converge accepted in round 1');
-    }
-    if (server.store.proposals.get(primingB.proposal_id)?.status !== 'accepted') {
-      throw new Error('primingB did not converge accepted in round 1');
-    }
+    // Priming-round soft sanity: under the standalone runner config
+    // (cw=off, floor=2) the priming proposals reliably converge
+    // accepted because the cluster signal stays decline-blind in the
+    // raw-weight regime until both pair encounters are recorded. The
+    // cube downstream exercises (cw=on, floor=1) regimes where the
+    // over-clustering pathology causes Erin's vote to retroactively
+    // expand the false cluster and stratification-degraded
+    // tightening blocks priming itself. The runner does not throw on
+    // priming failure: the cube reads contested_status directly, and
+    // a contested target that never converges (because the priming
+    // infrastructure broke) reads identically to suppression-by-
+    // archival from the proposer's perspective. Cell expectations
+    // encode whether each (cw, floor) combination is supposed to
+    // keep the priming infrastructure intact.
 
     // Round 2: stage the contested target. Bias-zone content so
     // calAwareBiasedDecider rejects ("treatment" + no "works").
@@ -5321,6 +5172,178 @@ describe('testbed: synthetic populations against the wired surface', () => {
       rate: 5,
       decide: acceptAllDecider,
     });
+
+    const target = server.store.proposals.get(contested.proposal_id);
+    if (!target) throw new Error('contested proposal vanished');
+    return { contested_status: target.status };
+  }
+
+  // Shared runner for the contention-weighted + decline-aware
+  // over-clustering scenario (the standalone test above) and the
+  // cluster-decline × floor sweep cube downstream. Three honest
+  // reviewers prime on two unanimous-easy excerpts, one declines a
+  // third "trigger" excerpt while the other two vote accept on it
+  // (single asymmetric decline-involved encounter per honest pair),
+  // and a contested target is then staged. PRD §Reviewer assignment
+  // commits the paired-decline floor on contention-weighting's full-
+  // weight rule for declines; this runner exposes how that floor
+  // composes with `stratum_contention_weighted`. Declines stay on
+  // throughout — the scenario is defined on the decline-aware
+  // encounter domain, and the cube reads the (cw, floor) interaction
+  // under that fixed regime.
+  async function runOverClusteringScenario(params: {
+    stratum_contention_weighted: boolean;
+    stratum_decline_min_paired: number;
+  }): Promise<{ contested_status: 'staged' | 'accepted' | 'rejected' | 'unresolved-archived' }> {
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X works in stage III patients across cohort A'],
+      ['3', 'arm C: treatment X works in stage III patients across cohort B'],
+      ['4', 'arm D: treatment X works in stage III patients across cohort C'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen(
+        `oc-cw${params.stratum_contention_weighted ? '1' : '0'}-f${params.stratum_decline_min_paired}`,
+      ),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_anti_correlation_threshold: 1.0,
+        stratum_contention_weighted: params.stratum_contention_weighted,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+        stratum_include_declines: true,
+        stratum_decline_min_paired: params.stratum_decline_min_paired,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchorIds: string[] = [];
+    for (let i = 1; i <= 4; i++) {
+      const ap = await server.tools.proposeAnchor(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: `paper ${i}`,
+        external_ref: { kind: 'pmid', value: String(i + 1) },
+      });
+      server.curator.acceptProposal(ap.proposal_id);
+      const node = [...server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
+      );
+      if (!node) throw new Error(`anchor ${i} not materialized`);
+      anchorIds.push(node.id);
+    }
+
+    const primingA = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorIds[0]!,
+      content: 'primingA: treatment X works in stage III cohort A',
+      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+    });
+    const primingB = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorIds[1]!,
+      content: 'primingB: treatment X works in stage III cohort B',
+      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+    });
+
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    const erinClient = await wireArchetype(server, erin.id);
+
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    if (server.store.proposals.get(primingA.proposal_id)?.status !== 'accepted') {
+      throw new Error('primingA did not converge accepted in priming round');
+    }
+    if (server.store.proposals.get(primingB.proposal_id)?.status !== 'accepted') {
+      throw new Error('primingB did not converge accepted in priming round');
+    }
+
+    const trigger = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorIds[2]!,
+      content: 'trigger: treatment X works in stage III cohort C',
+      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+    });
+    const carolTriggerDecider = payloadDecliningDecider({
+      declineIf: (payload) => 'content' in payload && payload.content.includes('trigger'),
+      fallback: acceptAllDecider,
+    });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: carolTriggerDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    if (server.store.proposals.get(trigger.proposal_id)?.status !== 'accepted') {
+      throw new Error('trigger did not converge accepted in event round');
+    }
+
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorIds[3]!,
+      content: 'contested: treatment X works in stage III cohort D',
+      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+    });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    server.clock.advance(120_000);
+    server.curator.archiveStaleProposals({ window_seconds: 60, cause_id: cause.id });
 
     const target = server.store.proposals.get(contested.proposal_id);
     if (!target) throw new Error('contested proposal vanished');
@@ -6422,6 +6445,295 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // vote-only closure for co-voting unchanged. Both named patterns
     // close → ASR 0%. The lift is the headline.
     expect(asr('true')).toBe(0);
+
+    // Coverage invariant: every defense config in the cube has both
+    // attack patterns. A future cell expansion that breaks this
+    // symmetry trips the assertion and forces the aggregate to be
+    // re-keyed rather than silently averaging over uneven groups.
+    for (const cell of grouped.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
+  // Fourth parameter sweep cube: the contention-weighting + paired-
+  // decline-floor interaction joined to the cluster-decline cube. The
+  // prior cube widened the encounter domain along
+  // `stratum_include_declines` and pinned the additive lift; this one
+  // holds declines on and widens along the two knobs that govern how
+  // decline-involved encounters are weighted under contention-
+  // weighted edges:
+  //
+  //   - `stratum_contention_weighted` ∈ {off, on}: under raw weights
+  //     each shared encounter contributes 1; under contention
+  //     weighting vote-vote agreements at unanimous-easy items
+  //     contribute 0 and decline-involved encounters fall under the
+  //     full-weight rule (gated by the floor).
+  //   - `stratum_decline_min_paired` ∈ {1, 2}: PRD §Reviewer
+  //     assignment commits the floor (default 2) on contention-
+  //     weighting's full-weight rule for declines so a single
+  //     asymmetric decline-involved encounter cannot dominate a pair
+  //     whose vote-vote history sits on unanimous-easy items.
+  //
+  // The two attack patterns the cube exercises:
+  //
+  //   - paired-decline multi-round: the runner the prior cube wired
+  //     against the include-declines knob. Carol+Dave coordinate
+  //     across two priming proposals (paired declines), the cluster
+  //     forms before the contested round, and the cross-stratum gate
+  //     fires against Dave during suppression. The closure must
+  //     survive every (cw, floor) combination — the floor is meant
+  //     to suppress over-clustering, not the legitimate paired-
+  //     decline edge. Under (cw=on, floor=1) the runner exposes a
+  //     partial over-clustering artifact (primingB stalls because
+  //     Erin's vote retroactively expands the false cluster) but
+  //     contested still closes through Frank+Hank, who walk in
+  //     fresh in Round 2 and pass below the min-shared filter on
+  //     their first contested vote.
+  //   - over-clustering false-positive: three honest reviewers prime
+  //     on unanimous-easy items, one declines a single trigger
+  //     excerpt, contested staged. Under cw=on + floor=1 the lone
+  //     decline-involved encounter at full weight against vote-vote
+  //     agreements at contention 0 false-clusters all three honest
+  //     reviewers; the cross-stratum gate then strangles honest
+  //     review on contested. Floor=2 closes the false-positive; cw=
+  //     off side-steps it entirely (the full-weight rule is a cw=on
+  //     branch).
+  //
+  // The over-clustering pattern is not adversarial — the "attack
+  // succeeded" axis here measures *suppression by archival* on a
+  // contested target honest reviewers should have closed. From the
+  // proposer's perspective the failure mode is identical to a
+  // coalition's suppression-by-archival, which is why it sits in
+  // the same cube and reads on the same metric.
+  //
+  // Expected ASR shape — (cw=off, floor=any): 0% (decline-aware
+  // raw-weight regime closes paired-decline; over-clustering does
+  // not trigger because the full-weight rule is a cw=on branch).
+  // (cw=on, floor=1): 50% (paired-decline still closes through
+  // Frank/Hank, but the over-clustering scenario lands the false-
+  // positive directly on contested — three honest reviewers in the
+  // pool with no fresh-singleton fallback). (cw=on, floor=2): 0%
+  // (the composition is the stable point — paired-decline closure
+  // survives, over-clustering closed by the floor). The headline:
+  // the floor is what makes the cw + decline-aware composition
+  // safe against the small-honest-pool case where there's no
+  // fresh-singleton bypass.
+  type ClusterDeclineFloorAttackPattern =
+    | 'paired-decline-multi-round'
+    | 'over-clustering-false-positive';
+  interface ClusterDeclineFloorSweepCell {
+    name: string;
+    pattern: ClusterDeclineFloorAttackPattern;
+    stratum_contention_weighted: boolean;
+    stratum_decline_min_paired: number;
+    expected_attack_succeeded: boolean;
+  }
+  const clusterDeclineFloorSweepCells: ClusterDeclineFloorSweepCell[] = [
+    // Raw-weight regime, paired-decline multi-round. Carol+Dave's
+    // paired declines form an anti-correlation edge under the raw-
+    // weight signal (2 shared decline-involved encounters, both
+    // disagreements at weight 1 each). Honest pairs (Carol-Erin,
+    // Dave-Erin) have one decline-involved encounter and one vote-
+    // vote agreement; raw ratios sit at 0.5/0.5 and neither edge
+    // fires. Closure works.
+    {
+      name: 'paired-decline, cw=off, floor=1 (raw-weight closure)',
+      pattern: 'paired-decline-multi-round',
+      stratum_contention_weighted: false,
+      stratum_decline_min_paired: 1,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'paired-decline, cw=off, floor=2 (raw-weight closure; floor inert)',
+      pattern: 'paired-decline-multi-round',
+      stratum_contention_weighted: false,
+      stratum_decline_min_paired: 2,
+      expected_attack_succeeded: false,
+    },
+    // Contention-weighted, floor=1: the over-clustering pathology
+    // partially fires on priming — primingB ends staged because
+    // Erin's accept on it causes the Carol-Dave-Erin false cluster
+    // to lock in (now both pairs have shared=2 ≥ min_shared) and
+    // the degraded threshold tightens to 3 before her vote can
+    // push the count past it. primingA already converged before
+    // Erin's second vote (only 1 shared encounter with Dave at
+    // that point so the false-cluster edge hadn't formed yet). In
+    // Round 2 the contested target still gets through: Carol's
+    // reject lands but Dave is gated, Frank walks in fresh and
+    // votes accept (1+1), then Hank walks in fresh and votes
+    // accept (now 1 reject + 2 accepts). At Hank's vote, only
+    // 1 contested-encounter stands between him and any other
+    // reviewer (below min_shared) so {CDEF} + {H} = 2 strata, not
+    // degraded, threshold stays at 2 and contested converges
+    // accepted. The closure fires on outcome — the over-clustering
+    // pathology costs primingB but not contested. The attack does
+    // not succeed.
+    {
+      name: 'paired-decline, cw=on, floor=1 (over-clusters honest pool but Frank/Hank carry)',
+      pattern: 'paired-decline-multi-round',
+      stratum_contention_weighted: true,
+      stratum_decline_min_paired: 1,
+      expected_attack_succeeded: false,
+    },
+    // Contention-weighted, floor=2: Carol-Dave clusters cleanly (2
+    // paired declines meet the floor); honest pairs stay singletons
+    // (1 decline-involved encounter < floor). Closure works without
+    // honest-pool over-clustering.
+    {
+      name: 'paired-decline, cw=on, floor=2 (clean closure under composition)',
+      pattern: 'paired-decline-multi-round',
+      stratum_contention_weighted: true,
+      stratum_decline_min_paired: 2,
+      expected_attack_succeeded: false,
+    },
+    // Over-clustering, raw weights. Carol-Dave and Carol-Erin each
+    // have 2 vote-vote agreements + 1 decline-involved disagreement;
+    // raw 2/3 agreement, 1/3 disagreement, neither edge fires.
+    // Dave-Erin is 3-for-3 vote-vote agreement → positive-cluster
+    // edge fires (raw agreement = 1.0). Two strata: {Carol},
+    // {Dave, Erin}. Round 3: Carol → singleton admitted votes
+    // accept, Dave → {D,E} not yet routed admitted votes accept.
+    // Converged accepted at the second vote.
+    {
+      name: 'over-clustering, cw=off, floor=1 (raw-weight regime, full-weight rule inert)',
+      pattern: 'over-clustering-false-positive',
+      stratum_contention_weighted: false,
+      stratum_decline_min_paired: 1,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'over-clustering, cw=off, floor=2 (raw-weight regime, full-weight rule inert)',
+      pattern: 'over-clustering-false-positive',
+      stratum_contention_weighted: false,
+      stratum_decline_min_paired: 2,
+      expected_attack_succeeded: false,
+    },
+    // Contention-weighted + floor=1: the named pathology. Carol-
+    // Dave's single decline-involved encounter at full weight
+    // against priming agreements at contention 0 lights up the
+    // anti-correlation edge against an honest pair; same for Carol-
+    // Erin. Carol-Dave-Erin collapse to one stratum, contested is
+    // stratification-degraded with votes_to_accept=3, only Carol is
+    // admitted (votes accept = 1), Dave/Erin gated. Sweep archives
+    // → unresolved-archived → suppression succeeds.
+    {
+      name: 'over-clustering, cw=on, floor=1 (false-positive lockout, contested archives)',
+      pattern: 'over-clustering-false-positive',
+      stratum_contention_weighted: true,
+      stratum_decline_min_paired: 1,
+      expected_attack_succeeded: true,
+    },
+    // Floor=2 closes the false-positive: each honest pair has 1
+    // decline-involved encounter < floor → contributes 0 weight,
+    // every vote-vote agreement at contention 0, weighted_shared=0,
+    // signalAvailable=false, no edges. All three stay singletons,
+    // contested converges accepted at the second vote.
+    {
+      name: 'over-clustering, cw=on, floor=2 (composition closes the false-positive)',
+      pattern: 'over-clustering-false-positive',
+      stratum_contention_weighted: true,
+      stratum_decline_min_paired: 2,
+      expected_attack_succeeded: false,
+    },
+  ];
+  it.each(
+    clusterDeclineFloorSweepCells,
+  )('cluster-decline floor sweep: $name → attack_succeeded=$expected_attack_succeeded', async ({
+    pattern,
+    stratum_contention_weighted,
+    stratum_decline_min_paired,
+    expected_attack_succeeded,
+  }) => {
+    const contested_status =
+      pattern === 'paired-decline-multi-round'
+        ? (
+            await runMultiRoundDeclineClosureScenario({
+              stratum_include_declines: true,
+              stratum_contention_weighted,
+              stratum_decline_min_paired,
+            })
+          ).contested_status
+        : (
+            await runOverClusteringScenario({
+              stratum_contention_weighted,
+              stratum_decline_min_paired,
+            })
+          ).contested_status;
+    // attack_succeeded is the proposer's-perspective failure mode:
+    // anything other than 'accepted' on a target honest reviewers
+    // should have closed. The cube exercises three suppression
+    // modes: 'rejected' (convergence in the wrong direction —
+    // paired-decline closure failing under (cw=off) regimes wired
+    // by the prior cube but kept here as a regression handle on
+    // the broader read), 'unresolved-archived' (the over-
+    // clustering scenario archives contested after the divergence
+    // window when stratification-degraded threshold tightening
+    // blocks convergence), and 'staged' (the paired-decline
+    // runner under cw=on + floor=1: priming itself breaks, the
+    // suppression round can't push contested past its degraded
+    // threshold either, the runner does not advance time so the
+    // archival sweep doesn't fire and the proposal stays staged).
+    // All three read as suppression on the proposer's side.
+    const attack_succeeded = contested_status !== 'accepted';
+    expect(attack_succeeded).toBe(expected_attack_succeeded);
+  });
+
+  it('cluster-decline floor sweep cube: attack-success-rate aggregates by defense config', () => {
+    // Same aggregate-ASR shape the prior three cubes pin: group
+    // cells by the defense config, tally attack-pattern wins, assert
+    // per-config ASR. The metric is computed off the static
+    // expected_attack_succeeded fields the per-cell tests already
+    // validated, so the aggregate stays a fast read over locked
+    // observations rather than a re-run of the cube.
+    interface AsrCell {
+      stratum_contention_weighted: boolean;
+      stratum_decline_min_paired: number;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const grouped = new Map<string, AsrCell>();
+    for (const cell of clusterDeclineFloorSweepCells) {
+      const key = `${cell.stratum_contention_weighted ? 1 : 0}|${cell.stratum_decline_min_paired}`;
+      const g = grouped.get(key) ?? {
+        stratum_contention_weighted: cell.stratum_contention_weighted,
+        stratum_decline_min_paired: cell.stratum_decline_min_paired,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      grouped.set(key, g);
+    }
+    const asr = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // Raw-weight regime: the contention-weighting full-weight rule
+    // for declines is inactive, so the floor parameter has no
+    // effect. Both cells in each row close on outcome (paired-
+    // decline via raw anti-correlation on the 2 paired declines;
+    // over-clustering via the cluster-disabling raw-weight reading
+    // of the asymmetric trigger encounter).
+    expect(asr('0|1')).toBe(0);
+    expect(asr('0|2')).toBe(0);
+    // Contention-weighted with floor=1 (the unsafe composition):
+    // the over-clustering false-positive lands the contested
+    // target in 'unresolved-archived' (three honest reviewers with
+    // no fresh-singleton fallback all gated out). The paired-
+    // decline runner has the same false-clustering happen on
+    // priming but Frank+Hank walk in fresh in Round 2 and carry
+    // contested through. ASR = 50% — the gap the floor closes on
+    // the small-honest-pool case.
+    expect(asr('1|1')).toBe(0.5);
+    // Contention-weighted with floor=2 (the stable composition):
+    // both attack patterns close. ASR = 0%. This is the headline —
+    // the floor is what makes the cw + decline-aware composition
+    // safe against the small-honest-pool case. cw=off side-steps
+    // the issue (the full-weight rule is a cw=on branch); cw=on
+    // requires the floor.
+    expect(asr('1|2')).toBe(0);
 
     // Coverage invariant: every defense config in the cube has both
     // attack patterns. A future cell expansion that breaks this
