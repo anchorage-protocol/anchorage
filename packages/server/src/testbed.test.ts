@@ -9,6 +9,7 @@ import {
   runHallucinator,
   runHonestReviewer,
   runHonestStrong,
+  runHonestWeak,
 } from '@anchorage/testbed';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -639,6 +640,133 @@ describe('testbed: honest-strong archetype', () => {
     expect(
       [...server.store.proposals.values()].filter((p) => p.payload.kind === 'excerpt'),
     ).toHaveLength(1);
+  });
+
+  it('honest-weak archetype: friction rate matches the configured weak fraction', async () => {
+    // PRD §Adversary taxonomy (Honest-weak): "modest-capability honest
+    // contributor (e.g. small local model). Should largely succeed;
+    // failure-to-contribute rate measures friction." This test pins
+    // the friction measurement: the fraction of attempts the verifier
+    // refuses is observable in the action log, and matches the
+    // fraction the content provider models as weak.
+    //
+    // Setup: eight anchors, sources configured for all eight. The
+    // content provider returns verifying spans for six and near-but-
+    // wrong spans (text not in the corresponding source) for two —
+    // simulating a smaller model that mostly grounds correctly but
+    // occasionally produces a span the source doesn't actually
+    // contain. Honest-weak's loop catches the verifier rejection,
+    // records `submit_rejected`, and continues.
+    //
+    // The two failures are not adversarial. Hallucinator produces
+    // zero verifying submissions; honest-strong produces only
+    // verifying submissions; honest-weak sits between them, and the
+    // gap *is* the friction the regime imposes on weaker contributors.
+    const sources = new Map<string, string>();
+    for (let i = 1; i <= 8; i++) {
+      sources.set(String(i), `paper ${i} verifying span unique to source ${i}`);
+    }
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('w'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'ctDNA-MRD',
+      description: 'mrd',
+      scope_query: 'ctDNA',
+    });
+    // Capture node IDs in creation order so the content provider can
+    // mark specific anchors as "weak-spot" by index without depending
+    // on id-gen seeds.
+    const anchorIds: string[] = [];
+    for (let i = 1; i <= 8; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+      const node = [...server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
+      );
+      if (!node) throw new Error(`paper ${i} anchor not materialized`);
+      anchorIds.push(node.id);
+    }
+    // Two of eight anchors get wrong spans — deterministic 25%
+    // friction. Indices 1 and 5 picked arbitrarily; any pair works.
+    const weakSpots = new Set([anchorIds[1], anchorIds[5]]);
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) => {
+        // PMID is recoverable from creation index since the test
+        // built them in order; the verifier matches against PMID's
+        // configured source text.
+        const idx = anchorIds.indexOf(anchorId);
+        if (idx < 0) return null;
+        const pmid = String(idx + 1);
+        if (weakSpots.has(anchorId)) {
+          return {
+            content: `weak-model paraphrase for paper ${pmid}`,
+            quoted_span: {
+              text: 'span the small model thought was verbatim but is not',
+              offset: 0,
+            },
+          };
+        }
+        return {
+          content: `paraphrase for paper ${pmid}`,
+          quoted_span: {
+            text: `paper ${pmid} verifying span unique to source ${pmid}`,
+            offset: 0,
+          },
+        };
+      },
+    };
+
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+
+    const result = await runHonestWeak(bobClient, {
+      cause_id: cause.id,
+      rate: 10,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    const submitted = result.actions.filter((a) => a.kind === 'submitted');
+    const rejected = result.actions.filter((a) => a.kind === 'submit_rejected');
+    expect(submitted).toHaveLength(6);
+    expect(rejected).toHaveLength(2);
+    expect(rejected.every((a) => a.kind === 'submit_rejected' && a.code === 'invalid_input')).toBe(
+      true,
+    );
+    // Friction rate observable from the log alone: 2/8 = 0.25.
+    const total = submitted.length + rejected.length;
+    expect(rejected.length / total).toBe(0.25);
+
+    // Server-side cross-check: exactly six excerpt proposals exist —
+    // the verifier prevented the other two from materializing, just
+    // as it does for the hallucinator. The cost is structurally the
+    // same; the difference is intent and fraction.
+    const excerptProposals = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    expect(excerptProposals).toHaveLength(6);
+
+    // Reputation: honest-weak earns nothing from rejected submits
+    // (no proposal record means no review, means no rep settlement).
+    // Successful submits don't earn rep until they converge through
+    // review either, so at this point the contributor's rep is
+    // empty — friction is the only signal so far.
+    const bobRep = await bobClient.queryReputation({ cause_id: cause.id });
+    expect(bobRep.entries).toEqual([]);
   });
 
   it('surfaces the strategic-coalition attack: bias flips both convergence and rep', async () => {

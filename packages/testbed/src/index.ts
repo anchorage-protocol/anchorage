@@ -12,6 +12,12 @@ export {
   runHonestStrong,
 } from './archetypes/honest-strong.js';
 export {
+  type HonestWeakAction,
+  type HonestWeakConfig,
+  type HonestWeakResult,
+  runHonestWeak,
+} from './archetypes/honest-weak.js';
+export {
   acceptAllDecider,
   type HonestReviewerAction,
   type HonestReviewerConfig,
