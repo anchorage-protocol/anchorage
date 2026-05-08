@@ -1,0 +1,37 @@
+name: dco
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  dco:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: verify Signed-off-by trailer on every commit
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          missing=()
+          while IFS= read -r sha; do
+            [ -z "$sha" ] && continue
+            msg=$(git log -1 --format=%B "$sha")
+            author_email=$(git log -1 --format=%ae "$sha")
+            author_name=$(git log -1 --format=%an "$sha")
+            expected="Signed-off-by: $author_name <$author_email>"
+            if ! grep -qF "$expected" <<<"$msg"; then
+              missing+=("$sha — expected trailer: $expected")
+            fi
+          done < <(git rev-list --no-merges "$BASE..$HEAD")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Commits missing DCO sign-off (run \`git commit --amend -s\` or \`git rebase --signoff $BASE\`):"
+            printf '  - %s\n' "${missing[@]}"
+            echo
+            echo "See CONTRIBUTING.md for the Developer Certificate of Origin requirement."
+            exit 1
+          fi
