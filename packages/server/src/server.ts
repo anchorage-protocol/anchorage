@@ -52,7 +52,6 @@ import {
   RequestAssignmentInput,
   type RequestAssignmentOutput,
   type ReviewBatchItem,
-  type ReviewDecision,
   type ReviewVote,
   SetCapacityInput,
   type SetCapacityOutput,
@@ -250,6 +249,29 @@ export interface ReviewConfig {
   // below 1.0 admit organic disagreement as honest false positives,
   // which is the signal/cost trade-off the testbed sweeps.
   stratum_anti_correlation_threshold: number;
+  // Include declined assignments alongside review votes in the cluster
+  // signal's encounter map. PRD §Reviewer assignment: the v0 cluster
+  // primitive operates on shared *votes*, which is silent against
+  // paired-decline coalitions (Carol votes A and declines B; Dave
+  // declines A and votes B → zero shared vote-history → cluster
+  // signal cannot fire). Widening the agreement/disagreement primitive
+  // from `{accept, reject}` to `{accept, reject, decline}` reads the
+  // paired-decline pattern as 100% disagreement on the shared targets:
+  // (vote, decline) and (decline, vote) on the same proposal are
+  // different actions, the existing anti-correlation primitive treats
+  // them as a co-stratum cue, and the cross-stratum gate trips against
+  // the coalition just as it does for the vote-only decorrelating
+  // pattern. Two encounters per (reviewer, proposal): a real vote
+  // takes priority over a decline (a contributor-initiated vote after
+  // declining is "I changed my mind"), and revise votes are still
+  // dropped from the cluster computation. Contention-weighting
+  // (`stratum_contention_weighted`) treats decline-involved encounters
+  // at full weight (contention=1.0) — declines are inherently
+  // informative and the per-proposal accept/reject tally underweights
+  // them by construction. Defaults to off so existing scenarios are
+  // unaffected; turning it on widens the cluster signal but does not
+  // shrink it (vote-only encounters still fire the existing edges).
+  stratum_include_declines: boolean;
   // Half-life (in seconds) of the *demonstrated*-competence reputation
   // component. PRD §Reputation: "A demonstrated-competence component,
   // slow-decay, gates eligibility tiers." Applied as exponential decay
@@ -356,6 +378,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   stratification_degraded_extra: 1,
   stratum_contention_weighted: false,
   stratum_anti_correlation_threshold: 0,
+  stratum_include_declines: false,
   demonstrated_half_life_seconds: Infinity,
   recent_half_life_seconds: Infinity,
   assignment_min_recent: 0,
@@ -2727,12 +2750,14 @@ export class Server {
   // a per-(cause, sub-topic) cache with vote-cast invalidation is the
   // production move once pool sizes warrant it.
   private computeReviewerStrata(causeId: CauseId, subTopicId: SubTopicId): Map<IdentityId, string> {
-    // Per-reviewer vote history scoped to (cause, sub-topic):
-    // proposal_id -> decision, but only for proposals whose home
-    // sub-topic matches subTopicId AND whose cause matches causeId.
-    // Use the same locateProposalForReview routing the rest of the
-    // server uses so membership-cause-routing stays consistent.
-    const reviewerVotes = new Map<IdentityId, Map<ProposalId, ReviewDecision>>();
+    // Per-reviewer encounter history scoped to (cause, sub-topic):
+    // proposal_id -> 'accept' | 'reject' | 'decline'. Built from review
+    // votes (and, when stratum_include_declines is on, from declined
+    // review-kind assignments). Use the same locateProposalForReview
+    // routing the rest of the server uses so membership-cause-routing
+    // stays consistent.
+    type EncounterDecision = 'accept' | 'reject' | 'decline';
+    const reviewerEncounters = new Map<IdentityId, Map<ProposalId, EncounterDecision>>();
     for (const v of this.store.reviewVotes.values()) {
       const proposal = this.store.proposals.get(v.proposal_id);
       if (!proposal) continue;
@@ -2744,10 +2769,10 @@ export class Server {
       // they mean "needs work, not yet" rather than a position. Drop
       // them from cluster computation.
       if (v.decision === 'revise') continue;
-      let perReviewer = reviewerVotes.get(v.reviewer_id);
+      let perReviewer = reviewerEncounters.get(v.reviewer_id);
       if (!perReviewer) {
         perReviewer = new Map();
-        reviewerVotes.set(v.reviewer_id, perReviewer);
+        reviewerEncounters.set(v.reviewer_id, perReviewer);
       }
       // Defensive: if a reviewer has multiple non-revise votes on the
       // same proposal (current double-vote guard prevents this, but
@@ -2756,16 +2781,50 @@ export class Server {
       perReviewer.set(v.proposal_id, v.decision);
     }
 
+    // Decline encounters when the knob is on. PRD §Reviewer assignment
+    // commits paired-decline coalitions as a vote-only-cluster-evading
+    // pattern; widening the encounter domain to include declines reads
+    // (vote, decline) and (decline, vote) as pair-disagreement under
+    // the existing anti-correlation primitive, closing the seam by
+    // construction. A real vote takes priority over a decline on the
+    // same (reviewer, proposal) — `perReviewer.has(...)` guards the
+    // overwrite. Both halves of the gate (cause, sub-topic routing,
+    // and revise-style filtering) already happened above for the
+    // vote-side; the same routing applies here via the assignment's
+    // task and the resolved proposal.
+    if (this.review.stratum_include_declines) {
+      for (const a of this.store.assignments.values()) {
+        if (a.status !== 'declined') continue;
+        if (a.task.kind !== 'review') continue;
+        const proposal = this.store.proposals.get(a.task.proposal_id);
+        if (!proposal) continue;
+        const route = this.locateProposalForReview(proposal);
+        if (!route) continue;
+        if (route.cause_id !== causeId) continue;
+        if (route.sub_topic_id !== subTopicId) continue;
+        let perReviewer = reviewerEncounters.get(a.contributor_id);
+        if (!perReviewer) {
+          perReviewer = new Map();
+          reviewerEncounters.set(a.contributor_id, perReviewer);
+        }
+        if (perReviewer.has(a.task.proposal_id)) continue;
+        perReviewer.set(a.task.proposal_id, 'decline');
+      }
+    }
+
     // Per-proposal vote tallies, used to compute contention weights
-    // when stratum_contention_weighted is on. We tally over all
-    // (cause, sub-topic)-scoped non-revise votes — the same vote set
-    // that feeds the pairwise edge loop below — so contention
-    // reflects the broader pool's split on each proposal. Computed
-    // once outside the O(N²) pair loop.
+    // when stratum_contention_weighted is on. We tally over (cause,
+    // sub-topic)-scoped accept/reject encounters only — declines do
+    // not enter the contention denominator because the underweighting
+    // they'd cause is precisely the issue the decline-involved-full-
+    // weight rule below works around. Same iteration domain as the
+    // pair loop's vote-vote half; computed once outside the O(N²) pair
+    // loop.
     const proposalTally = new Map<ProposalId, { accepts: number; rejects: number }>();
     if (this.review.stratum_contention_weighted) {
-      for (const perReviewer of reviewerVotes.values()) {
+      for (const perReviewer of reviewerEncounters.values()) {
         for (const [pid, decision] of perReviewer) {
+          if (decision === 'decline') continue;
           let t = proposalTally.get(pid);
           if (!t) {
             t = { accepts: 0, rejects: 0 };
@@ -2778,20 +2837,20 @@ export class Server {
     }
 
     // Pairwise edge build. We iterate reviewers in a stable order to
-    // make cluster id assignment deterministic — same vote state =
+    // make cluster id assignment deterministic — same encounter state =
     // same cluster ids.
-    const reviewers = [...reviewerVotes.keys()].sort();
+    const reviewers = [...reviewerEncounters.keys()].sort();
     const adjacency = new Map<IdentityId, Set<IdentityId>>();
     for (const r of reviewers) adjacency.set(r, new Set());
     for (let i = 0; i < reviewers.length; i++) {
       const a = reviewers[i];
       if (!a) continue;
-      const va = reviewerVotes.get(a);
+      const va = reviewerEncounters.get(a);
       if (!va) continue;
       for (let j = i + 1; j < reviewers.length; j++) {
         const b = reviewers[j];
         if (!b) continue;
-        const vb = reviewerVotes.get(b);
+        const vb = reviewerEncounters.get(b);
         if (!vb) continue;
         let shared = 0;
         let agreed = 0;
@@ -2804,19 +2863,32 @@ export class Server {
           const agree = decisionA === decisionB;
           if (agree) agreed += 1;
           if (this.review.stratum_contention_weighted) {
-            const tally = proposalTally.get(pid);
-            if (tally) {
-              const total = tally.accepts + tally.rejects;
-              if (total > 0) {
-                const minor = Math.min(tally.accepts, tally.rejects);
-                // Contention in [0,1]: 0 when unanimous, 1 at perfect
-                // split. Captures how informative this shared vote is
-                // about coalition signal — agreement on uncontentious
-                // proposals carries no weight, agreement on split-pool
-                // proposals carries the most.
-                const contention = (2 * minor) / total;
-                weightedShared += contention;
-                if (agree) weightedAgreed += contention;
+            const involvesDecline = decisionA === 'decline' || decisionB === 'decline';
+            if (involvesDecline) {
+              // Decline-involved encounters are inherently contentious
+              // — opting out is informative independent of the rest of
+              // the pool's split on the proposal. Counting them at full
+              // weight (=1) keeps the paired-decline closure load-bearing
+              // even when contention-weighting is on; the alternative
+              // (using the vote-only tally) would silently zero out the
+              // signal on targets that have only a single lone vote.
+              weightedShared += 1;
+              if (agree) weightedAgreed += 1;
+            } else {
+              const tally = proposalTally.get(pid);
+              if (tally) {
+                const total = tally.accepts + tally.rejects;
+                if (total > 0) {
+                  const minor = Math.min(tally.accepts, tally.rejects);
+                  // Contention in [0,1]: 0 when unanimous, 1 at perfect
+                  // split. Captures how informative this shared vote is
+                  // about coalition signal — agreement on uncontentious
+                  // proposals carries no weight, agreement on split-pool
+                  // proposals carries the most.
+                  const contention = (2 * minor) / total;
+                  weightedShared += contention;
+                  if (agree) weightedAgreed += contention;
+                }
               }
             }
           }

@@ -15,6 +15,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it } from 'vitest';
 import { FakeClock } from './clock.js';
+import { ServerError } from './errors.js';
 import { SeededIdGen } from './id-gen.js';
 import { buildMcpServer } from './mcp.js';
 import { Server } from './server.js';
@@ -3545,6 +3546,235 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(archived.sort()).toEqual([targetA.proposal_id, targetB.proposal_id].sort());
     expect(server.store.proposals.get(targetA.proposal_id)?.status).toBe('unresolved-archived');
     expect(server.store.proposals.get(targetB.proposal_id)?.status).toBe('unresolved-archived');
+  });
+
+  it('cluster signal with declines: paired-decline encounters form a co-stratum edge, cross-stratum gate routes the partner away', async () => {
+    // The structural defense for the multi-proposal seam pinned by the
+    // standalone scenario above. The vote-only cluster primitive is
+    // silent against paired-decline because the coalition shares zero
+    // vote-history by construction; widening the encounter domain to
+    // include declines reads (vote, decline) and (decline, vote) on
+    // the same proposal as pair-disagreement under the existing anti-
+    // correlation primitive, and the cross-stratum gate then routes
+    // the partner away from a target where one coalition member is
+    // already assigned.
+    //
+    // Scenario:
+    //   1. Two priming excerpts staged needs-review.
+    //   2. Carol's request loop: vote on the first offer, decline the
+    //      second. Dave's loop: decline the first, vote on the second.
+    //      Frontier order delivers the same priming proposals to both
+    //      so the actions land mirrored on the same target ids — the
+    //      paired-decline shape by construction.
+    //   3. A third "contested" excerpt is staged. Carol requests an
+    //      assignment first and is routed to it (no co-stratum
+    //      reviewer is routed yet, so the cross-stratum gate has
+    //      nothing to enforce against). Dave then requests.
+    //   4. With `stratum_include_declines: true`, Carol-Dave cluster
+    //      (shared=2 encounters on the priming, both disagreeing → anti-
+    //      correlation 1.0). Cross-stratum gate sees Carol routed to
+    //      the contested target and skips it for Dave; with no other
+    //      frontier candidates, Dave's request_assignment fails with
+    //      `not_found`.
+    //   5. Knob-off control: same setup with the knob off — cluster
+    //      doesn't form (zero shared votes), Dave is offered the
+    //      contested target normally.
+    //
+    // The test pins the knob's *structural* effect on the cluster
+    // primitive. Whole-scenario closure (does the seam's archival
+    // outcome flip?) is timing-dependent — the cross-stratum gate
+    // fires at request_assignment, so it can only protect *future*
+    // routings, and the minimal 2-target seam loses both lone-rejects
+    // before any cluster-history accumulates. A multi-round closure
+    // scenario where priming history is built first lands in a
+    // follow-up cycle alongside an aggregate-ASR cube.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients across cohort A'],
+      ['3', 'arm C: treatment X has no effect in stage IV patients across cohort B'],
+      ['4', 'arm D: treatment X has no effect in stage IV patients across cohort C'],
+    ]);
+
+    async function setupAndRun(
+      includeDeclines: boolean,
+    ): Promise<{ daveContestedRequest: 'offered' | 'not_found' }> {
+      const server = new Server({
+        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+        idGen: new SeededIdGen(`cd-${includeDeclines ? 'on' : 'off'}`),
+        verifier: new FakeVerifier(new Set(), new Map(), sources),
+        review: {
+          // Cluster-signal stack at the same strength the standalone
+          // multi-proposal scenario uses; only the new knob varies
+          // across the two halves of this test.
+          stratification_enabled: true,
+          stratum_min_shared_proposals: 2,
+          stratum_agreement_threshold: 1.0,
+          stratum_anti_correlation_threshold: 1.0,
+          stratum_contention_weighted: true,
+          stratum_target_count: 2,
+          stratification_degraded_extra: 1,
+          stratum_include_declines: includeDeclines,
+        },
+      });
+      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+      const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+      const subTopic = server.bootstrap.seedSubTopic({
+        cause_id: cause.id,
+        name: 'treatment-X',
+        description: 'x',
+        scope_query: 'x',
+      });
+      const aliceCaller = { identity_id: alice.id };
+
+      // Three anchors, one per priming target + one for the contested
+      // target. Anchor proposals are accepted by the curator so the
+      // excerpts below have a parent to attach to.
+      const anchorIds: string[] = [];
+      for (let i = 1; i <= 3; i++) {
+        const ap = await server.tools.proposeAnchor(aliceCaller, {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i + 1) },
+        });
+        server.curator.acceptProposal(ap.proposal_id);
+        const node = [...server.store.nodes.values()].find(
+          (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
+        );
+        if (!node) throw new Error(`anchor ${i} not materialized`);
+        anchorIds.push(node.id);
+      }
+
+      // Two priming excerpts (the targets the coalition pairs declines
+      // on) and one contested excerpt (the cross-stratum probe). Use
+      // distinct quoted-span text per target so the verifier passes
+      // each independently.
+      const primingA = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorIds[0]!,
+        content: 'priming target A',
+        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+      });
+      const primingB = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorIds[1]!,
+        content: 'priming target B',
+        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+      });
+      const contested = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorIds[2]!,
+        content: 'contested target',
+        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+      });
+
+      const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+      const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+      const carolCaller = { identity_id: carol.id };
+      const daveCaller = { identity_id: dave.id };
+      await server.tools.setCapacity(carolCaller, {
+        cause_id: cause.id,
+        rate: 5,
+        kinds: ['review'],
+      });
+      await server.tools.setCapacity(daveCaller, {
+        cause_id: cause.id,
+        rate: 5,
+        kinds: ['review'],
+      });
+
+      // Carol's priming: vote on the first offer, decline the second.
+      // Frontier order yields A then B (created first → first), so
+      // Carol's vote lands on A and her decline on B.
+      const carolFirst = await server.tools.requestAssignment(carolCaller, {
+        cause_id: cause.id,
+      });
+      if (carolFirst.task.kind !== 'review') throw new Error('expected review task');
+      expect(carolFirst.task.proposal_id).toBe(primingA.proposal_id);
+      await server.tools.castReviewVote(carolCaller, {
+        proposal_id: carolFirst.task.proposal_id,
+        decision: 'reject',
+        rationale: 'priming reject',
+        assignment_id: carolFirst.assignment_id,
+      });
+      const carolSecond = await server.tools.requestAssignment(carolCaller, {
+        cause_id: cause.id,
+      });
+      if (carolSecond.task.kind !== 'review') throw new Error('expected review task');
+      expect(carolSecond.task.proposal_id).toBe(primingB.proposal_id);
+      await server.tools.declineAssignment(carolCaller, {
+        assignment_id: carolSecond.assignment_id,
+        reason: 'priming decline',
+      });
+
+      // Dave's priming: mirror — decline the first, vote on the second.
+      const daveFirst = await server.tools.requestAssignment(daveCaller, {
+        cause_id: cause.id,
+      });
+      if (daveFirst.task.kind !== 'review') throw new Error('expected review task');
+      expect(daveFirst.task.proposal_id).toBe(primingA.proposal_id);
+      await server.tools.declineAssignment(daveCaller, {
+        assignment_id: daveFirst.assignment_id,
+        reason: 'priming decline',
+      });
+      const daveSecond = await server.tools.requestAssignment(daveCaller, {
+        cause_id: cause.id,
+      });
+      if (daveSecond.task.kind !== 'review') throw new Error('expected review task');
+      expect(daveSecond.task.proposal_id).toBe(primingB.proposal_id);
+      await server.tools.castReviewVote(daveCaller, {
+        proposal_id: daveSecond.task.proposal_id,
+        decision: 'reject',
+        rationale: 'priming reject',
+        assignment_id: daveSecond.assignment_id,
+      });
+
+      // Carol routes to the contested target first — she's still the
+      // only candidate for it (Dave hasn't requested yet), so the
+      // cross-stratum gate has no co-stratum reviewer to enforce
+      // against and lets her through regardless of the knob.
+      const carolContested = await server.tools.requestAssignment(carolCaller, {
+        cause_id: cause.id,
+      });
+      if (carolContested.task.kind !== 'review') throw new Error('expected review task');
+      expect(carolContested.task.proposal_id).toBe(contested.proposal_id);
+
+      // Dave now requests. With include_declines on: cluster forms
+      // (Carol-Dave shared = 2 priming encounters, both disagreeing →
+      // anti-correlation 1.0 → edge), Carol is routed to the contested
+      // target, cross-stratum gate skips it for Dave, no other
+      // frontier candidates remain → request fails with `not_found`.
+      // With the knob off: cluster doesn't form (shared vote-only = 0),
+      // Dave is offered the contested target normally.
+      try {
+        const daveContested = await server.tools.requestAssignment(daveCaller, {
+          cause_id: cause.id,
+        });
+        if (daveContested.task.kind !== 'review') throw new Error('expected review task');
+        expect(daveContested.task.proposal_id).toBe(contested.proposal_id);
+        return { daveContestedRequest: 'offered' };
+      } catch (err) {
+        if (err instanceof ServerError && err.code === 'not_found') {
+          return { daveContestedRequest: 'not_found' };
+        }
+        throw err;
+      }
+    }
+
+    // Knob off: vote-only cluster sees zero shared history, no edge
+    // forms, Dave gets the contested target.
+    const off = await setupAndRun(false);
+    expect(off.daveContestedRequest).toBe('offered');
+
+    // Knob on: declines enter the encounter domain, paired-decline
+    // shape lights up the anti-correlation edge, Dave is gated out
+    // by the cross-stratum draw. The structural seam is closed at
+    // the cluster primitive.
+    const on = await setupAndRun(true);
+    expect(on.daveContestedRequest).toBe('not_found');
   });
 
   it('contention-weighted + anti-correlation together close the mixed-strategy gap', async () => {
