@@ -3282,6 +3282,237 @@ describe('testbed: honest-strong archetype', () => {
     expect(contestedVotes.map((v) => v.reviewer_id).sort()).toEqual([carol.id, erin.id].sort());
   });
 
+  it('patient-adversary archetype: drift cost is constant; buffer accumulation has no recency bound (PRD §Reputation, two-component)', async () => {
+    // PRD §Adversary taxonomy (Patient adversary): "Strategic
+    // adversary with a long horizon — builds reputation honestly for
+    // months before drift attempts. Tests whether per-(cause, sub-
+    // topic) reputation tracking and review-as-staking prevent slow
+    // drift." PRD §Reputation names the defenses: two-component
+    // reputation — a slow-decay demonstrated-competence component
+    // gating eligibility tiers, plus a fast-decay recent-activity
+    // component gating assignment. Neither component, nor decay
+    // itself, is wired in v0; reputation is a single cumulative
+    // score with no time dependence. This scenario pins the open
+    // seam by measurement, parallel to the honest-weak archetype's
+    // friction-rate scenario — name the archetype, observe the gap,
+    // defer the defense to the iteration that adds it.
+    //
+    // Setup: the same calibration-aware predicate the existing
+    // calibration-aware-coalition tests use (accept anchors and
+    // bias-aligned excerpts, reject only bias-misaligned excerpts).
+    // Carol is the patient adversary running solo. Bob honestly
+    // generates four well-grounded "works"-aligned priming excerpts
+    // and one "no effect" contested excerpt. Carol reviews first —
+    // she accepts every priming item, passes every calibration item
+    // (the calibration corpus is the curator-accepted anchor pool,
+    // which her predicate accepts because it gates on "treatment"),
+    // and drifts on the contested excerpt (rejects). Then two
+    // honest reviewers Erin and Frank accept everything, including
+    // the contested target.
+    //
+    // Defenses on: calibration injection + calibration-aware
+    // convergence — the convergence half closed in the strategic-
+    // coalition tests above. Stratification is left off so the
+    // measurement is on the rep ledger and calibration weight, not
+    // on the cluster-signal layer.
+    //
+    // Headline assertions:
+    //   - Contested target converges to accepted: distinct-count +
+    //     weighted-sum gates absorb Carol's lone reject when two
+    //     honest reviewers accept.
+    //   - Carol's post-drift reputation in this (cause, sub-topic)
+    //     is strongly positive — many times the per-drift cost.
+    //   - Carol's calibration record is all-passes; her vote weight
+    //     at convergence stays well above the fresh-reviewer floor
+    //     of 1.
+    //
+    // The seam: drift cost is a constant `reviewer_inaccurate_loss`
+    // (one rep point) per misaligned vote. The buffer Carol built
+    // grows linearly with priming + calibration count and never
+    // decays — there is no recency component on either reputation
+    // or calibration weight in v0. Carol's effective drift bandwidth
+    // is bounded only by total accumulated buffer, with no defense
+    // that bounds it as a function of recent activity, cumulative
+    // drift count, or item stakes. Two-component reputation (slow-
+    // decay competence + fast-decay activity per PRD §Reputation)
+    // and class-aware thresholds (PRD §Reputation, "review-credit
+    // normalized by claim difficulty") are the named defenses and
+    // are future testbed iterations, not regressions of this
+    // scenario.
+    const PRIMING_COUNT = 4;
+    const sources = new Map<string, string>();
+    for (let i = 1; i <= PRIMING_COUNT; i++) {
+      sources.set(
+        String(i),
+        `arm A${i}: treatment X works in stage III patients across the cohort`,
+      );
+    }
+    sources.set('99', 'arm B: treatment X has no effect in stage IV patients');
+
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('p'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        calibration_inject_every_n: 2,
+        calibration_aware_convergence: true,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    for (let i = 1; i <= PRIMING_COUNT; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+    const contestedAnchorProp = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper contested',
+        external_ref: { kind: 'pmid', value: '99' },
+      },
+    );
+    server.curator.acceptProposal(contestedAnchorProp.proposal_id);
+    const contestedAnchorNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper contested',
+    );
+    if (!contestedAnchorNode) throw new Error('contested anchor not materialized');
+    const contestedAnchorId = contestedAnchorNode.id;
+
+    // Bob — honest-strong proposer. Generates one excerpt per orphan
+    // anchor; the contested anchor gets the "no effect" content,
+    // every other anchor gets the "works" content.
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) =>
+        anchorId === contestedAnchorId
+          ? {
+              content: 'treatment X has no effect for stage IV',
+              quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+            }
+          : {
+              content: 'treatment X works for stage III',
+              quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+            },
+    };
+    await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 10,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    // Carol — patient adversary. Calibration-aware predicate:
+    // accept anything not mentioning "treatment" (the anchor
+    // calibration corpus) and any excerpt mentioning "works"; reject
+    // only the bias-misaligned "no effect" excerpt. Same predicate
+    // shape the calibration-aware-coalition tests use, applied solo.
+    // Runs first so all of Bob's priming excerpts are still staged
+    // when she votes — she gets to accept each one and her votes
+    // count toward the eventual accept convergence.
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const calAwareBiased = payloadBiasedDecider({
+      acceptIf: (payload) =>
+        'content' in payload &&
+        (!payload.content.includes('treatment') || payload.content.includes('works')),
+      rationaleAccept: 'consistent with prevailing evidence',
+      rationaleReject: 'underpowered, methodological concerns',
+    });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 20,
+      decide: calAwareBiased,
+    });
+
+    // Erin and Frank — two honest reviewers. Each accepts every
+    // proposal they see. Together they reach the distinct-count +
+    // weighted-sum gate against Carol's lone reject on contested.
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 20,
+      decide: acceptAllDecider,
+    });
+    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+    const frankClient = await wireArchetype(server, frank.id);
+    await runHonestReviewer(frankClient, {
+      cause_id: cause.id,
+      rate: 20,
+      decide: acceptAllDecider,
+    });
+
+    // The contested target survives Carol's drift: Erin + Frank's
+    // accepts hit accept count = 2 and accept weight = 2 before
+    // Carol's reject finds a coalition partner. The defenses absorb
+    // a single biased vote on a 3-reviewer pool by construction.
+    const contestedExcerpt = [...server.store.proposals.values()].find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('no effect'),
+    );
+    expect(contestedExcerpt?.status).toBe('accepted');
+
+    // Carol's reputation is strongly positive in this (cause, sub-
+    // topic). Buffer composition: +1 per priming excerpt where her
+    // accept matched the converged accept (PRIMING_COUNT items),
+    // +calibration_pass_gain per calibration item her predicate
+    // matched ground-truth on, -reviewer_inaccurate_loss for the one
+    // drift. The PRD §Reputation §244 contributor-initiated factor
+    // doesn't apply — these are reviewer rep movements, not
+    // proposer ones. The headline pin is that the drift cost is a
+    // small fraction of the buffer.
+    const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
+    const carolScore = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id)?.score ?? 0;
+    expect(carolScore).toBeGreaterThan(0);
+    expect(carolScore).toBeGreaterThan(server.review.reviewer_inaccurate_loss * 2);
+
+    // Carol's calibration record is all-passes — her predicate
+    // matches every anchor calibration item ("paper N" content
+    // doesn't include "treatment", so the predicate's first clause
+    // accepts). Vote weight = max(0, 1 + passes - fails) stays well
+    // above the fresh-reviewer floor of 1. Read directly from the
+    // store — calibration records are an internal observability
+    // surface (no public tool exposes them in v0); the testbed
+    // accepts that contract because the alternative (a query tool)
+    // would leak the seam to clients before Phase 2 is ready to
+    // commit it.
+    const calKey = `${carol.id}|${cause.id}|${subTopic.id}` as const;
+    const carolCal = server.store.calibrationRecords.get(calKey);
+    expect(carolCal?.passes ?? 0).toBeGreaterThan(0);
+    expect(carolCal?.fails ?? 0).toBe(0);
+    const carolWeight = Math.max(0, 1 + (carolCal?.passes ?? 0) - (carolCal?.fails ?? 0));
+    expect(carolWeight).toBeGreaterThan(1);
+
+    // The architectural pin, expressed as a ratio: Carol's drift
+    // bandwidth = floor(carolScore / reviewer_inaccurate_loss). She
+    // could repeat this drift many times before her observable
+    // reputation returns to a fresh-reviewer state, with no defense
+    // in v0 that bounds the count as a function of when the priming
+    // happened or how high the contested item's stakes are. Decay,
+    // two-component reputation, and class-aware thresholds (all PRD
+    // §Reputation) are the named defenses; this assertion is the
+    // regression handle that says "a future iteration that wires
+    // any of them should make this expectation tighten."
+    const driftBandwidth = Math.floor(carolScore / server.review.reviewer_inaccurate_loss);
+    expect(driftBandwidth).toBeGreaterThan(1);
+  });
+
   // Parameter sweep over the (coalition pattern, anti-correlation
   // threshold, contention-weighted) cube. PRD §Adversary testbed
   // (Architecture, "Parameter sweeps") commits this shape as the
