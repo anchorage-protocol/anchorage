@@ -272,6 +272,34 @@ export interface ReviewConfig {
   // unaffected; turning it on widens the cluster signal but does not
   // shrink it (vote-only encounters still fire the existing edges).
   stratum_include_declines: boolean;
+  // Minimum decline-involved encounters between a pair before
+  // contention-weighting's full-weight rule for declines applies. PRD
+  // §Reviewer assignment commits the floor as the refinement that
+  // scopes the decline-aware × contention-weighting interaction so
+  // honest reviewers stay singletons. Without it, a single asymmetric
+  // decline (one reviewer declines a proposal, another votes on it)
+  // produces a single decline-involved encounter at full weight that
+  // outweighs every unanimous-easy vote-agreement (contention 0 →
+  // weight 0); the pair's weighted-disagreement ratio collapses to 1.0
+  // and the anti-correlation edge fires against an honest pair that
+  // shared no actual coalition signal. The paired-decline closure the
+  // floor has to preserve has *two* decline-involved encounters per
+  // pair by construction (Carol votes A and declines B; Dave declines
+  // A and votes B), so a floor of 2 closes the over-clustering
+  // pathology without weakening the multi-round paired-decline
+  // closure. Below the floor, decline-involved encounters contribute
+  // zero weight to both weighted_shared and weighted_agreed —
+  // equivalent to the pair being decline-blind for cluster purposes —
+  // while raw shared count still includes them (the brand-new-reviewer
+  // floor is unaffected). Only consulted when both
+  // stratum_contention_weighted and stratum_include_declines are on;
+  // under raw or vote-only weighting the knob has no effect. Default 2
+  // is the production value the testbed tunes against; raising it
+  // weakens declines as a coalition signal further (more paired-
+  // decline activity required before a coalition surfaces). A value
+  // of 1 reduces to "no floor" — the buggy regime the over-clustering
+  // scenario pins.
+  stratum_decline_min_paired: number;
   // Half-life (in seconds) of the *demonstrated*-competence reputation
   // component. PRD §Reputation: "A demonstrated-competence component,
   // slow-decay, gates eligibility tiers." Applied as exponential decay
@@ -379,6 +407,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   stratum_contention_weighted: false,
   stratum_anti_correlation_threshold: 0,
   stratum_include_declines: false,
+  stratum_decline_min_paired: 2,
   demonstrated_half_life_seconds: Infinity,
   recent_half_life_seconds: Infinity,
   assignment_min_recent: 0,
@@ -2852,6 +2881,29 @@ export class Server {
         if (!b) continue;
         const vb = reviewerEncounters.get(b);
         if (!vb) continue;
+        // Pre-pass: count decline-involved shared encounters between
+        // the pair so the contention-weighting branch can apply the
+        // paired-decline floor. Without the floor, a single asymmetric
+        // decline-involved encounter contributes weight 1 to a pair
+        // whose vote-vote agreements all sit at contention 0, and the
+        // pair's weighted-disagreement ratio collapses to 1.0 against
+        // an honest pair that shared no coalition signal. Counted in a
+        // small first pass rather than threaded through the main
+        // weighting loop because the decision is per-pair, not per-
+        // encounter, and the encounter loop already does enough work.
+        // Only computed when both knobs are on; under raw or vote-only
+        // weighting the floor has no effect.
+        let pairDeclineInvolved = 0;
+        if (this.review.stratum_contention_weighted && this.review.stratum_include_declines) {
+          for (const [pid, decisionA] of va) {
+            const decisionB = vb.get(pid);
+            if (!decisionB) continue;
+            if (decisionA === 'decline' || decisionB === 'decline') {
+              pairDeclineInvolved += 1;
+            }
+          }
+        }
+        const declineFloorMet = pairDeclineInvolved >= this.review.stratum_decline_min_paired;
         let shared = 0;
         let agreed = 0;
         let weightedShared = 0;
@@ -2872,6 +2924,13 @@ export class Server {
               // even when contention-weighting is on; the alternative
               // (using the vote-only tally) would silently zero out the
               // signal on targets that have only a single lone vote.
+              // The paired-decline floor (stratum_decline_min_paired)
+              // gates the full-weight rule on the pair having enough
+              // decline-involved encounters to look like coordinated
+              // routing rather than a single asymmetric decline; below
+              // the floor the encounter contributes 0 weight, and the
+              // pair stays decline-blind for cluster purposes.
+              if (!declineFloorMet) continue;
               weightedShared += 1;
               if (agree) weightedAgreed += 1;
             } else {

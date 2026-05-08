@@ -3843,6 +3843,262 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(on.contested_status).toBe('accepted');
   });
 
+  it('contention-weighted + decline-aware: a single asymmetric decline false-clusters honest reviewers; the paired-decline floor closes it', async () => {
+    // The interaction the multi-round closure isolated to a single
+    // load-bearing knob (its runner kept stratum_contention_weighted
+    // off precisely because composition with decline-aware turns a
+    // load-bearing closure into a false-positive trap). Under
+    // decline-aware + contention-weighted, the rule that counts
+    // decline-involved encounters at full weight (=1) is what keeps
+    // the paired-decline closure firing — but it also lets a *single*
+    // asymmetric decline-involved encounter dominate a pair whose
+    // entire vote-vote history sits on unanimous-easy items
+    // (contention 0 → weight 0). The pair's weighted-disagreement
+    // ratio collapses to 1.0 against an honest pair that shared no
+    // coalition signal, the anti-correlation edge fires, and the
+    // honest pool false-clusters with itself. The cross-stratum gate
+    // then strangles honest review on the next contested target.
+    //
+    // The refinement is `stratum_decline_min_paired` (default 2): the
+    // full-weight rule for declines only applies when the pair has at
+    // least N decline-involved shared encounters. The paired-decline
+    // closure has 2 by construction (Carol votes A and declines B;
+    // Dave declines A and votes B), so a floor of 2 closes the over-
+    // clustering pathology without weakening the closure.
+    //
+    // Scenario:
+    //   Round 1 (priming). Three honest reviewers — Carol, Dave, Erin
+    //   — vote accept on two unanimous-easy excerpts. Both proposals
+    //   converge accepted at 3 accepts apiece; per-proposal contention
+    //   is 0 across the priming, so every vote-vote agreement
+    //   contributes 0 weight to the cluster signal.
+    //
+    //   Round 2 (asymmetric-decline event). A third "trigger" excerpt
+    //   is staged. Carol's decider declines payloads tagged
+    //   "trigger"; Dave and Erin vote accept normally. Trigger
+    //   converges accepted at 2 accepts. The encounter ledger now
+    //   records (Carol decline, Dave vote) and (Carol decline, Erin
+    //   vote) on trigger — single decline-involved encounters between
+    //   Carol and each of the other two honest reviewers.
+    //
+    //   Round 3 (contested target). A fresh excerpt is staged. All
+    //   three honest reviewers run with acceptAllDecider; under any
+    //   non-pathological cluster computation, the contested target
+    //   converges accepted at the second vote.
+    //
+    // Outcome flip on the proposal's terminal status:
+    //   - Floor 1 (no floor — the buggy regime). Carol-Dave pair
+    //     has 1 decline-involved encounter; weighted_shared = 1,
+    //     weighted_agreed = 0, disagreement ratio 1.0, anti-
+    //     correlation edge fires. Same for Carol-Erin. Dave-Erin has
+    //     no decline-involved encounters and all vote agreements at
+    //     contention 0, so no edge. The graph has Carol-Dave and
+    //     Carol-Erin edges → all three honest reviewers collapse into
+    //     one connected component. The contested target's eligible
+    //     pool covers 1 stratum (below stratum_target_count=2), so
+    //     the proposal is flagged stratification-degraded and votes_
+    //     to_accept tightens to 3. The first reviewer's request is
+    //     routed to the contested target; the other two are gated by
+    //     the cross-stratum rule (co-stratum already routed) and
+    //     their request_assignment returns not_found. The proposal
+    //     sits at 1 accept, the divergence-closure sweep archives it.
+    //   - Floor 2 (default). Carol-Dave / Carol-Erin each have 1
+    //     decline-involved encounter, below the floor → contributes
+    //     0 weight. weighted_shared collapses to 0 across the priming
+    //     and the trigger (all vote agreements at contention 0, the
+    //     decline encounter zeroed by the floor). signalAvailable is
+    //     false for every pair, no edges form, all three honest
+    //     reviewers stay in singleton strata. The contested target is
+    //     not degraded, votes_to_accept stays at 2, all three vote
+    //     accept and the proposal converges accepted at the second
+    //     vote.
+    //
+    // The test pins the closure on terminal status — the observable a
+    // real proposer sees — same shape as the multi-round closure
+    // above. Same defense stack runs in both halves; only
+    // `stratum_decline_min_paired` varies.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X works in stage III patients across cohort A'],
+      ['3', 'arm C: treatment X works in stage III patients across cohort B'],
+      ['4', 'arm D: treatment X works in stage III patients across cohort C'],
+    ]);
+
+    async function run(
+      decline_min_paired: number,
+    ): Promise<{ contested_status: 'staged' | 'accepted' | 'rejected' | 'unresolved-archived' }> {
+      const server = new Server({
+        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+        idGen: new SeededIdGen(`oc-${decline_min_paired}`),
+        verifier: new FakeVerifier(new Set(), new Map(), sources),
+        review: {
+          // Same cluster-signal stack the standalone decline-extension
+          // and multi-round-closure scenarios use; only the new
+          // paired-decline floor varies across the two halves.
+          stratification_enabled: true,
+          stratum_min_shared_proposals: 2,
+          stratum_agreement_threshold: 1.0,
+          stratum_anti_correlation_threshold: 1.0,
+          stratum_contention_weighted: true,
+          stratum_target_count: 2,
+          stratification_degraded_extra: 1,
+          stratum_include_declines: true,
+          stratum_decline_min_paired: decline_min_paired,
+        },
+      });
+      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+      const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+      const subTopic = server.bootstrap.seedSubTopic({
+        cause_id: cause.id,
+        name: 'treatment-X',
+        description: 'x',
+        scope_query: 'x',
+      });
+      const aliceCaller = { identity_id: alice.id };
+
+      // Four anchors: two priming + one trigger + one contested. All
+      // curator-accepted so the excerpts have a parent.
+      const anchorIds: string[] = [];
+      for (let i = 1; i <= 4; i++) {
+        const ap = await server.tools.proposeAnchor(aliceCaller, {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i + 1) },
+        });
+        server.curator.acceptProposal(ap.proposal_id);
+        const node = [...server.store.nodes.values()].find(
+          (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
+        );
+        if (!node) throw new Error(`anchor ${i} not materialized`);
+        anchorIds.push(node.id);
+      }
+
+      // Round 1: two priming excerpts. Verifier-passing quoted span
+      // matches the source content so accepts land cleanly.
+      const primingA = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorIds[0]!,
+        content: 'primingA: treatment X works in stage III cohort A',
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      const primingB = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorIds[1]!,
+        content: 'primingB: treatment X works in stage III cohort B',
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+
+      const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+      const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+      const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+      const carolClient = await wireArchetype(server, carol.id);
+      const daveClient = await wireArchetype(server, dave.id);
+      const erinClient = await wireArchetype(server, erin.id);
+
+      // Priming round: all three accept both proposals.
+      await runHonestReviewer(carolClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: acceptAllDecider,
+      });
+      await runHonestReviewer(daveClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: acceptAllDecider,
+      });
+      await runHonestReviewer(erinClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: acceptAllDecider,
+      });
+      if (server.store.proposals.get(primingA.proposal_id)?.status !== 'accepted') {
+        throw new Error('primingA did not converge accepted in priming round');
+      }
+      if (server.store.proposals.get(primingB.proposal_id)?.status !== 'accepted') {
+        throw new Error('primingB did not converge accepted in priming round');
+      }
+
+      // Round 2: trigger excerpt. Carol's decider declines payloads
+      // tagged "trigger" (legitimate "outside my wheelhouse" signal,
+      // not a coalition primitive); Dave and Erin accept normally.
+      const trigger = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorIds[2]!,
+        content: 'trigger: treatment X works in stage III cohort C',
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      const carolTriggerDecider = payloadDecliningDecider({
+        declineIf: (payload) => 'content' in payload && payload.content.includes('trigger'),
+        fallback: acceptAllDecider,
+      });
+      await runHonestReviewer(carolClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: carolTriggerDecider,
+      });
+      await runHonestReviewer(daveClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: acceptAllDecider,
+      });
+      await runHonestReviewer(erinClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: acceptAllDecider,
+      });
+      if (server.store.proposals.get(trigger.proposal_id)?.status !== 'accepted') {
+        throw new Error('trigger did not converge accepted in event round');
+      }
+
+      // Round 3: contested target. All three reviewers honest-accept.
+      // Under the buggy floor=1 rule the false cluster locks two of
+      // them out via the cross-stratum gate; under the default floor
+      // of 2 all three vote and the proposal converges accepted.
+      const contested = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorIds[3]!,
+        content: 'contested: treatment X works in stage III cohort D',
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      await runHonestReviewer(carolClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: acceptAllDecider,
+      });
+      await runHonestReviewer(daveClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: acceptAllDecider,
+      });
+      await runHonestReviewer(erinClient, {
+        cause_id: cause.id,
+        rate: 5,
+        decide: acceptAllDecider,
+      });
+
+      // Time passes past the divergence window, sweep runs. Under the
+      // buggy regime the contested target sits stalled at 1 accept
+      // and archives; under the default it has already converged
+      // accepted before time advances and the sweep is a no-op.
+      server.clock.advance(120_000);
+      server.curator.archiveStaleProposals({ window_seconds: 60, cause_id: cause.id });
+
+      const target = server.store.proposals.get(contested.proposal_id);
+      if (!target) throw new Error('contested proposal vanished');
+      return { contested_status: target.status };
+    }
+
+    const buggy = await run(1);
+    expect(buggy.contested_status).toBe('unresolved-archived');
+    const fixed = await run(2);
+    expect(fixed.contested_status).toBe('accepted');
+  });
+
   it('contention-weighted + anti-correlation together close the mixed-strategy gap', async () => {
     // Companion to the mixed-strategy-coalition test above. The
     // standalone mixed strategy defeats each refinement individually
