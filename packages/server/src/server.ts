@@ -385,6 +385,28 @@ export interface ReviewConfig {
   // is 3) can wire a higher floor here too if false-positive cost on
   // small samples is the dominant concern.
   assignment_decline_min_offers: number;
+  // Difficulty-normalization mix for reviewer rep deltas. PRD
+  // §Reputation: "Review-credit normalized by claim difficulty.
+  // Without normalization, the regime selects for reviewers who
+  // accept easy proposals." When `alpha < 1`, reviewer rep deltas
+  // (gain on accurate, loss on inaccurate) are scaled by
+  // `alpha + (1 - alpha) * contention`, where contention is the same
+  // `2 * min(accepts, rejects) / total_votes` proxy the cluster
+  // signal already uses (PRD §Reviewer assignment). Unanimous-easy
+  // proposals yield contention 0 and earn the reviewer `alpha *
+  // base_delta`; perfectly-split contentious proposals yield
+  // contention 1 and earn the full `base_delta`. Default 1.0 leaves
+  // the v0 uniform-credit regime intact (every accurate review
+  // credits the same independent of difficulty), preserving the
+  // assignment-gate threshold tuning the patient-adversary cube
+  // calibrates against; opt-in `alpha < 1` is the wedge that lets
+  // the testbed re-baseline those thresholds against the
+  // difficulty-aware regime. Only applies to reviewer deltas (the
+  // PRD passage scopes difficulty-normalization to review credit);
+  // proposer deltas stay unscaled so the proposer's accept/reject
+  // outcome carries its own weight independent of how much
+  // disagreement the reviewers had on the way there.
+  review_credit_contention_alpha: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -414,6 +436,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   assignment_min_demonstrated: 0,
   assignment_max_decline_rate: 1.0,
   assignment_decline_min_offers: 1,
+  review_credit_contention_alpha: 1,
 };
 
 export interface ServerDeps {
@@ -2619,6 +2642,33 @@ export class Server {
         : -this.review.proposer_rejected_loss * proposerFactor;
     this.bumpReputation(proposal.proposer_id, causeId, subTopicId, proposerDelta);
 
+    // Difficulty-normalization weight for reviewer deltas. PRD
+    // §Reputation commits per-proposal contention (the same
+    // 2*min(accepts, rejects)/total proxy the cluster signal uses)
+    // as the v0 difficulty signal: unanimous-easy items earn
+    // reviewers `alpha * base_delta`, contentious items earn the
+    // full delta, and `alpha = 1` (default) preserves uniform-
+    // credit. Computed once per convergence, applied to every
+    // reviewer's gain or loss equally so accuracy and difficulty
+    // compose multiplicatively rather than per-vote-conditional.
+    // Revise votes excluded from the contention denominator (they
+    // carry no agreement signal in either direction; same filter
+    // the cluster signal applies).
+    const alpha = this.review.review_credit_contention_alpha;
+    let creditWeight = 1;
+    if (alpha < 1) {
+      let accepts = 0;
+      let rejects = 0;
+      for (const v of this.store.reviewVotes.values()) {
+        if (v.proposal_id !== proposal.id) continue;
+        if (v.decision === 'accept') accepts += 1;
+        else if (v.decision === 'reject') rejects += 1;
+      }
+      const total = accepts + rejects;
+      const contention = total > 0 ? (2 * Math.min(accepts, rejects)) / total : 0;
+      creditWeight = alpha + (1 - alpha) * contention;
+    }
+
     // Reviewer deltas. Each unique reviewer gets exactly one delta
     // per convergence — even if they cast multiple votes (which
     // double-vote prevention forbids today, but the dedup is cheap
@@ -2632,10 +2682,10 @@ export class Server {
       const wasAccurate =
         (v.decision === 'accept' && outcome === 'accepted') ||
         (v.decision === 'reject' && outcome === 'rejected');
-      const reviewerDelta = wasAccurate
+      const baseDelta = wasAccurate
         ? this.review.reviewer_accurate_gain
         : -this.review.reviewer_inaccurate_loss;
-      this.bumpReputation(v.reviewer_id, causeId, subTopicId, reviewerDelta);
+      this.bumpReputation(v.reviewer_id, causeId, subTopicId, baseDelta * creditWeight);
     }
   }
 

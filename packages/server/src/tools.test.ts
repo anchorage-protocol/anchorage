@@ -1791,6 +1791,146 @@ describe('tools.castReviewVote', () => {
     expect(daveE).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: -1, recent: -1 }]);
   });
 
+  it('scales reviewer rep deltas by per-proposal contention when review_credit_contention_alpha < 1', async () => {
+    // PRD §Reputation commits difficulty-normalized review credit
+    // with the same `2 * min(accepts, rejects) / total` contention
+    // proxy the cluster signal uses. The alpha primitive is the
+    // wedge: at alpha=1 (default) every accurate review credits the
+    // same (preserved by the existing tests above); at alpha<1
+    // unanimous-easy items earn `alpha * base_delta` and contentious
+    // items earn the full delta. The patient-adversary signature
+    // (priming through unanimous accepts on well-grounded excerpts to
+    // harvest rep cheaply) is exactly the pattern uniform-credit
+    // blesses, so the alpha knob is what lets the testbed re-baseline
+    // the assignment-gate thresholds against the difficulty-aware
+    // regime.
+    //
+    // This test pins the wiring on three cells that span the surface:
+    //   - alpha=0, unanimous accepts (contention 0). creditWeight =
+    //     0 + 1*0 = 0; reviewer rep delta short-circuits to no
+    //     update — easy unanimous work earns no review credit.
+    //     Proposer delta is unaffected (alpha is reviewer-only).
+    //   - alpha=0, split accepts (one reject, two accepts → converges
+    //     accepted; accepts=2, rejects=1, contention = 2*1/3). All
+    //     three reviewers' deltas scale by ≈0.667.
+    //   - alpha=0.5, unanimous accepts (contention 0). creditWeight =
+    //     0.5 + 0.5*0 = 0.5; reviewers get half-credit on easy work,
+    //     full credit on contentious.
+    //
+    // Same proposer/proposal shape as the "credits accurate reviewers"
+    // test above; only `review_credit_contention_alpha` and the vote
+    // mix vary.
+    {
+      const f = fixture({ review: { review_credit_contention_alpha: 0 } });
+      const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: 'unanimous',
+        external_ref: { kind: 'pmid', value: '1' },
+      });
+      const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+      const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+      await f.server.tools.castReviewVote(
+        { identity_id: bob.id },
+        { proposal_id, decision: 'accept', rationale: 'b' },
+      );
+      await f.server.tools.castReviewVote(
+        { identity_id: carol.id },
+        { proposal_id, decision: 'accept', rationale: 'c' },
+      );
+      // Reviewer delta = base * 0 = 0 → no rep entries materialize.
+      // Proposer delta is independent of alpha and lands at 0.5
+      // (contributor-initiated factor) per the existing accept rule.
+      const { entries: bobE } = await f.server.tools.queryReputation(
+        { identity_id: bob.id },
+        { cause_id: f.cause_id },
+      );
+      expect(bobE).toEqual([]);
+      const { entries: carolE } = await f.server.tools.queryReputation(
+        { identity_id: carol.id },
+        { cause_id: f.cause_id },
+      );
+      expect(carolE).toEqual([]);
+      const { entries: aliceE } = await f.server.tools.queryReputation(f.caller, {
+        cause_id: f.cause_id,
+      });
+      expect(aliceE).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: 0.5, recent: 0.5 }]);
+    }
+
+    {
+      const f = fixture({ review: { review_credit_contention_alpha: 0 } });
+      const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: 'split',
+        external_ref: { kind: 'pmid', value: '1' },
+      });
+      const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+      const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+      const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
+      // Dave rejects first so the split is on the record before
+      // bob+carol's accepts converge it.
+      await f.server.tools.castReviewVote(
+        { identity_id: dave.id },
+        { proposal_id, decision: 'reject', rationale: 'd' },
+      );
+      await f.server.tools.castReviewVote(
+        { identity_id: bob.id },
+        { proposal_id, decision: 'accept', rationale: 'b' },
+      );
+      await f.server.tools.castReviewVote(
+        { identity_id: carol.id },
+        { proposal_id, decision: 'accept', rationale: 'c' },
+      );
+      // accepts=2, rejects=1, contention = 2*1/3 = 0.6667.
+      // creditWeight = 0 + 1*0.6667 = 0.6667. bob+carol +0.6667 each;
+      // dave -0.6667.
+      const expected = (2 * 1) / 3;
+      const { entries: bobE } = await f.server.tools.queryReputation(
+        { identity_id: bob.id },
+        { cause_id: f.cause_id },
+      );
+      expect(bobE).toEqual([
+        { sub_topic_id: f.sub_topic_id, demonstrated: expected, recent: expected },
+      ]);
+      const { entries: daveE } = await f.server.tools.queryReputation(
+        { identity_id: dave.id },
+        { cause_id: f.cause_id },
+      );
+      expect(daveE).toEqual([
+        { sub_topic_id: f.sub_topic_id, demonstrated: -expected, recent: -expected },
+      ]);
+    }
+
+    {
+      const f = fixture({ review: { review_credit_contention_alpha: 0.5 } });
+      const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: 'half-credit',
+        external_ref: { kind: 'pmid', value: '1' },
+      });
+      const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+      const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+      await f.server.tools.castReviewVote(
+        { identity_id: bob.id },
+        { proposal_id, decision: 'accept', rationale: 'b' },
+      );
+      await f.server.tools.castReviewVote(
+        { identity_id: carol.id },
+        { proposal_id, decision: 'accept', rationale: 'c' },
+      );
+      // contention=0; creditWeight = 0.5 + 0.5*0 = 0.5. Reviewers
+      // get half-credit on easy work; with contention=1 they would
+      // earn the full delta.
+      const { entries: bobE } = await f.server.tools.queryReputation(
+        { identity_id: bob.id },
+        { cause_id: f.cause_id },
+      );
+      expect(bobE).toEqual([{ sub_topic_id: f.sub_topic_id, demonstrated: 0.5, recent: 0.5 }]);
+    }
+  });
+
   it('uses full proposer weight when the proposal was assignment-driven', async () => {
     // End-to-end through the assignment loop: the proposal carries
     // assignment_id, so contributor_initiated_factor doesn't apply.
