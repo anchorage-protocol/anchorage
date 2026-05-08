@@ -308,6 +308,33 @@ export interface ReviewConfig {
   // surfaces that need accumulated activity per identity. Default 0
   // leaves the gate inert and preserves existing-scenario behavior.
   assignment_min_demonstrated: number;
+  // Maximum cumulative decline rate (declines / offers in this cause)
+  // allowed at request_assignment. PRD §Capacity and assignment names
+  // decline-pattern as an abuse signal "handled at the curator layer";
+  // this is the testbed-visible knob that turns the existing
+  // curator-side `declinePatterns` projection into an assignment-time
+  // enforcement primitive. The signal is cumulative and matches what
+  // the projection computes — same numerator and denominator, same
+  // per-cause scope. The first defense knob for the multi-proposal
+  // coalition seam (a coalition that avoids co-voting on any
+  // contentious item by using paired-decline as the routing primitive):
+  // the gate makes "decline as routing primitive" expensive without
+  // making single declines punitive — a legitimate narrow specialist
+  // who declines occasionally stays well below threshold; a coalition
+  // member who declines half their offers to route around the
+  // partner's contested target burns the budget fast. Default 1.0
+  // leaves the gate inert and preserves existing-scenario behavior.
+  assignment_max_decline_rate: number;
+  // Minimum offers below which the decline-rate gate is bypassed —
+  // small-sample noise floor, the same role `min_offers` plays on
+  // `curator.declinePatterns`. Bootstrap-friendly: a fresh reviewer
+  // with zero offers cannot be locked out before having been offered
+  // anything to decline. Default 1: once `assignment_max_decline_rate`
+  // is below 1.0 the gate fires from the very first decline. Curators
+  // running the projection with a higher floor (the v0 default there
+  // is 3) can wire a higher floor here too if false-positive cost on
+  // small samples is the dominant concern.
+  assignment_decline_min_offers: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -333,6 +360,8 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   recent_half_life_seconds: Infinity,
   assignment_min_recent: 0,
   assignment_min_demonstrated: 0,
+  assignment_max_decline_rate: 1.0,
+  assignment_decline_min_offers: 1,
 };
 
 export interface ServerDeps {
@@ -1181,6 +1210,43 @@ export class Server {
             throw new ServerError(
               'not_found',
               `demonstrated competence below eligibility threshold (${maxDemonstrated.toFixed(4)} < ${this.review.assignment_min_demonstrated}) for ${identity.id} in cause ${parsed.cause_id}`,
+            );
+          }
+        }
+      }
+
+      // Decline-pattern assignment gate (PRD §Capacity and assignment).
+      // The curator-side `declinePatterns` projection surfaces decliners
+      // by per-cause cumulative rate; this gate turns the same signal
+      // into an assignment-time primitive at the same seam as the rep
+      // gates. The first defense knob for the multi-proposal coalition
+      // seam: the seam evades the cluster signal by paired-decline (no
+      // co-voting → no shared history → no edge metric to fire), and
+      // every decline burns budget against this gate. Same null-policy
+      // as the recent gate — callers below the `min_offers` floor
+      // bypass — and the contributor-initiated review path
+      // (cast_review_vote without assignment_id) doesn't traverse here,
+      // so a contributor whose decline rate has spiked retains the
+      // recovery path PRD §Capacity and assignment names ("Declining
+      // individual assignments is non-punitive on its own"). Refusal
+      // mode mirrors the rep gates: `not_found` so the contributor-
+      // facing surface stays structurally indistinguishable from "no
+      // work available." Default 1.0 / 1 leaves the gate inert.
+      if (this.review.assignment_max_decline_rate < 1.0) {
+        let offers = 0;
+        let declines = 0;
+        for (const a of this.store.assignments.values()) {
+          if (a.contributor_id !== identity.id) continue;
+          if (this.causeOfTask(a.task) !== parsed.cause_id) continue;
+          offers += 1;
+          if (a.status === 'declined') declines += 1;
+        }
+        if (offers >= this.review.assignment_decline_min_offers && offers > 0) {
+          const declineRate = declines / offers;
+          if (declineRate > this.review.assignment_max_decline_rate) {
+            throw new ServerError(
+              'not_found',
+              `decline rate above assignment threshold (${declineRate.toFixed(4)} > ${this.review.assignment_max_decline_rate}) for ${identity.id} in cause ${parsed.cause_id} (${declines}/${offers})`,
             );
           }
         }

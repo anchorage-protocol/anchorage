@@ -4391,6 +4391,145 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(assignment.assignment_id).toBeDefined();
   });
 
+  it('decline-pattern assignment gate: cumulative decline rate above threshold refuses further assignments (PRD §Capacity and assignment, decline-pattern abuse signal)', async () => {
+    // First defense knob for the multi-proposal coalition seam pinned
+    // by the standalone scenario above. The seam evades the cluster
+    // signal by paired-decline (no co-voting → no shared history → no
+    // edge metric to fire); the curator-side decline-pattern projection
+    // already surfaces the coalition by per-cause rate, and this gate
+    // elevates the same signal — same numerator, same denominator,
+    // same per-cause scope — into an assignment-time enforcement
+    // primitive at the rep-gate seam in `request_assignment`. The
+    // closure on the seam is throughput-mediated, not retroactive: the
+    // gate doesn't undo a lone-reject that already landed, it caps the
+    // rate at which the coalition can place new ones — for a
+    // coalition that paired-declines half its offers, the gate fires
+    // after the second decline and locks the member out of further
+    // routing. The orthogonal-defenses ASR cube against the cluster
+    // signal lands in the next cycle; this test pins the gate's
+    // mechanics standalone first.
+    //
+    // Properties pinned:
+    //   1. Above threshold + above min_offers → request_assignment refused.
+    //   2. Above threshold but below min_offers → bypass (small-sample
+    //      floor — the same min_offers role on `declinePatterns`).
+    //   3. Fresh reviewer (zero offers) → bypass (bootstrap path, same
+    //      null-policy as the recent-activity gate).
+    //   4. Contributor-initiated path (cast_review_vote without
+    //      assignment_id) → bypass: a contributor whose decline rate
+    //      has spiked retains the recovery path PRD §Capacity and
+    //      assignment names ("Declining individual assignments is
+    //      non-punitive on its own").
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('dg'),
+      verifier: new FakeVerifier(),
+      review: {
+        // Threshold below which the gate stays inert. Carol declines
+        // every offer, so her rate is 1.0 once any offer lands; the
+        // 0.5 threshold catches that, the 2.0 min_offers floor delays
+        // the catch by one offer so Property 2 has something to pin.
+        assignment_max_decline_rate: 0.5,
+        assignment_decline_min_offers: 2,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    // Stage four anchor proposals so the frontier has enough
+    // distinct review tasks to offer Carol multiple times — declines
+    // are a stable signal so the same target won't be re-offered to
+    // the same contributor.
+    for (let i = 0; i < 4; i++) {
+      await server.tools.proposeAnchor(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: `paper ${i}`,
+        external_ref: { kind: 'pmid', value: String(100 + i) },
+      });
+    }
+
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const carolClient = await wireArchetype(server, carol.id);
+    await carolClient.setCapacity({ cause_id: cause.id, rate: 5, kinds: ['review'] });
+
+    // Property 3: zero-offer bypass. Carol's first request goes
+    // through — she has no decline history, so the gate has no
+    // signal to fire on.
+    const a1 = await carolClient.requestAssignment({ cause_id: cause.id });
+    await carolClient.declineAssignment({ assignment_id: a1.assignment_id, reason: 'not now' });
+    // After: offers=1, declines=1, rate=1.0. Above threshold, below
+    // min_offers floor.
+
+    // Property 2: rate above threshold but offers below min_offers
+    // → bypass. The same numerator and denominator the curator-side
+    // projection projects — at min_offers=2 the gate ignores Carol
+    // for the same reason a curator running `declinePatterns` with
+    // its v0 default min_offers=3 wouldn't surface her yet.
+    const a2 = await carolClient.requestAssignment({ cause_id: cause.id });
+    await carolClient.declineAssignment({ assignment_id: a2.assignment_id, reason: 'still not' });
+    // After: offers=2, declines=2, rate=1.0. At/above min_offers
+    // floor now.
+
+    // Property 1: gate fires. Carol's third request is refused with
+    // `not_found` — same refusal mode the rep gates use, so the
+    // contributor-facing surface stays structurally indistinguishable
+    // from "no work available."
+    await expect(carolClient.requestAssignment({ cause_id: cause.id })).rejects.toMatchObject({
+      code: 'not_found',
+    });
+
+    // Confirm the gate's view of Carol's stats matches the curator-
+    // side projection's view byte-for-byte: same offers, same
+    // declines, same rate. The point of this gate is to operate on
+    // the projection's signal, not a separate one — verifying parity
+    // here keeps the contract honest.
+    const patterns = server.curator.declinePatterns(cause.id, { min_offers: 1 });
+    const carolPattern = patterns.find((p) => p.identity_id === carol.id);
+    if (!carolPattern) throw new Error('expected carol in decline-pattern projection');
+    expect(carolPattern.offers).toBe(2);
+    expect(carolPattern.declines).toBe(2);
+    expect(carolPattern.decline_rate).toBe(1.0);
+
+    // Property 3 again, in the gate-on regime: a fresh reviewer with
+    // zero offers walks through. The bootstrap path stays open; the
+    // gate fires only against a built-up decline history.
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    await erinClient.setCapacity({ cause_id: cause.id, rate: 5, kinds: ['review'] });
+    const erinAssignment = await erinClient.requestAssignment({ cause_id: cause.id });
+    expect(erinAssignment.task.kind).toBe('review');
+
+    // Property 4: contributor-initiated path bypasses the gate.
+    // Carol is locked out of `request_assignment` but can still cast
+    // a contributor-initiated vote on a proposal she didn't author —
+    // PRD §Capacity and assignment names this as the recovery path
+    // and the conflict-of-interest gate (caller != proposer) doesn't
+    // trip since Alice proposed all four anchors. Carol's vote is
+    // recorded, with the contributor-initiated rep factor applied
+    // (PRD §Reputation). The gate lives inside `request_assignment`,
+    // not on the vote-cast path, so this bypass is by construction.
+    if (erinAssignment.task.kind !== 'review') throw new Error('expected review task');
+    const targetProposalId = erinAssignment.task.proposal_id;
+    const carolVote = await carolClient.castReviewVote({
+      proposal_id: targetProposalId,
+      decision: 'accept',
+      rationale: 'looks fine on the contributor-initiated path',
+    });
+    expect(carolVote).toBeDefined();
+    const recorded = [...server.store.reviewVotes.values()].find(
+      (v) => v.reviewer_id === carol.id && v.proposal_id === targetProposalId,
+    );
+    expect(recorded?.decision).toBe('accept');
+  });
+
   // Parameter sweep over the (coalition pattern, anti-correlation
   // threshold, contention-weighted) cube. PRD §Adversary testbed
   // (Architecture, "Parameter sweeps") commits this shape as the
