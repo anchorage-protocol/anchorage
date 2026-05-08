@@ -1800,6 +1800,210 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(contestedVotes.map((v) => v.reviewer_id).sort()).toEqual([carol.id, erin.id].sort());
   });
 
+  it('sybil-amplified coalition: a fresh recruit slips past stratification when an established member is gated out', async () => {
+    // PRD §Adversary taxonomy (Sybil farm + Coalition): the
+    // existing scenarios cover each half — sybil flood capacity,
+    // coalition coordinate vote bias. This is the hybrid the v0
+    // defenses do not catch: a known coalition (Carol+Dave with
+    // shared priming history that the cluster signal has detected)
+    // recruits a third identity (Eve) with no prior history. Eve is
+    // structurally indistinguishable from an honest newcomer at the
+    // cluster signal — co-occurrence is empty for her, so she sits
+    // in a singleton stratum just like any first-time reviewer.
+    //
+    // Setup mirrors the stratification-closes-coalition scenario
+    // above: same priming run on three bias-aligned excerpts so
+    // Carol and Dave's pairwise agreement reaches the cluster
+    // threshold; same single contested no-effect target. The
+    // additions are (a) Eve, a fresh sybil with the same calibration-
+    // aware biased predicate, no priming votes, and (b) a smaller
+    // honest pool relative to the biased count. The stratification
+    // gate fires correctly against Dave (Carol-already-routed +
+    // Carol-Dave-co-stratum) but Eve has no co-stratum link; the
+    // gate has nothing to enforce against her, and she walks in.
+    //
+    // Outcome: Carol and Eve both vote reject; the contested
+    // proposal hits votes_to_reject = 2 before the second honest
+    // accept lands. The composition didn't fail — it performed
+    // exactly as designed against the coalition the system has
+    // observed (Carol+Dave). The seam is that adding identities to
+    // the coalition costs the operator nothing in v0 — PRD
+    // §Identity names identity-binding cost, rate-limited issuance,
+    // and global anti-abuse signals as the load-bearing defenses,
+    // and none of those are wired. The defense lives at a layer
+    // below the testbed surface; this scenario is the regression
+    // handle that says behavior-dependent defenses cannot close it
+    // alone.
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('s'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        // Same stratification config as the small-pool-closes test
+        // above. The headline is freshness, not the cluster knobs.
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const eve = server.bootstrap.mintIdentity({ display_name: 'eve' });
+    const erinClient = await wireArchetype(server, erin.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    const eveClient = await wireArchetype(server, eve.id);
+    for (const c of [
+      { identity_id: carol.id },
+      { identity_id: dave.id },
+      { identity_id: eve.id },
+    ]) {
+      await server.tools.setCapacity(c, {
+        cause_id: cause.id,
+        rate: 5,
+        kinds: ['review'],
+      });
+    }
+
+    // Priming: Carol and Dave both vote accept on three bias-aligned
+    // excerpts, same shape as the stratification-closes-coalition
+    // test. Eve does not vote — she stays a fresh identity with no
+    // history, the property the attack hinges on.
+    for (let i = 0; i < 3; i++) {
+      const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        {
+          proposal_id: excerpt.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: dave.id },
+        {
+          proposal_id: excerpt.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      const after = server.store.proposals.get(excerpt.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(excerpt.proposal_id);
+      }
+    }
+
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+
+    // Erin first (1 accept). Carol next (1 reject) — Carol gets
+    // routed to contested because Erin's singleton-erin stratum
+    // doesn't match her cluster. Dave next — cross-stratum gate
+    // fires correctly: Carol is already routed to contested and
+    // Dave is co-stratum with Carol, so request_assignment skips
+    // the contested item and Dave idles. Then Eve runs as the
+    // fresh recruit. Her stratum is singleton-eve (no votes
+    // anywhere in scope); singleton-eve is distinct from Carol's
+    // cluster, so the gate has no edge to enforce. Eve picks up
+    // contested and votes reject. Reject count hits 2, weight
+    // hits 2 (calibration-aware-convergence is off here so weight
+    // = count by construction), and the contested target flips.
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiasedDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiasedDecider,
+    });
+    await runHonestReviewer(eveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiasedDecider,
+    });
+
+    const target = server.store.proposals.get(contested.proposal_id);
+    expect(target?.status).toBe('rejected');
+
+    // Dave never voted (gated out). Carol and Eve both voted reject;
+    // Erin voted accept. The contested proposal carries three votes,
+    // not four — the gate did its job against the known coalition
+    // member but had nothing to do against the fresh recruit.
+    const contestedVotes = [...server.store.reviewVotes.values()].filter(
+      (v) => v.proposal_id === contested.proposal_id,
+    );
+    expect(contestedVotes).toHaveLength(3);
+    expect(contestedVotes.map((v) => v.reviewer_id).sort()).toEqual(
+      [carol.id, erin.id, eve.id].sort(),
+    );
+    const daveVotedOnContested = contestedVotes.some((v) => v.reviewer_id === dave.id);
+    expect(daveVotedOnContested).toBe(false);
+  });
+
   it('vote-decorrelating coalition stays in distinct strata and bypasses v0 stratification', async () => {
     // Companion to the stratification-closes test above. Same pool
     // shape (Erin honest, Carol+Dave coalition with the same bias
