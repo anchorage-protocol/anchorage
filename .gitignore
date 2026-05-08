@@ -9,6 +9,9 @@ Thumbs.db
 *.swo
 *~
 
+# Tooling state (Claude Code, etc.)
+.claude/
+
 # Local
 .env
 .env.local
