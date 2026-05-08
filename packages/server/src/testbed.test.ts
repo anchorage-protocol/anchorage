@@ -75,7 +75,7 @@ const calAwareBiasedDecider = payloadBiasedDecider({
   rationaleReject: 'underpowered, methodological concerns',
 });
 
-describe('testbed: honest-strong archetype', () => {
+describe('testbed: synthetic populations against the wired surface', () => {
   it('drains the orphan-anchor frontier by submitting excerpts', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
