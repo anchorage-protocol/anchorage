@@ -3780,6 +3780,88 @@ describe('testbed: synthetic populations against the wired surface', () => {
     },
   );
 
+  it('parameter sweep cube: attack-success-rate aggregates by defense config', () => {
+    // PRD §Adversary testbed (Architecture, "Parameter sweeps"):
+    // "attack-success rates measured" — the Phase-1 exit-criterion
+    // artifact is a table of attack-success-rate per defense config
+    // across attack populations. The per-cell `it.each` above locks
+    // each individual outcome as an invariant; this test layers on
+    // the *aggregate* shape — the metric the published results post
+    // would tabulate. Together: the per-cell tests ground the
+    // observations; the aggregate test grounds the claim about what
+    // those observations sum to.
+    //
+    // The aggregator groups sweepCells by (anti_correlation_threshold,
+    // contention_weighted) — the two defense knobs in the v0 cube —
+    // and counts how many of the {mixed, decorrelated} attack
+    // patterns reach `rejected` (attack succeeded: the contested
+    // well-grounded excerpt was suppressed). Computed off the static
+    // expected_status fields, not by re-running the scenario, so the
+    // test is fast and the aggregate stays a *derived* metric over
+    // observations the per-cell tests already validated.
+    //
+    // Future sweeps will widen this shape — more attack patterns,
+    // more knob axes, finer attack-success-rate resolution — and the
+    // assertion shape (named defense config → expected ASR) is the
+    // template they'll follow.
+    interface AsrCell {
+      anti_correlation_threshold: number;
+      contention_weighted: boolean;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const grouped = new Map<string, AsrCell>();
+    for (const cell of sweepCells) {
+      const key = `${cell.anti_correlation_threshold}|${cell.contention_weighted}`;
+      const g = grouped.get(key) ?? {
+        anti_correlation_threshold: cell.anti_correlation_threshold,
+        contention_weighted: cell.contention_weighted,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_status === 'rejected') g.attacks_succeeded += 1;
+      grouped.set(key, g);
+    }
+    const asr = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // Anti-correlation disabled: every attack pattern in the cube
+    // succeeds at suppressing the contested target (ASR = 100%),
+    // regardless of contention weighting. This is the floor the
+    // refinements lift off.
+    expect(asr('0|false')).toBe(1);
+    expect(asr('0|true')).toBe(1);
+    // Anti-correlation at the boundary threshold of 0.5 catches both
+    // attack patterns in this cube — perfect decorrelation trips it
+    // outright, and the mixed pattern's weighted disagreement also
+    // crosses 0.5. ASR = 0%.
+    expect(asr('0.5|false')).toBe(0);
+    expect(asr('0.5|true')).toBe(0);
+    // Anti-correlation at threshold 1.0 alone catches only the
+    // perfect-decorrelation pattern; the mixed pattern's raw
+    // disagreement ratio sits at 0.5 and slips through. ASR = 50%
+    // — the gap that motivated contention weighting.
+    expect(asr('1|false')).toBe(0.5);
+    // Composition (anti-correlation 1.0 + contention-weighted edges)
+    // closes the gap: contention weighting collapses the mixed
+    // pattern's weighted disagreement back to 1.0, both patterns
+    // trip. Full defense → ASR = 0%.
+    expect(asr('1|true')).toBe(0);
+
+    // Coverage invariant: every (threshold, contention) pair in the
+    // cube has both attack patterns. If a future cell expansion
+    // breaks this symmetry the assertion fires, forcing the aggregate
+    // to be re-keyed rather than silently averaging over uneven
+    // groups.
+    for (const cell of grouped.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
