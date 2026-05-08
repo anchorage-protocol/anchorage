@@ -2288,6 +2288,258 @@ describe('two-component reputation decay', () => {
   });
 });
 
+describe('recent-activity assignment gate', () => {
+  // PRD §Reputation: the recent-activity component, fast-decay, gates
+  // assignment. Three properties:
+  //   - default threshold (0) leaves the gate inert.
+  //   - a caller with no rep entries in the cause bypasses the gate
+  //     even when the threshold is positive (fresh-reviewer
+  //     bootstrap; without this, no one could ever earn their first
+  //     assignment in a cause).
+  //   - a caller with rep entries whose recent has decayed below the
+  //     threshold is refused — and a path back exists via
+  //     contributor-initiated voting, which never reaches
+  //     request_assignment.
+  it('with default threshold of 0, fresh callers and rep-bearing callers both pass', async () => {
+    // Sanity check that the gate stays out of the way of every other
+    // existing scenario when its knob isn't set.
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 0);
+    const server = new Server({
+      clock,
+      idGen: new SeededIdGen('g'),
+      verifier: new FakeVerifier(),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const aliceCred = server.bootstrap.bindAgentCredential({
+      identity_id: alice.id,
+      label: 'desktop',
+    });
+    const aliceCaller: Caller = { identity_id: alice.id, agent_credential_id: aliceCred.id };
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'mrd',
+      description: 'mrd',
+      scope_query: 'mrd',
+    });
+    await server.tools.setCapacity(aliceCaller, {
+      cause_id: cause.id,
+      rate: 1,
+      kinds: ['review'],
+    });
+    // No frontier task available — request fails with not_found, but
+    // for the right reason (frontier empty), not the gate.
+    await expect(
+      server.tools.requestAssignment(aliceCaller, { cause_id: cause.id }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('bypasses callers with no rep entries in the cause (fresh-reviewer bootstrap)', async () => {
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 0);
+    const server = new Server({
+      clock,
+      idGen: new SeededIdGen('g2'),
+      verifier: new FakeVerifier(),
+      review: {
+        assignment_min_recent: 0.5,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const aliceCred = server.bootstrap.bindAgentCredential({
+      identity_id: alice.id,
+      label: 'desktop',
+    });
+    const aliceCaller: Caller = { identity_id: alice.id, agent_credential_id: aliceCred.id };
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'mrd',
+      description: 'mrd',
+      scope_query: 'mrd',
+    });
+    // Bob proposes an excerpt for alice to review. Bob doesn't need
+    // capacity (proposing is contributor-initiated).
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const anchor = await server.tools.proposeAnchor(
+      { identity_id: bob.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    server.curator.acceptProposal(anchor.proposal_id);
+    await server.tools.proposeExcerpt(
+      { identity_id: bob.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: [...server.store.nodes.values()].find(
+          (n) => n.kind === 'anchor' && n.content === 'paper',
+        )!.id,
+        content: 'excerpt',
+        quoted_span: { text: 'excerpt', offset: 0 },
+      },
+    );
+    // Alice has no rep entries in this cause — gate bypasses, she
+    // gets assigned the staged excerpt for review.
+    await server.tools.setCapacity(aliceCaller, {
+      cause_id: cause.id,
+      rate: 1,
+      kinds: ['review'],
+    });
+    const result = await server.tools.requestAssignment(aliceCaller, {
+      cause_id: cause.id,
+    });
+    expect(result.task.kind).toBe('review');
+  });
+
+  it('refuses callers whose recent has decayed below the threshold', async () => {
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 0);
+    const server = new Server({
+      clock,
+      idGen: new SeededIdGen('g3'),
+      verifier: new FakeVerifier(),
+      review: {
+        // Threshold above what a single +1 bump leaves after one
+        // half-life: bump → recent=1; advance one half-life → 0.5;
+        // threshold 0.6 catches it. Demonstrated stays at 1 (Infinity
+        // half-life), so the gate is purely on recent.
+        assignment_min_recent: 0.6,
+        recent_half_life_seconds: 60,
+        demonstrated_half_life_seconds: Infinity,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const aliceCred = server.bootstrap.bindAgentCredential({
+      identity_id: alice.id,
+      label: 'desktop',
+    });
+    const aliceCaller: Caller = { identity_id: alice.id, agent_credential_id: aliceCred.id };
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'mrd',
+      description: 'mrd',
+      scope_query: 'mrd',
+    });
+
+    // Alice gains rep by reviewing one of bob's proposals. Two other
+    // identities cast the convergence-driving votes; alice's accept
+    // is one of them, accruing +1 to her recent (and demonstrated).
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const anchor = await server.tools.proposeAnchor(
+      { identity_id: bob.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper-1',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    server.curator.acceptProposal(anchor.proposal_id);
+    const anchorNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper-1',
+    )!;
+    const excerpt1 = await server.tools.proposeExcerpt(
+      { identity_id: bob.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorNode.id,
+        content: 'excerpt-1',
+        quoted_span: { text: 'excerpt-1', offset: 0 },
+      },
+    );
+    await server.tools.castReviewVote(aliceCaller, {
+      proposal_id: excerpt1.proposal_id,
+      decision: 'accept',
+      rationale: 'a',
+    });
+    await server.tools.castReviewVote(
+      { identity_id: carol.id },
+      {
+        proposal_id: excerpt1.proposal_id,
+        decision: 'accept',
+        rationale: 'c',
+      },
+    );
+    // Convergence reached: excerpt-1 accepted; alice gains +1 on both
+    // components.
+    const initial = await server.tools.queryReputation(aliceCaller, { cause_id: cause.id });
+    expect(initial.entries[0]?.recent).toBe(1);
+
+    // Stage a fresh proposal so the frontier is non-empty for the
+    // gate check (otherwise the gate fires before the frontier loop
+    // and we can't tell which path refused).
+    await server.tools.proposeExcerpt(
+      { identity_id: bob.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorNode.id,
+        content: 'excerpt-2',
+        quoted_span: { text: 'excerpt-2', offset: 0 },
+      },
+    );
+
+    // Advance one half-life. Alice's recent drops to 0.5, below the
+    // 0.6 threshold. Demonstrated stays at 1.
+    clock.advance(60_000);
+
+    await server.tools.setCapacity(aliceCaller, {
+      cause_id: cause.id,
+      rate: 1,
+      kinds: ['review'],
+    });
+    await expect(
+      server.tools.requestAssignment(aliceCaller, { cause_id: cause.id }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+
+    // Alice can recover via contributor-initiated voting (no
+    // assignment_id). That bumps her recent without going through
+    // request_assignment, demonstrating the recovery path PRD names.
+    // Alice's contributor-initiated vote counts as a reviewer-rep
+    // event when convergence resolves.
+    await server.tools.castReviewVote(aliceCaller, {
+      proposal_id: [...server.store.proposals.values()].find(
+        (p) => p.payload.kind === 'excerpt' && p.payload.content === 'excerpt-2',
+      )!.id,
+      decision: 'accept',
+      rationale: 'a',
+    });
+    await server.tools.castReviewVote(
+      { identity_id: carol.id },
+      {
+        proposal_id: [...server.store.proposals.values()].find(
+          (p) => p.payload.kind === 'excerpt' && p.payload.content === 'excerpt-2',
+        )!.id,
+        decision: 'accept',
+        rationale: 'c',
+      },
+    );
+    // After a second +1 (landing on the decayed 0.5 recent),
+    // alice's recent is 0.5 + 1 = 1.5 — above threshold. Stage a
+    // third proposal and confirm the gate now passes.
+    await server.tools.proposeExcerpt(
+      { identity_id: bob.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorNode.id,
+        content: 'excerpt-3',
+        quoted_span: { text: 'excerpt-3', offset: 0 },
+      },
+    );
+    const recovered = await server.tools.requestAssignment(aliceCaller, {
+      cause_id: cause.id,
+    });
+    expect(recovered.task.kind).toBe('review');
+  });
+});
+
 describe('stratified-by-history reviewer assignment', () => {
   // Build a sub-topic with `count` accepted anchors and `count`
   // staged excerpts hanging off them. Returns the staged excerpt ids

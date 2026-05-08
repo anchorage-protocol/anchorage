@@ -271,6 +271,24 @@ export interface ReviewConfig {
   // actually being recently active, and visible activity is detectable
   // (PRD §Reputation).
   recent_half_life_seconds: number;
+  // Minimum *recent*-component value (across the caller's rep entries
+  // in the requested cause) required to be assigned a task. PRD
+  // §Reputation: "A recent-activity component, fast-decay, gates
+  // assignment." The gate is a soft floor — callers with no rep
+  // entries in the cause bypass (fresh reviewers must be able to
+  // bootstrap), and contributor-initiated voting (which never reaches
+  // request_assignment) is unaffected so a drained-but-honest
+  // contributor can re-bootstrap their recent. Default 0 leaves the
+  // gate inert and preserves existing-scenario behavior. Together
+  // with a finite recent_half_life_seconds, this is what tightens
+  // the patient-adversary drift bandwidth: a long-priming adversary
+  // who stops voting between drift attempts watches their recent
+  // drain below threshold and can no longer be assigned a fresh
+  // proposal to drift on. The gate applies uniformly to calibration
+  // injection and frontier-derived tasks — leaving calibration
+  // injection un-gated would let an adversary use calibration items
+  // to keep recent topped up.
+  assignment_min_recent: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -294,6 +312,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   stratum_anti_correlation_threshold: 0,
   demonstrated_half_life_seconds: Infinity,
   recent_half_life_seconds: Infinity,
+  assignment_min_recent: 0,
 };
 
 export interface ServerDeps {
@@ -1081,6 +1100,35 @@ export class Server {
           'invalid_state',
           `no capacity declared for cause ${parsed.cause_id} — call set_capacity first`,
         );
+      }
+
+      // Recent-activity gate (PRD §Reputation, "fast-decay, gates
+      // assignment"). When `assignment_min_recent > 0`, callers with
+      // any rep entries in this cause must show a max decayed recent
+      // ≥ threshold across them. Callers with no rep entries in the
+      // cause bypass — fresh reviewers must be able to bootstrap, and
+      // a missing entry has no decay state to fall below. Contributor-
+      // initiated voting goes through cast_review_vote directly with
+      // no assignment_id, so a drained-but-honest contributor can re-
+      // raise their recent without needing an assignment first.
+      // Default 0 leaves the gate inert.
+      if (this.review.assignment_min_recent > 0) {
+        const now = this.clock.now();
+        let maxRecent: number | null = null;
+        for (const r of this.store.reputations.values()) {
+          if (r.identity_id !== identity.id) continue;
+          if (r.cause_id !== parsed.cause_id) continue;
+          const decayed = this.decayedReputation(r, now);
+          if (maxRecent === null || decayed.recent > maxRecent) {
+            maxRecent = decayed.recent;
+          }
+        }
+        if (maxRecent !== null && maxRecent < this.review.assignment_min_recent) {
+          throw new ServerError(
+            'not_found',
+            `recent-activity below assignment threshold (${maxRecent.toFixed(4)} < ${this.review.assignment_min_recent}) for ${identity.id} in cause ${parsed.cause_id}`,
+          );
+        }
       }
 
       // Rate cap: count outstanding (offered + accepted) assignments

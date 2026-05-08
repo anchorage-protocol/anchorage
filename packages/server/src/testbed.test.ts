@@ -3758,6 +3758,229 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(carolEntryAfter?.recent ?? 0).toBeLessThan(carolDemonstrated * 0.05);
   });
 
+  it('patient-adversary archetype: assignment gate refuses a drained adversary on the fresh drift attempt (PRD §Reputation, recent-activity gates assignment)', async () => {
+    // Closes the loop the bookkeeping scenario above named as the
+    // next slice. With `assignment_min_recent > 0` set, the recent-
+    // activity component is now consumed at request_assignment time:
+    // a caller whose decayed recent has fallen below threshold (and
+    // who has any rep entries in the cause — fresh-reviewer bypass
+    // still applies) is refused. The patient-adversary signature is
+    // exactly this state — high cumulative competence buffer,
+    // drained recent, attempting a fresh drift after a quiet window.
+    //
+    // Setup mirrors the bookkeeping scenario: same calibration-aware
+    // predicate, same priming + drift on a first contested target.
+    // Threshold is set above what a 6-half-life-decayed recent leaves
+    // behind, so the gate fires after the quiet window. Demonstrated
+    // half-life stays Infinity so the cumulative-buffer narrative
+    // holds — the closure is purely on recent.
+    //
+    // Pin: Carol's second drift attempt fails at request_assignment
+    // with `not_found`. Drift bandwidth tightens from "many"
+    // (cumulative buffer) to 1 (the drift she landed before the
+    // quiet window). Honest contributors who keep voting (whose
+    // recent stays topped up) remain assignable; the contributor-
+    // initiated review path also bypasses the gate, so a drained-
+    // but-honest contributor has a recovery path PRD names.
+    const PRIMING_COUNT = 4;
+    const sources = new Map<string, string>();
+    for (let i = 1; i <= PRIMING_COUNT; i++) {
+      sources.set(
+        String(i),
+        `arm A${i}: treatment X works in stage III patients across the cohort`,
+      );
+    }
+    sources.set('99', 'arm B: treatment X has no effect in stage IV patients');
+    // A second contested source, used for the fresh drift attempt
+    // after the quiet window. Same shape as the first contested
+    // anchor — different external_ref so the verifier accepts both.
+    sources.set('100', 'arm C: treatment X has no effect in stage IV patients');
+
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 0);
+    const RECENT_HALF_LIFE_SECONDS = 60;
+    const server = new Server({
+      clock,
+      idGen: new SeededIdGen('pg'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        calibration_inject_every_n: 2,
+        calibration_aware_convergence: true,
+        demonstrated_half_life_seconds: Infinity,
+        recent_half_life_seconds: RECENT_HALF_LIFE_SECONDS,
+        // Threshold chosen below what one priming bump produces but
+        // well above what 6 half-lives leave of any reasonable buffer.
+        // Carol/Erin/Frank all sit comfortably above it during the
+        // priming phase; after the quiet window, all three are below
+        // — but only Carol is the one we test here, since the
+        // patient-adversary signature is precisely "stops being
+        // active after priming." Erin and Frank's gate behavior
+        // after the window is the same as Carol's by symmetry; the
+        // distinguishing feature is *the choice not to be active*,
+        // which is a population-level model decision, not a server-
+        // visible one.
+        assignment_min_recent: 0.5,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+
+    // Priming anchors + first contested anchor (same as bookkeeping
+    // scenario).
+    for (let i = 1; i <= PRIMING_COUNT; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+    const contestedAnchorProp = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper contested',
+        external_ref: { kind: 'pmid', value: '99' },
+      },
+    );
+    server.curator.acceptProposal(contestedAnchorProp.proposal_id);
+    const firstContestedAnchorNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper contested',
+    );
+    if (!firstContestedAnchorNode) throw new Error('first contested anchor not materialized');
+    const firstContestedAnchorId = firstContestedAnchorNode.id;
+
+    // Bob proposes priming excerpts + the first contested excerpt.
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) =>
+        anchorId === firstContestedAnchorId
+          ? {
+              content: 'treatment X has no effect for stage IV',
+              quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+            }
+          : {
+              content: 'treatment X works for stage III',
+              quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+            },
+    };
+    await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 10,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    // Carol — patient adversary, runs first so all priming excerpts
+    // are still staged when she votes.
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const carolClient = await wireArchetype(server, carol.id);
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 20,
+      decide: calAwareBiasedDecider,
+    });
+
+    // Erin and Frank — honest reviewers.
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 20,
+      decide: acceptAllDecider,
+    });
+    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+    const frankClient = await wireArchetype(server, frank.id);
+    await runHonestReviewer(frankClient, {
+      cause_id: cause.id,
+      rate: 20,
+      decide: acceptAllDecider,
+    });
+
+    // First contested target lands accepted: Erin + Frank's accepts
+    // hit the gate before Carol's reject finds a partner. Same
+    // outcome as the bookkeeping scenario — convergence holds
+    // independently of the gate.
+    const firstContestedExcerpt = [...server.store.proposals.values()].find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('no effect'),
+    );
+    expect(firstContestedExcerpt?.status).toBe('accepted');
+
+    // Snapshot Carol's recent immediately post-drift — comfortably
+    // above threshold from the priming + calibration accumulation.
+    const carolRepBefore = await carolClient.queryReputation({ cause_id: cause.id });
+    const carolRecentBefore =
+      carolRepBefore.entries.find((e) => e.sub_topic_id === subTopic.id)?.recent ?? 0;
+    expect(carolRecentBefore).toBeGreaterThan(server.review.assignment_min_recent);
+
+    // The quiet window — six recent half-lives. Carol stops being
+    // active by definition of the patient-adversary archetype.
+    const QUIET_HALF_LIVES = 6;
+    clock.advance(RECENT_HALF_LIFE_SECONDS * QUIET_HALF_LIVES * 1000);
+
+    // Carol's recent has now fallen below threshold. Confirm before
+    // the gate-firing assertion.
+    const carolRepAfter = await carolClient.queryReputation({ cause_id: cause.id });
+    const carolRecentAfter =
+      carolRepAfter.entries.find((e) => e.sub_topic_id === subTopic.id)?.recent ?? 0;
+    expect(carolRecentAfter).toBeLessThan(server.review.assignment_min_recent);
+
+    // Stage a fresh contested anchor + excerpt. Carol's drift target
+    // for the second attempt — she'd vote `reject` if assigned, same
+    // as the first contested item.
+    const secondContestedAnchorProp = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper contested 2',
+        external_ref: { kind: 'pmid', value: '100' },
+      },
+    );
+    server.curator.acceptProposal(secondContestedAnchorProp.proposal_id);
+    const secondContestedAnchorNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper contested 2',
+    );
+    if (!secondContestedAnchorNode) throw new Error('second contested anchor not materialized');
+    await server.tools.proposeExcerpt(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: secondContestedAnchorNode.id,
+        content: 'treatment X has no effect for stage IV again',
+        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+      },
+    );
+
+    // The gate fires: Carol's recent is below threshold and she has
+    // rep entries in the cause, so the bypass doesn't apply.
+    // request_assignment surfaces `not_found` over the wire.
+    await expect(
+      carolClient.requestAssignment({ cause_id: cause.id }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+
+    // Drift bandwidth: 1, not the cumulative-buffer figure the
+    // bookkeeping scenario pinned. Carol can no longer pull a fresh
+    // assignment to drift on. The gate replaces the cumulative-
+    // buffer ceiling with a recent-activity floor.
+    const driftAttempts = [...server.store.reviewVotes.values()].filter(
+      (v) => v.reviewer_id === carol.id && v.decision === 'reject',
+    );
+    expect(driftAttempts).toHaveLength(1);
+  });
+
   // Parameter sweep over the (coalition pattern, anti-correlation
   // threshold, contention-weighted) cube. PRD §Adversary testbed
   // (Architecture, "Parameter sweeps") commits this shape as the
