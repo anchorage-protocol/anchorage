@@ -3829,202 +3829,18 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // The same defense stack runs in both halves; only the
     // `stratum_include_declines` knob varies. The test pins the
     // outcome flip on the proposal's terminal status, the
-    // observable a real proposer sees.
-    const sources = new Map<string, string>([
-      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
-      ['2', 'arm B: treatment X has no effect in stage IV patients across cohort A'],
-      ['3', 'arm C: treatment X has no effect in stage IV patients across cohort B'],
-    ]);
-
-    async function setupAndRun(includeDeclines: boolean): Promise<{
-      contestedStatus: string;
-    }> {
-      const server = new Server({
-        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
-        idGen: new SeededIdGen(`mr-${includeDeclines ? 'on' : 'off'}`),
-        verifier: new FakeVerifier(new Set(), new Map(), sources),
-        review: {
-          votes_to_accept: 2,
-          votes_to_reject: 2,
-          stratification_enabled: true,
-          stratum_min_shared_proposals: 2,
-          stratum_agreement_threshold: 1.0,
-          stratum_anti_correlation_threshold: 1.0,
-          // Contention-weighted edges are deliberately *off* here.
-          // The interaction is real and worth pinning separately:
-          // under decline-aware + contention-weighted at threshold
-          // 1.0, a single decline-involved disagreement between an
-          // honest reviewer and a coalition member outweighs every
-          // unanimous-easy vote-agreement (contention 0 → weight 0),
-          // and the honest reviewer false-clusters with the coalition.
-          // A future scenario should land that composition test
-          // explicitly. For the multi-round closure this scenario
-          // is wiring, the decline-aware primitive is what's load-
-          // bearing; the rest of the cluster-signal stack stays at
-          // raw weights so the honest pool reads as singletons.
-          stratum_contention_weighted: false,
-          stratum_target_count: 2,
-          stratification_degraded_extra: 1,
-          stratum_include_declines: includeDeclines,
-        },
-      });
-      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-      const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
-      const subTopic = server.bootstrap.seedSubTopic({
-        cause_id: cause.id,
-        name: 'treatment-X',
-        description: 'x',
-        scope_query: 'x',
-      });
-      const aliceCaller = { identity_id: alice.id };
-
-      // Three anchors: one per priming target + one for the contested
-      // target. Curator-accepted so the excerpts have a parent.
-      const anchorIds: string[] = [];
-      for (let i = 1; i <= 3; i++) {
-        const ap = await server.tools.proposeAnchor(aliceCaller, {
-          cause_id: cause.id,
-          home_sub_topic_id: subTopic.id,
-          content: `paper ${i}`,
-          external_ref: { kind: 'pmid', value: String(i + 1) },
-        });
-        server.curator.acceptProposal(ap.proposal_id);
-        const node = [...server.store.nodes.values()].find(
-          (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
-        );
-        if (!node) throw new Error(`anchor ${i} not materialized`);
-        anchorIds.push(node.id);
-      }
-
-      // Round 1: two priming excerpts. Distinct content tags
-      // ("primingA" / "primingB") let the per-member decliner key on
-      // payload to take exactly one and decline the other. Quoted-span
-      // text is the bias-zone phrase so the verifier accepts each
-      // independently.
-      const primingA = await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchorIds[0]!,
-        content: 'primingA: treatment X has no effect in stage IV cohort A',
-        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-      });
-      const primingB = await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchorIds[1]!,
-        content: 'primingB: treatment X has no effect in stage IV cohort B',
-        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-      });
-
-      const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
-      const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
-      const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
-      const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
-      const hank = server.bootstrap.mintIdentity({ display_name: 'hank' });
-      const erinClient = await wireArchetype(server, erin.id);
-      const carolClient = await wireArchetype(server, carol.id);
-      const daveClient = await wireArchetype(server, dave.id);
-      const frankClient = await wireArchetype(server, frank.id);
-      const hankClient = await wireArchetype(server, hank.id);
-
-      // Priming-round deciders. Carol accepts primingA, declines
-      // primingB. Dave mirrors. Fallback is acceptAllDecider so the
-      // priming behavior is benign on whichever target each takes
-      // (no biased votes during priming — the only signal that
-      // forms the cluster is the paired-decline shape).
-      const carolPrimerDecider = payloadDecliningDecider({
-        declineIf: (payload) => 'content' in payload && payload.content.includes('primingB'),
-        fallback: acceptAllDecider,
-      });
-      const davePrimerDecider = payloadDecliningDecider({
-        declineIf: (payload) => 'content' in payload && payload.content.includes('primingA'),
-        fallback: acceptAllDecider,
-      });
-
-      // Run priming. Order matters: Carol first lays down vote-on-A +
-      // decline-on-B, Dave then mirrors as decline-on-A + vote-on-B
-      // (frontier FIFO returns A then B for each), Erin closes both
-      // priming proposals at the second accept apiece. After this
-      // sub-block, both priming proposals are accepted and the
-      // encounter ledger has the paired-decline shape.
-      await runHonestReviewer(carolClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: carolPrimerDecider,
-      });
-      await runHonestReviewer(daveClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: davePrimerDecider,
-      });
-      await runHonestReviewer(erinClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-      expect(server.store.proposals.get(primingA.proposal_id)?.status).toBe('accepted');
-      expect(server.store.proposals.get(primingB.proposal_id)?.status).toBe('accepted');
-
-      // Round 2: stage the contested target. Bias-zone content so
-      // calAwareBiasedDecider rejects ("treatment" + no "works").
-      const contested = await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchorIds[2]!,
-        content: 'contested: treatment X has no effect in stage IV cohort C',
-        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-      });
-
-      // Suppression attempt. Carol votes reject first. Dave's loop
-      // then runs — knob-off: gets contested, votes the second
-      // reject, status flips before Frank/Hank vote; knob-on: gated
-      // out, idles, leaving room for Frank+Hank to converge accept.
-      // Frank and Hank are introduced fresh in round 2 so each lands
-      // in a singleton stratum at the gate's eyes.
-      await runHonestReviewer(carolClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: calAwareBiasedDecider,
-      });
-      await runHonestReviewer(daveClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: calAwareBiasedDecider,
-      });
-      await runHonestReviewer(frankClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-      await runHonestReviewer(hankClient, {
-        cause_id: cause.id,
-        rate: 5,
-        decide: acceptAllDecider,
-      });
-
-      const status = server.store.proposals.get(contested.proposal_id)?.status;
-      if (!status) throw new Error('contested proposal vanished');
-      return { contestedStatus: status };
-    }
-
-    // Knob off: the cluster signal is vote-only and Carol+Dave share
-    // zero votes during priming, so no edge forms. Dave is offered
-    // the contested target, votes the second reject, the proposal
-    // converges 'rejected' before Frank/Hank can intervene —
-    // suppression by majority-of-two against a single accept.
-    const off = await setupAndRun(false);
-    expect(off.contestedStatus).toBe('rejected');
-
-    // Knob on: declines enter the encounter domain, Carol+Dave
-    // anti-correlate across the priming round, the cluster forms.
-    // Dave's request_assignment in round 2 is gated, Frank+Hank
-    // walk in normally and the contested target converges
-    // 'accepted'. Same defense stack, different terminal outcome —
-    // the structural-effect handle the standalone scenario could
-    // only assert on the gate primitive now lands at the proposal
-    // status the proposer actually observes.
-    const on = await setupAndRun(true);
-    expect(on.contestedStatus).toBe('accepted');
+    // observable a real proposer sees. The downstream cluster-decline
+    // sweep cube reuses the same `runMultiRoundDeclineClosureScenario`
+    // helper that powers this test, so the cube and the standalone
+    // assertion stay in lockstep on the closure they both observe.
+    const off = await runMultiRoundDeclineClosureScenario({
+      stratum_include_declines: false,
+    });
+    expect(off.contested_status).toBe('rejected');
+    const on = await runMultiRoundDeclineClosureScenario({
+      stratum_include_declines: true,
+    });
+    expect(on.contested_status).toBe('accepted');
   });
 
   it('contention-weighted + anti-correlation together close the mixed-strategy gap', async () => {
@@ -5054,10 +4870,218 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // Same identities, anchors, priming, contested excerpt, and
   // archetype runs as the standalone tests; only the parametrized
   // bits vary.
+  // Shared runner for the multi-round paired-decline closure scenario
+  // (the standalone test above) and the cluster-decline sweep cube
+  // below. PRD §Reviewer assignment commits the encounter-domain
+  // widening; this scenario is the whole-scenario closure that lands
+  // on the proposal's terminal status rather than the cluster
+  // primitive in isolation.
+  //
+  // Round 1 (priming on separate excerpts). Carol+Dave run paired
+  // declines: Carol accepts primingA + declines primingB, Dave
+  // mirrors. Erin closes both priming proposals at the second accept.
+  // After this sub-block both priming proposals are accepted and the
+  // encounter ledger has the paired-decline shape that lights up
+  // anti-correlation under the decline-aware encounter domain.
+  //
+  // Round 2 (suppression on a fresh contested target). Carol's loop
+  // votes reject first, then Dave's loop attempts the suppression:
+  // knob-off → Dave is offered contested, votes the second reject,
+  // status flips to 'rejected' before Frank/Hank can vote;
+  // knob-on → cross-stratum gate fires (Carol's stratum already
+  // routed), Dave idles, Frank/Hank walk in fresh-singleton and the
+  // proposal converges 'accepted'. The two halves run on the same
+  // defense stack; only `stratum_include_declines` varies.
+  //
+  // Contention-weighted edges are deliberately *off* in this runner.
+  // Under decline-aware + contention-weighted at threshold 1.0, a
+  // single decline-involved disagreement between an honest reviewer
+  // and a coalition member outweighs every unanimous-easy
+  // vote-agreement (contention 0 → weight 0), and the honest reviewer
+  // false-clusters with the coalition. That interaction is real and
+  // worth its own scenario; here the surrounding stack stays at raw
+  // weights so the honest pool reads as singletons and the multi-
+  // round closure isolates the decline-aware primitive's effect on
+  // outcome.
+  async function runMultiRoundDeclineClosureScenario(params: {
+    stratum_include_declines: boolean;
+  }): Promise<{ contested_status: 'staged' | 'accepted' | 'rejected' | 'unresolved-archived' }> {
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients across cohort A'],
+      ['3', 'arm C: treatment X has no effect in stage IV patients across cohort B'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen(`mr-${params.stratum_include_declines ? 'on' : 'off'}`),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_anti_correlation_threshold: 1.0,
+        stratum_contention_weighted: false,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+        stratum_include_declines: params.stratum_include_declines,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    // Three anchors: one per priming target + one for the contested
+    // target. Curator-accepted so the excerpts have a parent.
+    const anchorIds: string[] = [];
+    for (let i = 1; i <= 3; i++) {
+      const ap = await server.tools.proposeAnchor(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: `paper ${i}`,
+        external_ref: { kind: 'pmid', value: String(i + 1) },
+      });
+      server.curator.acceptProposal(ap.proposal_id);
+      const node = [...server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
+      );
+      if (!node) throw new Error(`anchor ${i} not materialized`);
+      anchorIds.push(node.id);
+    }
+
+    // Round 1: two priming excerpts. Distinct content tags
+    // ("primingA" / "primingB") let the per-member decliner key on
+    // payload to take exactly one and decline the other. Quoted-span
+    // text is the bias-zone phrase so the verifier accepts each
+    // independently.
+    const primingA = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorIds[0]!,
+      content: 'primingA: treatment X has no effect in stage IV cohort A',
+      quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+    });
+    const primingB = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorIds[1]!,
+      content: 'primingB: treatment X has no effect in stage IV cohort B',
+      quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+    });
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+    const hank = server.bootstrap.mintIdentity({ display_name: 'hank' });
+    const erinClient = await wireArchetype(server, erin.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    const frankClient = await wireArchetype(server, frank.id);
+    const hankClient = await wireArchetype(server, hank.id);
+
+    // Priming-round deciders. Carol accepts primingA, declines
+    // primingB. Dave mirrors. Fallback is acceptAllDecider so the
+    // priming behavior is benign on whichever target each takes
+    // (no biased votes during priming — the only signal that forms
+    // the cluster is the paired-decline shape).
+    const carolPrimerDecider = payloadDecliningDecider({
+      declineIf: (payload) => 'content' in payload && payload.content.includes('primingB'),
+      fallback: acceptAllDecider,
+    });
+    const davePrimerDecider = payloadDecliningDecider({
+      declineIf: (payload) => 'content' in payload && payload.content.includes('primingA'),
+      fallback: acceptAllDecider,
+    });
+
+    // Run priming. Order matters: Carol first lays down vote-on-A +
+    // decline-on-B, Dave then mirrors as decline-on-A + vote-on-B
+    // (frontier FIFO returns A then B for each), Erin closes both
+    // priming proposals at the second accept apiece. After this
+    // sub-block, both priming proposals are accepted and the
+    // encounter ledger has the paired-decline shape.
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: carolPrimerDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: davePrimerDecider,
+    });
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    if (server.store.proposals.get(primingA.proposal_id)?.status !== 'accepted') {
+      throw new Error('primingA did not converge accepted in round 1');
+    }
+    if (server.store.proposals.get(primingB.proposal_id)?.status !== 'accepted') {
+      throw new Error('primingB did not converge accepted in round 1');
+    }
+
+    // Round 2: stage the contested target. Bias-zone content so
+    // calAwareBiasedDecider rejects ("treatment" + no "works").
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchorIds[2]!,
+      content: 'contested: treatment X has no effect in stage IV cohort C',
+      quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+    });
+
+    // Suppression attempt. Carol votes reject first. Dave's loop
+    // then runs — knob-off: gets contested, votes the second
+    // reject, status flips before Frank/Hank vote; knob-on: gated
+    // out, idles, leaving room for Frank+Hank to converge accept.
+    // Frank and Hank are introduced fresh in round 2 so each lands
+    // in a singleton stratum at the gate's eyes.
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiasedDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiasedDecider,
+    });
+    await runHonestReviewer(frankClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(hankClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    const target = server.store.proposals.get(contested.proposal_id);
+    if (!target) throw new Error('contested proposal vanished');
+    return { contested_status: target.status };
+  }
+
   async function runDecorrelationScenario(params: {
     pattern: PrimingPattern;
     anti_correlation_threshold: number;
     contention_weighted: boolean;
+    // Decline-aware encounter domain (PRD §Reviewer assignment, "the
+    // encounter domain becomes {accept, reject, decline}"). Default
+    // off so the legacy 12 cells continue to exercise vote-only
+    // semantics; the cluster-decline cube downstream toggles this on
+    // alongside the paired-decline runner to assert the widening is
+    // non-regressive against a pure co-voting pattern.
+    stratum_include_declines?: boolean;
   }): Promise<{ contested_status: 'staged' | 'accepted' | 'rejected' | 'unresolved-archived' }> {
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
@@ -5077,6 +5101,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
         stratum_target_count: 2,
         stratification_degraded_extra: 1,
         stratum_contention_weighted: params.contention_weighted,
+        stratum_include_declines: params.stratum_include_declines ?? false,
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
@@ -5971,6 +5996,176 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Composition: each gate closes its named pattern, neither
     // attack lands. ASR = 0%.
     expect(asr('0.5|1.5')).toBe(0);
+
+    // Coverage invariant: every defense config in the cube has both
+    // attack patterns. A future cell expansion that breaks this
+    // symmetry trips the assertion and forces the aggregate to be
+    // re-keyed rather than silently averaging over uneven groups.
+    for (const cell of grouped.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
+  // Third parameter sweep cube: the decline-aware encounter-domain
+  // extension joined with the existing vote-only cluster-signal stack.
+  // PRD §Reviewer assignment commits the encounter-domain widening
+  // ({accept, reject, decline}); this cube measures what that
+  // widening buys the defense in attack-success-rate terms across two
+  // attack patterns:
+  //
+  //   - co-voting decorrelated: Carol+Dave both vote on every priming
+  //     proposal but with perfect pairwise disagreement. The vote-
+  //     only cluster signal at anti-correlation threshold 1.0 catches
+  //     this — it's the original closure the first sweep cube above
+  //     pinned. Re-running it here under the include-declines axis
+  //     asserts the widening is non-regressive: turning declines on
+  //     does not break the existing closure for pure co-voting
+  //     coalitions.
+  //   - paired-decline multi-round: Carol+Dave never co-vote;
+  //     instead they pair declines across two priming proposals so
+  //     no shared vote-history forms (the multi-round closure
+  //     scenario above). The vote-only cluster signal is blind to
+  //     this by construction; only the decline-aware extension
+  //     widens the encounter domain enough to detect the pair.
+  //
+  // The defense knob in this cube is `stratum_include_declines`. The
+  // cluster-signal stack stays at the same strength the multi-round
+  // closure pins (anti-correlation 1.0, agreement 1.0, contention-
+  // weighted off — the contention-weighting interaction is its own
+  // follow-up, see ROADMAP §Status). The headline is *additive*, not
+  // orthogonal: declines extend the encounter domain on top of votes,
+  // and the cube reads the lift the extension provides.
+  //
+  // Expected ASR shape — vote-only: 50% (co-voting closed, paired-
+  // decline open); decline-aware: 0% (both closed). The widening
+  // closes one named pattern without weakening the other.
+  type ClusterDeclineAttackPattern = 'co-voting-decorrelated' | 'paired-decline-multi-round';
+
+  interface ClusterDeclineSweepCell {
+    name: string;
+    pattern: ClusterDeclineAttackPattern;
+    stratum_include_declines: boolean;
+    expected_attack_succeeded: boolean;
+  }
+  const clusterDeclineSweepCells: ClusterDeclineSweepCell[] = [
+    // Vote-only stack: declines do not enter the encounter domain.
+    // Co-voting decorrelated is closed by the anti-correlation
+    // threshold on the vote signal alone (the prior sweep cube's
+    // 'decorrelated, threshold=1.0' result, replicated here as a
+    // regression handle for the include-declines knob).
+    {
+      name: 'co-voting decorrelated, declines off (vote-only catches)',
+      pattern: 'co-voting-decorrelated',
+      stratum_include_declines: false,
+      expected_attack_succeeded: false,
+    },
+    // Vote-only blind to a paired-decline coalition: zero shared
+    // vote-history → no edge → no cluster → cross-stratum gate has
+    // nothing to enforce against → suppression succeeds. This is the
+    // open seam the decline-aware extension is wired to close.
+    {
+      name: 'paired-decline multi-round, declines off (vote-only blind, suppression succeeds)',
+      pattern: 'paired-decline-multi-round',
+      stratum_include_declines: false,
+      expected_attack_succeeded: true,
+    },
+    // Decline-aware widening + co-voting decorrelated: the widening
+    // is non-regressive against this pattern. Carol+Dave never
+    // decline anything in the decorrelated runner, so the encounter
+    // ledger has no decline records to add; the vote-only closure
+    // for co-voting carries through unchanged.
+    {
+      name: 'co-voting decorrelated, declines on (widening is non-regressive)',
+      pattern: 'co-voting-decorrelated',
+      stratum_include_declines: true,
+      expected_attack_succeeded: false,
+    },
+    // Decline-aware widening + paired-decline: the closure the multi-
+    // round scenario lands on the proposal status. Paired-decline
+    // priming forms the cluster, the cross-stratum gate fires during
+    // the suppression round, fresh honest reviewers walk in and the
+    // contested target converges accepted.
+    {
+      name: 'paired-decline multi-round, declines on (decline-aware closes seam)',
+      pattern: 'paired-decline-multi-round',
+      stratum_include_declines: true,
+      expected_attack_succeeded: false,
+    },
+  ];
+  it.each(
+    clusterDeclineSweepCells,
+  )('cluster-decline sweep: $name → attack_succeeded=$expected_attack_succeeded', async ({
+    pattern,
+    stratum_include_declines,
+    expected_attack_succeeded,
+  }) => {
+    const contested_status =
+      pattern === 'co-voting-decorrelated'
+        ? (
+            await runDecorrelationScenario({
+              pattern: PATTERN_DECORRELATED,
+              anti_correlation_threshold: 1.0,
+              contention_weighted: false,
+              stratum_include_declines,
+            })
+          ).contested_status
+        : (
+            await runMultiRoundDeclineClosureScenario({
+              stratum_include_declines,
+            })
+          ).contested_status;
+    // attack_succeeded is "did the contested target end suppressed"
+    // — the proposer's-perspective failure mode the cluster-signal
+    // refinements exist to prevent. 'rejected' is convergence
+    // suppression; the cube doesn't produce 'unresolved-archived'
+    // outcomes (no time advances past the divergence window in
+    // these runners), so 'rejected' is the only attack-success
+    // signal here.
+    const attack_succeeded = contested_status === 'rejected';
+    expect(attack_succeeded).toBe(expected_attack_succeeded);
+  });
+
+  it('cluster-decline sweep cube: attack-success-rate aggregates by defense config', () => {
+    // Same aggregate-ASR shape the prior cubes pin: group cells by
+    // the defense knob, tally attack-pattern wins, assert per-config
+    // ASR. The metric is computed off the static
+    // `expected_attack_succeeded` fields the per-cell tests already
+    // validated, so the aggregate stays a fast read over locked
+    // observations rather than a re-run of the cube.
+    interface AsrCell {
+      stratum_include_declines: boolean;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const grouped = new Map<string, AsrCell>();
+    for (const cell of clusterDeclineSweepCells) {
+      const key = `${cell.stratum_include_declines}`;
+      const g = grouped.get(key) ?? {
+        stratum_include_declines: cell.stratum_include_declines,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      grouped.set(key, g);
+    }
+    const asr = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // Vote-only stack: co-voting decorrelated is closed by the
+    // anti-correlation threshold on votes; paired-decline slips
+    // through. Half the named patterns suppress the contested
+    // target → ASR 50%. This is the gap the decline-aware extension
+    // is wired to close.
+    expect(asr('false')).toBe(0.5);
+    // Decline-aware: the encounter-domain widening lands the multi-
+    // round closure on the paired-decline pattern while leaving the
+    // vote-only closure for co-voting unchanged. Both named patterns
+    // close → ASR 0%. The lift is the headline.
+    expect(asr('true')).toBe(0);
 
     // Coverage invariant: every defense config in the cube has both
     // attack patterns. A future cell expansion that breaks this
