@@ -289,6 +289,25 @@ export interface ReviewConfig {
   // injection un-gated would let an adversary use calibration items
   // to keep recent topped up.
   assignment_min_recent: number;
+  // Minimum *demonstrated*-component value (across the caller's rep
+  // entries in the requested cause) required to be assigned a task.
+  // PRD §Reputation: "A demonstrated-competence component, slow-
+  // decay, gates eligibility tiers (who is in the reviewer pool at
+  // all)." The opposite null-policy from the recent gate: callers
+  // with *no* rep entries in the cause FAIL the gate when threshold
+  // > 0 — the demonstrated tier is "have you proven yourself yet?",
+  // and an unproven identity is by construction not in the pool. The
+  // bootstrap path is contributor-initiated voting (cast_review_vote
+  // with no assignment_id) and direct proposing, both of which earn
+  // reputation without going through request_assignment; once the
+  // caller's demonstrated rises above threshold, the gate opens.
+  // This is the architectural cost a fresh-identity sybil-amplified
+  // coalition pays: each new identity must accumulate visible
+  // contribution history before it can be drawn for review, exposing
+  // it to the cluster signal, calibration record, and curator
+  // surfaces that need accumulated activity per identity. Default 0
+  // leaves the gate inert and preserves existing-scenario behavior.
+  assignment_min_demonstrated: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -313,6 +332,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   demonstrated_half_life_seconds: Infinity,
   recent_half_life_seconds: Infinity,
   assignment_min_recent: 0,
+  assignment_min_demonstrated: 0,
 };
 
 export interface ServerDeps {
@@ -1102,19 +1122,36 @@ export class Server {
         );
       }
 
-      // Recent-activity gate (PRD §Reputation, "fast-decay, gates
-      // assignment"). When `assignment_min_recent > 0`, callers with
-      // any rep entries in this cause must show a max decayed recent
-      // ≥ threshold across them. Callers with no rep entries in the
-      // cause bypass — fresh reviewers must be able to bootstrap, and
-      // a missing entry has no decay state to fall below. Contributor-
-      // initiated voting goes through cast_review_vote directly with
-      // no assignment_id, so a drained-but-honest contributor can re-
-      // raise their recent without needing an assignment first.
-      // Default 0 leaves the gate inert.
-      if (this.review.assignment_min_recent > 0) {
+      // Reputation gates (PRD §Reputation). Two thresholds compose at
+      // assignment time: `assignment_min_recent` ("fast-decay, gates
+      // assignment") and `assignment_min_demonstrated` ("slow-decay,
+      // gates eligibility tiers"). The two gates have *opposite*
+      // null-policies and that is load-bearing:
+      //
+      //   - Recent gate: callers with no rep entries in the cause
+      //     bypass — fresh reviewers must be able to bootstrap, and a
+      //     missing entry has no decay state to fall below. The gate
+      //     fires against contributors who once had recent rep and
+      //     have let it drain (the patient-adversary signature).
+      //
+      //   - Demonstrated gate: callers with no rep entries in the
+      //     cause FAIL — the demonstrated tier is "have you proven
+      //     yourself yet?", and an unproven identity is by
+      //     construction not in the pool. The gate fires against
+      //     fresh identities (the sybil-amplified-coalition
+      //     signature). Bootstrap is contributor-initiated voting
+      //     (cast_review_vote with no assignment_id) and direct
+      //     proposing — both earn rep without passing the gate.
+      //
+      // Default 0 on both leaves them inert; existing scenarios are
+      // unaffected. Walked once across the caller's rep entries.
+      if (
+        this.review.assignment_min_recent > 0 ||
+        this.review.assignment_min_demonstrated > 0
+      ) {
         const now = this.clock.now();
         let maxRecent: number | null = null;
+        let maxDemonstrated: number | null = null;
         for (const r of this.store.reputations.values()) {
           if (r.identity_id !== identity.id) continue;
           if (r.cause_id !== parsed.cause_id) continue;
@@ -1122,12 +1159,33 @@ export class Server {
           if (maxRecent === null || decayed.recent > maxRecent) {
             maxRecent = decayed.recent;
           }
+          if (maxDemonstrated === null || decayed.demonstrated > maxDemonstrated) {
+            maxDemonstrated = decayed.demonstrated;
+          }
         }
-        if (maxRecent !== null && maxRecent < this.review.assignment_min_recent) {
+        if (
+          this.review.assignment_min_recent > 0 &&
+          maxRecent !== null &&
+          maxRecent < this.review.assignment_min_recent
+        ) {
           throw new ServerError(
             'not_found',
             `recent-activity below assignment threshold (${maxRecent.toFixed(4)} < ${this.review.assignment_min_recent}) for ${identity.id} in cause ${parsed.cause_id}`,
           );
+        }
+        if (this.review.assignment_min_demonstrated > 0) {
+          if (maxDemonstrated === null) {
+            throw new ServerError(
+              'not_found',
+              `no demonstrated competence in cause ${parsed.cause_id} for ${identity.id} (eligibility tier requires demonstrated >= ${this.review.assignment_min_demonstrated}; bootstrap via contributor-initiated proposing or voting)`,
+            );
+          }
+          if (maxDemonstrated < this.review.assignment_min_demonstrated) {
+            throw new ServerError(
+              'not_found',
+              `demonstrated competence below eligibility threshold (${maxDemonstrated.toFixed(4)} < ${this.review.assignment_min_demonstrated}) for ${identity.id} in cause ${parsed.cause_id}`,
+            );
+          }
         }
       }
 

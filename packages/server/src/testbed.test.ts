@@ -3981,6 +3981,160 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(driftAttempts).toHaveLength(1);
   });
 
+  it('eligibility-tier gate: a fresh identity is refused at request_assignment, the contributor-initiated path graduates them (PRD §Reputation, demonstrated gates eligibility tiers)', async () => {
+    // Companion gate to assignment_min_recent — same seam
+    // (request_assignment), opposite null-policy. The recent gate
+    // bypasses callers with no rep entries because they have no
+    // recent activity yet (fresh-reviewer bootstrap on the assigned
+    // path). The demonstrated gate *fires against* callers with no
+    // rep entries: the demonstrated tier is "have you proven yourself
+    // yet?" and an unproven identity is by construction not in the
+    // pool. Bootstrap is contributor-initiated voting / direct
+    // proposing — both earn rep without going through the gate.
+    //
+    // The architectural property: the cost a fresh-identity coalition
+    // pays. PRD §Adversary taxonomy (sybil-amplified coalition)
+    // names the seam — behavior-dependent defenses (cluster signal,
+    // calibration record, reputation) all need accumulated history
+    // per identity, so a freshly minted identity used exactly once
+    // routes around them. The demonstrated-tier gate forces each
+    // fresh identity to first traverse the contributor-initiated
+    // path, building visible activity before becoming assignable.
+    // The identity-binding-cost / rate-limited-issuance defenses PRD
+    // §Identity names live below this layer (the freshness-bypass
+    // scenario above pins that); this gate is the read-side that
+    // surfaces unproven identities to the assignment surface.
+    //
+    // Pin: the gate fires before bootstrap (fresh identity refused
+    // with not_found) and lets her in after enough contributor-
+    // initiated rep accrues. The gate threshold and per-vote rep
+    // gain together set the bootstrap traversal length the testbed
+    // sweeps; this scenario locks in the shape, not specific values.
+    const sources = new Map<string, string>();
+    for (let i = 1; i <= 4; i++) {
+      sources.set(
+        String(i),
+        `arm A${i}: treatment X works in stage III patients across the cohort`,
+      );
+    }
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('etg'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        // Threshold reachable after two accurate contributor-initiated
+        // accept votes (reviewer_accurate_gain = 1 each, no factor on
+        // reviewer rep), but blocking a zero-rep identity. The exact
+        // value is a testbed knob; what's pinned here is the shape.
+        assignment_min_demonstrated: 1.5,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+
+    // Stage anchors and excerpts. Anchors are accepted by the
+    // curator (`paper 1..4`), excerpts are staged directly by alice
+    // — going through an honest-strong proposer here would itself
+    // hit the gate (a fresh identity calling request_assignment for
+    // a propose-task is gated the same way Eve's review-task call
+    // is). Proposing via the contributor-initiated path is the
+    // bootstrap that the gate is designed to leave open; the test
+    // just exercises that path on alice's end as fixture setup.
+    for (let i = 1; i <= 4; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+    const anchorNodes = [...server.store.nodes.values()].filter((n) => n.kind === 'anchor');
+    expect(anchorNodes).toHaveLength(4);
+    for (const anchor of anchorNodes) {
+      await server.tools.proposeExcerpt(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          parent_anchor_id: anchor.id,
+          content: `treatment X works for stage III (${anchor.id})`,
+          quoted_span: {
+            text: 'treatment X works in stage III patients',
+            offset: 0,
+          },
+        },
+      );
+    }
+
+    // Eve mints fresh, declares cause-level capacity, and tries to
+    // pull an assignment. The gate fires: zero rep entries in the
+    // cause means the demonstrated max is null, which fails the
+    // gate at any threshold > 0.
+    const eve = server.bootstrap.mintIdentity({ display_name: 'eve' });
+    const eveClient = await wireArchetype(server, eve.id);
+    await eveClient.setCapacity({
+      cause_id: cause.id,
+      rate: 10,
+      kinds: ['review', 'excerpt'],
+    });
+    await expect(
+      eveClient.requestAssignment({ cause_id: cause.id }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+
+    // Bootstrap path: contributor-initiated cast_review_vote. Eve
+    // votes on staged excerpts directly (no assignment_id). She needs
+    // a partner accept on each so the proposal converges and reviewer
+    // rep is awarded — Erin, who has set capacity but is also fresh
+    // and so also subject to the gate, votes alongside Eve via the
+    // same contributor-initiated path. Both graduate symmetrically;
+    // we focus the assertion on Eve.
+    const stagedExcerpts = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt' && p.status === 'staged',
+    );
+    expect(stagedExcerpts.length).toBeGreaterThanOrEqual(2);
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    for (let i = 0; i < 2; i++) {
+      const target = stagedExcerpts[i];
+      if (!target) throw new Error(`expected staged excerpt at index ${i}`);
+      const proposalId = target.id;
+      await eveClient.castReviewVote({
+        proposal_id: proposalId,
+        decision: 'accept',
+        rationale: 'well-grounded; quoted span matches the source',
+      });
+      await erinClient.castReviewVote({
+        proposal_id: proposalId,
+        decision: 'accept',
+        rationale: 'agrees',
+      });
+    }
+
+    // Two convergences against Eve's accurate accepts → demonstrated
+    // = 2.0, above the 1.5 threshold. The bootstrap path neither
+    // requires nor consumes an assignment.
+    const eveRep = await eveClient.queryReputation({ cause_id: cause.id });
+    const eveDemonstrated = eveRep.entries.reduce(
+      (m, e) => Math.max(m, e.demonstrated),
+      Number.NEGATIVE_INFINITY,
+    );
+    expect(eveDemonstrated).toBeGreaterThanOrEqual(server.review.assignment_min_demonstrated);
+
+    // Gate now opens. Eve graduates and pulls her first assignment.
+    const assignment = await eveClient.requestAssignment({ cause_id: cause.id });
+    expect(assignment.assignment_id).toBeDefined();
+  });
+
   // Parameter sweep over the (coalition pattern, anti-correlation
   // threshold, contention-weighted) cube. PRD §Adversary testbed
   // (Architecture, "Parameter sweeps") commits this shape as the
