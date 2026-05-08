@@ -3439,22 +3439,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const daveClient = await wireArchetype(server, dave.id);
 
     // Carol takes cohort A (votes reject), declines cohort B. Dave
-    // mirrors. Both fall through to a strategic-bias decider for
-    // anything not labeled with the partner's cohort, keeping the
-    // archetype's hidden objective consistent with the strategic
-    // taxonomy elsewhere in this file.
-    const biasFallback = payloadBiasedDecider({
-      acceptIf: (payload) => 'content' in payload && !payload.content.includes('no effect'),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
+    // mirrors. Both fall through to the file-hoisted
+    // calAwareBiasedDecider used by every other strategic-coalition
+    // scenario in this file — same hidden objective ("bias against
+    // 'no effect' findings"), expressed through the same primitive,
+    // so the archetype reads as a multi-proposal *variant* of the
+    // strategic-coalition family rather than a new bias model.
     const carolDecider = payloadDecliningDecider({
       declineIf: (payload) => 'content' in payload && payload.content.includes('cohort B'),
-      fallback: biasFallback,
+      fallback: calAwareBiasedDecider,
     });
     const daveDecider = payloadDecliningDecider({
       declineIf: (payload) => 'content' in payload && payload.content.includes('cohort A'),
-      fallback: biasFallback,
+      fallback: calAwareBiasedDecider,
     });
 
     // Erin runs first, accepts everything. Both targets sit at 1
