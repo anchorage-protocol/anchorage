@@ -4514,6 +4514,601 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // Second parameter sweep cube: assignment-gate thresholds against
+  // the patient-adversary and sybil-amplified-coalition archetypes.
+  // PRD §Adversary testbed (Architecture, "Parameter sweeps") names
+  // the shape — named defense config to expected attack-success-rate,
+  // computed off static expected fields the per-cell tests already
+  // validated. Same template as the decorrelation cube above; the
+  // axes change but the assertion shape doesn't.
+  //
+  // Defense knobs in this cube:
+  //   - assignment_min_recent (PRD §Reputation): the recent-activity
+  //     gate. Fires on a caller whose decayed recent has fallen below
+  //     threshold, with fresh-reviewer bypass so first-assignment
+  //     bootstrap stays open. Closes the patient-adversary loop —
+  //     once-active-now-quiet is the archetype's signature, and the
+  //     gate makes drift bandwidth = 1 instead of cumulative.
+  //   - assignment_min_demonstrated (PRD §Reputation): the
+  //     eligibility-tier gate. Fires on a caller with no rep entries
+  //     in the cause when threshold > 0; opposite null-policy from
+  //     the recent gate, and the architectural cost a fresh-identity
+  //     coalition pays before being drawn for review.
+  //
+  // Attack patterns in this cube:
+  //   - patient: solo calibration-aware biased reviewer who primes,
+  //     drifts on a first contested target, sits out a quiet window
+  //     past several recent-half-lives, and tries a fresh drift on a
+  //     second contested target. Attack succeeds if the second drift
+  //     vote lands.
+  //   - sybil: established Carol+Dave coalition with shared priming
+  //     history (cluster signal detects), recruits fresh Eve. Carol
+  //     votes the contested target, Dave is gated out by the cross-
+  //     stratum draw, Eve walks in if the demo gate doesn't fire.
+  //     Attack succeeds if the contested target ends rejected.
+  //
+  // Expected ASR shape: each gate closes its named pattern
+  // independent of the other knob. Both gates off → 100% (both
+  // attacks succeed); recent gate alone → 50% (patient closes,
+  // sybil bypasses); demo gate alone → 50% (sybil closes, patient
+  // bypasses); both on → 0%. The orthogonality is the headline.
+  type GateAttackPattern = 'patient' | 'sybil';
+
+  // Patient-adversary runner: bootstrap-honestly + prime + first
+  // drift + quiet window + second drift attempt. Mirrors the
+  // standalone "assignment gate refuses a drained adversary"
+  // scenario above; the standalone test pins the within-cell
+  // invariants this runner would otherwise hide. attack_succeeded
+  // is "did Carol's second drift vote land", measured by counting
+  // her reject votes (1 = first drift only, gate worked; 2 = both
+  // drifts landed, gate did not).
+  //
+  // The bootstrap phase is what makes the patient archetype
+  // *patient*: real-world patient adversaries build reputation
+  // honestly over months before drift attempts (PRD §Adversary
+  // taxonomy, Patient adversary). The standalone gate scenario
+  // skips this phase because it has the demo gate at 0 — Carol
+  // walks into request_assignment from zero rep without trouble.
+  // Once the demo gate is non-zero, fresh identities fail at
+  // request_assignment regardless of intent (PRD §Reputation,
+  // demonstrated gates eligibility tiers); a runner that doesn't
+  // bootstrap collapses patient-adversary into fresh-coalition,
+  // which conflates the two archetypes the cube is trying to
+  // separate. The bootstrap rotation pairs each reviewer with two
+  // others across three contributor-initiated convergences, so
+  // each ends with demonstrated=2.0 (cleared at any threshold ≤
+  // 1.5) before the assignment-driven phase begins.
+  async function runPatientAdversaryGateScenario(params: {
+    assignment_min_recent: number;
+    assignment_min_demonstrated: number;
+  }): Promise<{ attack_succeeded: boolean }> {
+    const BOOTSTRAP_COUNT = 3;
+    const PRIMING_COUNT = 4;
+    const TOTAL_PRIMING = BOOTSTRAP_COUNT + PRIMING_COUNT;
+    const sources = new Map<string, string>();
+    for (let i = 1; i <= TOTAL_PRIMING; i++) {
+      sources.set(
+        String(i),
+        `arm A${i}: treatment X works in stage III patients across the cohort`,
+      );
+    }
+    sources.set('99', 'arm B: treatment X has no effect in stage IV patients');
+    sources.set('100', 'arm C: treatment X has no effect in stage IV patients');
+
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 0);
+    const RECENT_HALF_LIFE_SECONDS = 60;
+    const server = new Server({
+      clock,
+      idGen: new SeededIdGen('pgs'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        calibration_inject_every_n: 2,
+        calibration_aware_convergence: true,
+        demonstrated_half_life_seconds: Infinity,
+        recent_half_life_seconds: RECENT_HALF_LIFE_SECONDS,
+        assignment_min_recent: params.assignment_min_recent,
+        assignment_min_demonstrated: params.assignment_min_demonstrated,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const primingAnchorIds: string[] = [];
+    for (let i = 1; i <= TOTAL_PRIMING; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+      const anchorNode = [...server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
+      );
+      if (!anchorNode) throw new Error(`priming anchor ${i} not materialized`);
+      primingAnchorIds.push(anchorNode.id);
+    }
+    const firstContestedAnchorProp = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper contested',
+        external_ref: { kind: 'pmid', value: '99' },
+      },
+    );
+    server.curator.acceptProposal(firstContestedAnchorProp.proposal_id);
+    const firstContestedAnchorNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper contested',
+    );
+    if (!firstContestedAnchorNode) throw new Error('first contested anchor not materialized');
+    const firstContestedAnchorId = firstContestedAnchorNode.id;
+
+    // Mint reviewers up front so the bootstrap phase can address
+    // them by id without going through the runHonestReviewer loop
+    // (which itself would hit the demo gate before they have rep).
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const erinClient = await wireArchetype(server, erin.id);
+    const frankClient = await wireArchetype(server, frank.id);
+
+    // Alice proposes all priming + contested excerpts directly.
+    // The original runner used an honest-strong proposer; replacing
+    // it with direct proposes sidesteps the demo gate on the
+    // proposer-side request_assignment, which would otherwise also
+    // need bootstrapping. Span content matches the verifier sources
+    // so excerpts pass the verify step.
+    const stagedExcerptIds: string[] = [];
+    for (const anchorId of primingAnchorIds) {
+      const e = await server.tools.proposeExcerpt(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          parent_anchor_id: anchorId,
+          content: `treatment X works for stage III on ${anchorId}`,
+          quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+        },
+      );
+      stagedExcerptIds.push(e.proposal_id);
+    }
+    const firstContestedExcerptProp = await server.tools.proposeExcerpt(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: firstContestedAnchorId,
+        content: 'treatment X has no effect for stage IV',
+        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+      },
+    );
+    const firstContestedProposalId = firstContestedExcerptProp.proposal_id;
+
+    // Bootstrap rotation: three convergences, each with two
+    // contributor-initiated accept votes. Each reviewer appears in
+    // two of the three pairs and ends with demonstrated=2.0. Pairs
+    // are carol+erin, carol+frank, erin+frank. After this, all
+    // three clear any demo-gate threshold ≤ 1.5.
+    const bootstrapPairs: Array<[typeof carol, typeof carol]> = [
+      [carol, erin],
+      [carol, frank],
+      [erin, frank],
+    ];
+    for (let i = 0; i < BOOTSTRAP_COUNT; i++) {
+      const proposalId = stagedExcerptIds[i];
+      if (!proposalId) throw new Error(`bootstrap excerpt ${i} missing`);
+      const pair = bootstrapPairs[i];
+      if (!pair) throw new Error(`bootstrap pair ${i} missing`);
+      for (const voter of pair) {
+        await server.tools.castReviewVote(
+          { identity_id: voter.id },
+          {
+            proposal_id: proposalId,
+            decision: 'accept',
+            rationale: 'consistent with prevailing evidence',
+          },
+        );
+      }
+    }
+
+    // Assignment-driven phase. Carol runs first so the remaining
+    // priming excerpts and the first contested target are still
+    // staged when she votes — same ordering as the standalone
+    // patient-adversary scenario. Calibration injection and
+    // calibration-aware convergence are on, the strongest
+    // composition the rep ledger has against bias.
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 20,
+      decide: calAwareBiasedDecider,
+    });
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 20,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(frankClient, {
+      cause_id: cause.id,
+      rate: 20,
+      decide: acceptAllDecider,
+    });
+
+    // The first contested target should now have converged to
+    // accepted (Erin + Frank's accepts dominate Carol's reject) —
+    // sanity check that the scenario's pre-conditions held before
+    // the gate-of-interest fires. If this is wrong every cell of
+    // the cube is suspect, so it's an invariant on every cell.
+    const firstContested = server.store.proposals.get(firstContestedProposalId);
+    if (firstContested?.status !== 'accepted') {
+      throw new Error(
+        `patient-adversary runner pre-condition: first contested expected accepted, got ${firstContested?.status}`,
+      );
+    }
+
+    // Quiet window: Carol stops being recently active, by definition
+    // of the patient-adversary archetype. Six recent half-lives
+    // drains her recent by 64x — enough to fall below any reasonable
+    // threshold the gate is set to.
+    const QUIET_HALF_LIVES = 6;
+    clock.advance(RECENT_HALF_LIFE_SECONDS * QUIET_HALF_LIVES * 1000);
+
+    const secondContestedAnchorProp = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper contested 2',
+        external_ref: { kind: 'pmid', value: '100' },
+      },
+    );
+    server.curator.acceptProposal(secondContestedAnchorProp.proposal_id);
+    const secondContestedAnchorNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper contested 2',
+    );
+    if (!secondContestedAnchorNode) throw new Error('second contested anchor not materialized');
+    await server.tools.proposeExcerpt(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: secondContestedAnchorNode.id,
+        content: 'treatment X has no effect for stage IV again',
+        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+      },
+    );
+
+    // Carol attempts the second drift. honest-reviewer absorbs the
+    // not_found surface as an idle action when the gate fires, so
+    // the loop terminates gracefully either way and the count of her
+    // reject votes is the observable signal.
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 20,
+      decide: calAwareBiasedDecider,
+    });
+
+    const carolRejects = [...server.store.reviewVotes.values()].filter(
+      (v) => v.reviewer_id === carol.id && v.decision === 'reject',
+    );
+    return { attack_succeeded: carolRejects.length >= 2 };
+  }
+
+  // Sybil-amplified-coalition runner: established Carol+Dave priming
+  // + fresh Eve recruit. Mirrors the standalone "fresh recruit slips
+  // past stratification" scenario above. attack_succeeded is "did
+  // the contested target end rejected", which it does iff Eve walks
+  // in past whatever gate is set.
+  async function runSybilAmplifiedGateScenario(params: {
+    assignment_min_recent: number;
+    assignment_min_demonstrated: number;
+  }): Promise<{ attack_succeeded: boolean }> {
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('sgs'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+        // Half-lives stay at Infinity (the default): no time-decay
+        // semantics are needed here, this scenario exercises the
+        // fresh-vs-established identity contrast at a single tick.
+        // With Infinity half-life the recent gate behaves as an
+        // absolute floor on bumps received — Carol/Dave clear it
+        // from priming, Eve has no rep so the recent-gate bypass
+        // applies regardless of threshold, and the demo gate is
+        // what closes the attack pattern.
+        assignment_min_recent: params.assignment_min_recent,
+        assignment_min_demonstrated: params.assignment_min_demonstrated,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const eve = server.bootstrap.mintIdentity({ display_name: 'eve' });
+    const erinClient = await wireArchetype(server, erin.id);
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    const eveClient = await wireArchetype(server, eve.id);
+    for (const c of [
+      { identity_id: carol.id },
+      { identity_id: dave.id },
+      { identity_id: eve.id },
+    ]) {
+      await server.tools.setCapacity(c, {
+        cause_id: cause.id,
+        rate: 5,
+        kinds: ['review'],
+      });
+    }
+    for (let i = 0; i < 3; i++) {
+      const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        {
+          proposal_id: excerpt.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: dave.id },
+        {
+          proposal_id: excerpt.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      const after = server.store.proposals.get(excerpt.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(excerpt.proposal_id);
+      }
+    }
+
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiasedDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiasedDecider,
+    });
+    await runHonestReviewer(eveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: calAwareBiasedDecider,
+    });
+
+    const target = server.store.proposals.get(contested.proposal_id);
+    return { attack_succeeded: target?.status === 'rejected' };
+  }
+
+  interface GateSweepCell {
+    name: string;
+    pattern: GateAttackPattern;
+    assignment_min_recent: number;
+    assignment_min_demonstrated: number;
+    expected_attack_succeeded: boolean;
+  }
+  const gateSweepCells: GateSweepCell[] = [
+    // Both gates off — neither archetype hits a defense. Floor row.
+    {
+      name: 'patient adversary, recent=0, demo=0 (no defenses)',
+      pattern: 'patient',
+      assignment_min_recent: 0,
+      assignment_min_demonstrated: 0,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'sybil-amplified coalition, recent=0, demo=0 (no defenses)',
+      pattern: 'sybil',
+      assignment_min_recent: 0,
+      assignment_min_demonstrated: 0,
+      expected_attack_succeeded: true,
+    },
+    // Recent gate only — closes patient-adversary, sybil bypasses
+    // (Eve has no rep so the recent-gate bypass applies; Carol/Dave
+    // sit at full bump because no time advances).
+    {
+      name: 'patient adversary, recent=0.5, demo=0 (recent gate fires)',
+      pattern: 'patient',
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 0,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'sybil-amplified coalition, recent=0.5, demo=0 (gate inert against fresh recruit)',
+      pattern: 'sybil',
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 0,
+      expected_attack_succeeded: true,
+    },
+    // Demo gate only — closes sybil-amplified, patient bypasses
+    // (Carol's demonstrated stays high through the quiet window, so
+    // the eligibility-tier gate has no edge against her).
+    {
+      name: 'patient adversary, recent=0, demo=1.5 (gate inert against demonstrated buffer)',
+      pattern: 'patient',
+      assignment_min_recent: 0,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'sybil-amplified coalition, recent=0, demo=1.5 (demo gate fires on Eve)',
+      pattern: 'sybil',
+      assignment_min_recent: 0,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: false,
+    },
+    // Composition — both gates closed against their named patterns.
+    {
+      name: 'patient adversary, recent=0.5, demo=1.5 (composition closes)',
+      pattern: 'patient',
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'sybil-amplified coalition, recent=0.5, demo=1.5 (composition closes)',
+      pattern: 'sybil',
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: false,
+    },
+  ];
+  it.each(
+    gateSweepCells,
+  )('gate-threshold sweep: $name → attack_succeeded=$expected_attack_succeeded', async ({
+    pattern,
+    assignment_min_recent,
+    assignment_min_demonstrated,
+    expected_attack_succeeded,
+  }) => {
+    const result =
+      pattern === 'patient'
+        ? await runPatientAdversaryGateScenario({
+            assignment_min_recent,
+            assignment_min_demonstrated,
+          })
+        : await runSybilAmplifiedGateScenario({
+            assignment_min_recent,
+            assignment_min_demonstrated,
+          });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+  });
+
+  it('gate-threshold sweep cube: attack-success-rate aggregates by defense config', () => {
+    // Same aggregate-ASR shape the decorrelation cube above pins:
+    // group cells by (defense knobs), tally attack-pattern wins,
+    // assert per-config ASR. The metric is computed off the static
+    // `expected_attack_succeeded` fields the per-cell tests already
+    // validated, so the aggregate is a fast read over locked
+    // observations rather than a re-run of the cube.
+    interface AsrCell {
+      assignment_min_recent: number;
+      assignment_min_demonstrated: number;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const grouped = new Map<string, AsrCell>();
+    for (const cell of gateSweepCells) {
+      const key = `${cell.assignment_min_recent}|${cell.assignment_min_demonstrated}`;
+      const g = grouped.get(key) ?? {
+        assignment_min_recent: cell.assignment_min_recent,
+        assignment_min_demonstrated: cell.assignment_min_demonstrated,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      grouped.set(key, g);
+    }
+    const asr = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // No defenses: both attacks succeed. Floor.
+    expect(asr('0|0')).toBe(1);
+    // Recent gate alone: closes patient-adversary; sybil bypasses
+    // because the gate has fresh-reviewer bypass and Eve sits at
+    // zero rep. ASR = 50% — half the surface remains.
+    expect(asr('0.5|0')).toBe(0.5);
+    // Demo gate alone: closes sybil-amplified; patient bypasses
+    // because Carol's demonstrated component is preserved across
+    // the quiet window (slow-decay) and clears any reasonable
+    // eligibility threshold from priming alone. ASR = 50% — the
+    // mirror image of the row above.
+    expect(asr('0|1.5')).toBe(0.5);
+    // Composition: each gate closes its named pattern, neither
+    // attack lands. ASR = 0%.
+    expect(asr('0.5|1.5')).toBe(0);
+
+    // Coverage invariant: every defense config in the cube has both
+    // attack patterns. A future cell expansion that breaks this
+    // symmetry trips the assertion and forces the aggregate to be
+    // re-keyed rather than silently averaging over uneven groups.
+    for (const cell of grouped.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),

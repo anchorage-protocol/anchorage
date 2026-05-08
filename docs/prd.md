@@ -292,7 +292,7 @@ The testbed is the project's continuous-integration story for governance — and
 
 - **Real graph schema.** The testbed uses the same schema, the same write-path tools, the same MCP server interface as the public instance.
 - **Simulated contributor population.** Synthetic contributors connect via the same MCP protocol, salted with the adversary taxonomy below.
-- **Parameter sweeps.** Calibration ratios, reviewer-pool sizes, reputation decay rates, vote thresholds — swept over reasonable ranges, attack-success rates measured.
+- **Parameter sweeps.** Calibration ratios, reviewer-pool sizes, reputation decay rates, vote thresholds — swept over reasonable ranges, attack-success rates measured. Sweeps share an aggregate shape: each cell asserts the per-(attack pattern, defense config) outcome directly, and a paired aggregate test groups cells by defense config to lock in the per-config attack-success-rate. The first wired cube sweeps the cluster-signal knobs (anti-correlation threshold × contention-weighted edges) against the decorrelating and mixed-strategy coalitions; the second sweeps the assignment-gate thresholds (recent × demonstrated) against the patient-adversary and sybil-amplified-coalition archetypes, surfacing the orthogonal-defenses property — each gate closes its named pattern independent of the other knob, with full composition closing both.
 - **Public results.** Methodology and results published. Adversary populations and harness code open. Specific calibration items remain private.
 
 ### Why assignment-driven contribution closes several attack surfaces
