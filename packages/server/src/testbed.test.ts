@@ -39,6 +39,42 @@ async function wireArchetype(server: Server, identity_id: string) {
   return new AnchorageClient(client);
 }
 
+// Strategic-adversary deciders shared across the (cause "CRC", sub-
+// topic "treatment-X") fixture used by every coalition / cluster /
+// patient-adversary scenario in this file. Two flavors of the same
+// hidden objective ("bias toward 'treatment X works' findings,
+// against 'treatment X has no effect' findings"):
+//
+//   - naiveBiasedDecider applies the bias to every payload. It
+//     misfires on the anchor calibration corpus (anchor content
+//     "paper N" doesn't include "works" → reject → fail
+//     calibration), which is the seam the calibration defenses
+//     exploit. PRD §Adversary taxonomy (Strategic adversary)
+//     baseline.
+//   - calAwareBiasedDecider scopes the bias zone to payloads that
+//     mention "treatment", accepting anything else by construction.
+//     The anchor calibration corpus falls outside the bias zone
+//     and is accepted; calibration passes. PRD §Adversary
+//     taxonomy (Strategic adversary, "passing calibration") +
+//     PRD §Calibration batches (calibration-aware bypass case).
+//
+// Hoisted here because they are byte-identical across every
+// coalition / cluster / patient-adversary scenario in this file —
+// the alternative (re-declaring inside each `it`) drifts the moment
+// one copy is edited and the others aren't.
+const naiveBiasedDecider = payloadBiasedDecider({
+  acceptIf: (payload) => 'content' in payload && payload.content.includes('works'),
+  rationaleAccept: 'consistent with prevailing evidence',
+  rationaleReject: 'underpowered, methodological concerns',
+});
+const calAwareBiasedDecider = payloadBiasedDecider({
+  acceptIf: (payload) =>
+    'content' in payload &&
+    (!payload.content.includes('treatment') || payload.content.includes('works')),
+  rationaleAccept: 'consistent with prevailing evidence',
+  rationaleReject: 'underpowered, methodological concerns',
+});
+
 describe('testbed: honest-strong archetype', () => {
   it('drains the orphan-anchor frontier by submitting excerpts', async () => {
     const server = new Server({
@@ -856,17 +892,20 @@ describe('testbed: honest-strong archetype', () => {
     // claim treatment X works, reject findings that don't. Both
     // strategics see both excerpts (assignment is system-driven —
     // no pre-arrangement; the leverage is vote bias, not selection).
-    const biased = payloadBiasedDecider({
-      acceptIf: (payload) => 'content' in payload && payload.content.includes('works'),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
     const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    await runHonestReviewer(carolClient, { cause_id: cause.id, rate: 5, decide: biased });
-    await runHonestReviewer(daveClient, { cause_id: cause.id, rate: 5, decide: biased });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: naiveBiasedDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: naiveBiasedDecider,
+    });
 
     // Convergence: excerpt-works gets 3 accepts (Erin + 2 strategics)
     // → accepted. Excerpt-no-effect gets 1 accept (Erin) + 2 rejects
@@ -1007,17 +1046,20 @@ describe('testbed: honest-strong archetype', () => {
       decide: acceptAllDecider,
     });
 
-    const biased = payloadBiasedDecider({
-      acceptIf: (payload) => 'content' in payload && payload.content.includes('works'),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
     const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    await runHonestReviewer(carolClient, { cause_id: cause.id, rate: 5, decide: biased });
-    await runHonestReviewer(daveClient, { cause_id: cause.id, rate: 5, decide: biased });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: naiveBiasedDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: naiveBiasedDecider,
+    });
 
     // Convergence still flips with the bias — calibration does not
     // close the convergence-layer surface, only the rep-ledger one.
@@ -1149,17 +1191,20 @@ describe('testbed: honest-strong archetype', () => {
       decide: acceptAllDecider,
     });
 
-    const biased = payloadBiasedDecider({
-      acceptIf: (payload) => 'content' in payload && payload.content.includes('works'),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
     const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    await runHonestReviewer(carolClient, { cause_id: cause.id, rate: 5, decide: biased });
-    await runHonestReviewer(daveClient, { cause_id: cause.id, rate: 5, decide: biased });
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: naiveBiasedDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: naiveBiasedDecider,
+    });
 
     // Headline assertion: the bias-misaligned excerpt is no longer
     // rejected. It stays staged — the coalition can hold convergence
@@ -1310,13 +1355,6 @@ describe('testbed: honest-strong archetype', () => {
     // construction) OR aligned-and-in-zone. The second clause is the
     // bias proper; the first is what makes the adversary calibration-
     // aware without needing to identify calibration items.
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
     const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
     const carolClient = await wireArchetype(server, carol.id);
@@ -1324,12 +1362,12 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     // Convergence flips both ways: works to accepted, no-effect to
@@ -1476,13 +1514,6 @@ describe('testbed: honest-strong archetype', () => {
       decide: acceptAllDecider,
     });
 
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
     const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
     const carolClient = await wireArchetype(server, carol.id);
@@ -1490,12 +1521,12 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
@@ -1727,17 +1758,10 @@ describe('testbed: honest-strong archetype', () => {
     // singleton:erin != Carol's cluster id, so cross-stratum check
     // passes for Carol. She picks up the contested item and votes
     // reject under the calibration-aware bias predicate.
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     // Dave runs last. The contested item is the only staged review
@@ -1749,7 +1773,7 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     // HEADLINE: contested stays staged. Without stratification (see
@@ -1936,17 +1960,10 @@ describe('testbed: honest-strong archetype', () => {
     // identical to the predicate the closes-stratification test uses.
     // The cluster signal failed to form; Carol is a singleton. She
     // pulls the contested item and votes reject.
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     // Dave runs last. In the closes-stratification scenario Dave's
@@ -1958,7 +1975,7 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     // HEADLINE: the contested excerpt is rejected. Tally hits
@@ -2132,13 +2149,6 @@ describe('testbed: honest-strong archetype', () => {
     });
 
     // CONTESTED PHASE.
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     // Erin runs first — her pair-edges with Frank and Gina from
     // priming put her squarely in cluster-EFG. She's first to the
     // contested slot, so the cross-stratum gate doesn't have anyone
@@ -2166,12 +2176,12 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     // HEADLINE: contested converges *rejected*. The honest pool's
@@ -2338,13 +2348,6 @@ describe('testbed: honest-strong archetype', () => {
       },
     });
 
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     // Honest reviewers run first. Each is a singleton under
     // contention-weighted clustering (priming carries 0 weight,
     // 0 edges, 0 cluster aggregation). Three accepts in a row reach
@@ -2370,12 +2373,12 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     const target = server.store.proposals.get(contested.proposal_id);
@@ -2541,13 +2544,6 @@ describe('testbed: honest-strong archetype', () => {
       decide: acceptAllDecider,
     });
 
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     // Carol runs. Anti-correlation edge has formed (3 shared, 0
     // agreed → disagreement ratio 1.0 ≥ threshold 1.0). Carol and
     // Dave are now in the same cluster. Carol pulls the contested
@@ -2556,7 +2552,7 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
     // Dave runs. Carol's vote put Carol in routedReviewers; Dave's
     // stratum equals Carol's via the anti-correlation edge; the
@@ -2565,7 +2561,7 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     const target = server.store.proposals.get(contested.proposal_id);
@@ -2750,18 +2746,11 @@ describe('testbed: honest-strong archetype', () => {
       decide: acceptAllDecider,
     });
 
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     // Carol runs first, votes reject on contested.
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
     // Dave runs. Cluster signal silent (mixed pattern below both
     // thresholds), so the cross-stratum gate has nothing to enforce.
@@ -2770,7 +2759,7 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     const target = server.store.proposals.get(contested.proposal_id);
@@ -3250,17 +3239,10 @@ describe('testbed: honest-strong archetype', () => {
       rate: 5,
       decide: acceptAllDecider,
     });
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
     // Dave's request_assignment hits the cross-stratum gate: Carol
     // already voted on contested; with contention-weighted edges
@@ -3270,7 +3252,7 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     const target = server.store.proposals.get(contested.proposal_id);
@@ -3428,17 +3410,10 @@ describe('testbed: honest-strong archetype', () => {
     // count toward the eventual accept convergence.
     const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
     const carolClient = await wireArchetype(server, carol.id);
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 20,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
 
     // Erin and Frank — two honest reviewers. Each accepts every
@@ -3675,13 +3650,6 @@ describe('testbed: honest-strong archetype', () => {
         offset: 0,
       },
     });
-    const calAwareBiased = payloadBiasedDecider({
-      acceptIf: (payload) =>
-        'content' in payload &&
-        (!payload.content.includes('treatment') || payload.content.includes('works')),
-      rationaleAccept: 'consistent with prevailing evidence',
-      rationaleReject: 'underpowered, methodological concerns',
-    });
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
       rate: 5,
@@ -3690,12 +3658,12 @@ describe('testbed: honest-strong archetype', () => {
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
       rate: 5,
-      decide: calAwareBiased,
+      decide: calAwareBiasedDecider,
     });
     const target = server.store.proposals.get(contested.proposal_id);
     if (!target) throw new Error('contested proposal vanished');
