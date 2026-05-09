@@ -2053,13 +2053,16 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // small-pool case.
     //
     // The headline is that the contested excerpt is *rejected*, not
-    // staged. This is the open seam the next testbed target works on:
-    // the v0 cluster signal is co-occurrence-based and lossy. A
-    // richer signal — weighting shared proposals by contention,
-    // mixing in calibration-item agreement, or building strata from
-    // payload-feature vote patterns — is what closes the
-    // decorrelation bypass. Naming it as a failing-by-design test
-    // anchors the seam.
+    // staged: the v0 positive-only cluster signal is co-occurrence-
+    // based and lossy in this direction. The closure that shipped is
+    // anti-correlation detection (PRD §Reviewer assignment, ROADMAP
+    // §Status) — treating perfect anti-correlation as a co-stratum
+    // edge alongside agreement, scenarioed separately at threshold
+    // 1.0 in the same describe-block; this test stays as the
+    // regression handle on the *bypassed* config (anti-correlation
+    // off / threshold 0) so accidentally closing the bypass at this
+    // baseline trips a named invariant rather than silently moving
+    // the seam.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
@@ -2462,8 +2465,13 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // shared history includes contentious proposals where they
     // co-voted does, and that's the signal the clustering primitive
     // is actually trying to capture. The decorrelating-coalition
-    // bypass remains open — that vector is named separately and is
-    // the next testbed target on this seam.
+    // bypass — orthogonal failure mode to over-aggregation, vote-
+    // pattern-shaped instead of unanimous-priming-shaped — closes
+    // separately under the anti-correlation refinement (PRD
+    // §Reviewer assignment, ROADMAP §Status), scenarioed in the
+    // same describe-block above; the mixed-strategy variant that
+    // sits in the gap between either refinement alone closes only
+    // under the composition of both, also pinned separately.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
@@ -2827,14 +2835,25 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // to enforce, and both members vote on the contested item.
     //
     // Headline: contested converges *rejected*. The bias-suppression
-    // vector reopens against the v0 stratification regime, including
-    // its anti-correlation refinement. Closing this gap requires a
-    // signal that doesn't reduce to a single agreement/disagreement
-    // ratio — calibration-item-specific agreement (where ground
-    // truth is known) or payload-feature vote patterns (clustering
-    // on what the pair votes about, not just whom they agree with).
-    // Both are named in the PRD as the next testbed targets on this
-    // seam.
+    // vector reopens against either refinement alone — agreement-
+    // only or anti-correlation-only — and the wired closure is the
+    // *composition* (contention-weighted edges + anti-correlation,
+    // both on at threshold 1.0): contention weighting reweights the
+    // pair-stat so agreement on unanimous-easy items contributes
+    // 0 weight and disagreement on contentious items contributes
+    // the full weight, collapsing the weighted disagreement ratio
+    // back to 1.0 and tripping the anti-correlation edge that the
+    // raw mix sat below. PRD §Reviewer assignment commits the
+    // composition closure and ROADMAP §Status pins it as a CI-
+    // checked invariant; this test stays as the regression handle
+    // on each refinement-alone config so the gap between thresholds
+    // remains observable when the composition is unwired. The
+    // *next* testbed target on this seam — if a coalition surfaces
+    // that walks around the composition by avoiding co-voting on
+    // any contentious item — is whatever adaptation works around
+    // that constraint (PRD §Reviewer assignment names calibration-
+    // item-specific agreement and payload-feature vote patterns
+    // as the candidate refinements).
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
