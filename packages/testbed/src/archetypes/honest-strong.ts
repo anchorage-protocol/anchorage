@@ -48,10 +48,11 @@ export interface ContentProvider {
 export interface HonestStrongConfig {
   cause_id: CauseId;
   rate: number;
-  // The archetype declares capacity for these kinds. v0 only
-  // implements excerpt fulfillment (PRD's frontier-mapping covers
-  // orphan_anchor → excerpt and needs_review → review; review
-  // archetype lands in a follow-up).
+  // The archetype declares capacity for these kinds. honest-strong
+  // implements excerpt fulfillment only (PRD's frontier-mapping covers
+  // orphan_anchor → excerpt and needs_review → review); review-kind
+  // work lives in the sibling honest-reviewer archetype, not in an
+  // extension of this one.
   kinds: WorkKind[];
   content: ContentProvider;
 }
