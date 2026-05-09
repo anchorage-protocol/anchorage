@@ -3352,10 +3352,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // accept; neither converges; Carol and Dave share zero voting
     // history, so the cluster signal stays silent by construction.
     //
-    // The wired closure stack does not catch this:
-    //   - cluster signal (contention-weighted, anti-correlation 1.0,
-    //     agreement 1.0): silent — Carol and Dave share no proposals,
-    //     so no edge metric has data to fire.
+    // The vote-only closure stack does not catch this:
+    //   - cluster signal at the vote-only encounter domain
+    //     (contention-weighted, anti-correlation 1.0, agreement 1.0):
+    //     silent — Carol and Dave share no *vote* proposals, so no
+    //     edge metric has data to fire.
     //   - calibration-aware convergence: silent — a single biased
     //     reject per target never builds up a weighted reject sum
     //     against the honest accept on that target.
@@ -3366,7 +3367,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     //     contributor-initiated voting.
     //   - decline-pattern projection: surfaces both Carol and Dave to
     //     the curator (each declined half their offered review tasks),
-    //     but the projection is a *visibility* surface, not an
+    //     but the projection is a *visibility* surface, not the
     //     assignment-time gate.
     //
     // The terminal outcome is the divergence-closure sweep above:
@@ -3375,23 +3376,45 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // the suppression result the coalition is driving toward —
     // neither target accepts.
     //
-    // Candidate v0+ defenses that would close this seam (none wired):
-    //   - pool-size enforcement: ensure the eligible-pool size for a
-    //     proposal is large enough that a single biased lone-reject
-    //     cannot persist a tie until the divergence window expires.
-    //   - decline-pattern → assignment-gate: a curator-tunable
-    //     threshold on `declinePatterns` that gates `request_assignment`
-    //     rather than just surfacing a list (PRD §Capacity and
-    //     assignment leaves the punitive consequence open in v0).
-    //   - multi-proposal staling pattern: detect "the same identity is
-    //     the lone rejecter on a stalled proposal across N proposals"
-    //     as its own coalition signal, complementary to the per-pair
-    //     cluster signal that needs co-occurrence to fire.
+    // Wired closures kept off in this scenario as the regression
+    // handle on the vote-only baseline (each is exercised in its
+    // own scenario with the closure on):
+    //   - encounter-domain widening (`stratum_include_declines`,
+    //     PRD §Reviewer assignment, ROADMAP §Status): widens the
+    //     cluster primitive's encounter domain to {accept, reject,
+    //     decline}; with the knob on, "Carol rejects target1 +
+    //     declines target2; Dave declines target1 + rejects target2"
+    //     reads as 100% pair-disagreement on 2 shared encounters
+    //     under the existing anti-correlation primitive at threshold
+    //     1.0 and the cross-stratum gate fires against the partner.
+    //   - decline-pattern → assignment-gate (`assignment_max_decline_rate`,
+    //     `assignment_decline_min_offers`, PRD §Capacity and
+    //     assignment, ROADMAP §Status): the operational form of the
+    //     curator-side `declinePatterns` projection — refuses
+    //     assignment when the per-(cause, reviewer) cumulative
+    //     decline rate clears the threshold and the offers floor.
     //
-    // None of these is in the v0 surface, so this scenario stands
-    // alone rather than feeding an aggregate-ASR cube. Once one of
-    // the candidate defenses lands, the cube template wraps this
-    // pattern alongside the existing two cubes.
+    // Candidate v0+ defenses still not wired that would close
+    // adjacent cases this scenario does not cover:
+    //   - pool-size enforcement: refuse to start review on a
+    //     proposal until the eligible-pool size clears a floor, so
+    //     a single biased lone-reject cannot persist a tie until
+    //     the divergence window expires — distinct from the wired
+    //     pool-size *scaling* lever (raising votes_to_X to N), which
+    //     this scenario already runs into the small-pool case of.
+    //   - multi-proposal staling pattern: detect "the same identity
+    //     is the lone rejecter on a stalled proposal across N
+    //     proposals" as its own coalition signal, complementary to
+    //     the per-pair cluster signal that needs co-occurrence
+    //     (vote *or* decline-aware) to fire.
+    //
+    // The wired closures above carry the multi-round paired-decline
+    // pattern through cube #3 (`stratum_include_declines`) and cube
+    // #4 (contention-weighting × paired-decline-floor) already; this
+    // scenario stays as a standalone regression handle on the
+    // refinement-bypassed config (declines off) and the divergence-
+    // closure-by-archival outcome shape, which the cubes don't
+    // exercise on this exact contested-target-decline geometry.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
@@ -3413,7 +3436,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
         stratum_min_shared_proposals: 2,
         stratum_agreement_threshold: 1.0,
         stratum_anti_correlation_threshold: 1.0,
-        contention_weighted_edges: true,
+        stratum_contention_weighted: true,
         stratum_target_count: 2,
         stratification_degraded_extra: 1,
       },
