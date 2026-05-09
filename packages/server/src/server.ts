@@ -176,8 +176,12 @@ export interface ReviewConfig {
   // (PRD §Calibration batches: calibration items "drawn from the
   // graph's own validated history" are by construction not bias-
   // engineered). Calibration-aware adversaries (PRD §Adversary taxonomy (Strategic adversary): passing
-  // calibration despite holding bias) are an open testbed target that
-  // builds on this seam, not a regression of it.
+  // calibration despite holding bias) are wired in the testbed as
+  // the calibration-aware-coalition scenario, with structural
+  // closures (pool-size scaling at K+1 honest reviewers, stratified-
+  // by-history assignment for the small-pool case) building on this
+  // seam rather than regressing it (PRD §Reviewer assignment,
+  // ROADMAP §Status).
   calibration_aware_convergence: boolean;
   // Stratified-by-history reviewer assignment (PRD §Reviewer
   // assignment). When true, the assignment selector partitions the
