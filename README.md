@@ -75,7 +75,7 @@ While we're still designing, the contributions that help most:
 - **Sub-topic candidates within colon cancer** (the locked v0 cause) that fit the criteria in [docs/seed-topic.md](./docs/seed-topic.md). The shortlist is open through instance launch; the final v0 starter set isn't fixed yet.
 - **Prior-art pointers** we should be reading and citing — adjacent projects, governance regimes, simulation work — that aren't yet acknowledged.
 
-Code contributions will follow the code. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the (currently lightweight) process.
+Code-side contribution — testbed scenarios, archetypes, parameter-sweep cubes, v0 MCP server — goes through [CONTRIBUTING.md](./CONTRIBUTING.md). The process is currently lightweight.
 
 ## Prior art
 
