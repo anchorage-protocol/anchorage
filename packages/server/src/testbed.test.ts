@@ -815,16 +815,23 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // the bias. With pure-vote convergence and reputation tracked
     // against the converged outcome, a 2-of-3 coalition wins both
     // ledgers — the well-grounded honest excerpt is suppressed AND
-    // the honest reviewer is punished for voting honestly. This is
-    // the open attack surface PRD names; later phases close it via
-    // calibration (the Lazy bullet in the same section: "votes
-    // without reading. Should be caught by calibration")
-    // by seeding batches with proposals of known ground truth, so
-    // the strategic adversary's bias visibly diverges from the
-    // calibrated outcome rather than just from honest reviewers'
-    // votes. This test is the regression handle on the pre-
-    // calibration state — a defense that closes the surface should
-    // make this scenario fail.
+    // the honest reviewer is punished for voting honestly.
+    //
+    // Calibration injection (PRD §Calibration batches) and
+    // calibration-aware convergence (PRD §Reviewer assignment) are
+    // the v0-wired defenses that close this attack: the next two
+    // scenarios below exercise the attack with each defense enabled
+    // and pin the closure (calibration injection costs the coalition
+    // rep on bias-misaligned calibration items; calibration-aware
+    // convergence weights votes by per-(cause, sub-topic) calibration
+    // record so the bias-aligned suppression cannot reach the
+    // weighted-sum threshold). This scenario is the baseline that
+    // those closures read against — defaults disable both layers
+    // (calibration_inject_every_n: 0, calibration_aware_convergence:
+    // false), so the attack lands as the regression handle for the
+    // un-defended config. A defense that closes the attack at the
+    // baseline-config level (rather than as a layer added on top)
+    // would make this scenario fail.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
