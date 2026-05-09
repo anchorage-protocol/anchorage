@@ -74,8 +74,9 @@ import { StructuralVerifier, type Verifier } from './verifier.js';
 
 // Bootstrap input schemas. These are admin-surface inputs and are
 // deliberately separate from the contributor-facing MCP tool I/O in
-// `@anchorage/contracts/tools.ts` — see PRD §Service surfaces (admin
-// surface vs MCP tool surface).
+// `@anchorage/contracts/tools.ts` — see PRD §MCP tool surface
+// (admin-surface paragraph: "A separate admin surface — not exposed
+// as MCP tools — covers the curator-only operations").
 const MintIdentityInput = z.object({ display_name: z.string().min(1).max(100) }).strict();
 type MintIdentityInput = z.infer<typeof MintIdentityInput>;
 
@@ -2286,7 +2287,7 @@ export class Server {
       return { vote_id: vote.id };
     },
 
-    // PRD §Calibration batches (lines 200-201): reviewer batches mix
+    // PRD §Calibration batches: reviewer batches mix
     // real proposals with calibration items drawn from the graph's
     // validated history. Calibration items must be statistically
     // indistinguishable from real frontier work in the dimensions a

@@ -4335,7 +4335,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // accept matched the converged accept (PRIMING_COUNT items),
     // +calibration_pass_gain per calibration item her predicate
     // matched ground-truth on, -reviewer_inaccurate_loss for the one
-    // drift. The PRD §Reputation §244 contributor-initiated factor
+    // drift. The PRD §Reputation contributor-initiated factor
     // doesn't apply — these are reviewer rep movements, not
     // proposer ones. Both components see the same bumps; with no
     // time advanced yet, demonstrated and recent should be equal
@@ -6732,8 +6732,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // cube; but the *cause* is opposite, and reading both under one
   // attack_succeeded metric would conflate "defense closed an
   // attack" with "defense closed because honest review collapsed."
-  // Cube #5's two-metric template (PRD §architecture parameter-
-  // sweeps) names exactly this distinction: ASR for real attacks
+  // Cube #5's two-metric template (PRD §Adversary testbed
+  // (Architecture, "Parameter sweeps")) names exactly this
+  // distinction: ASR for real attacks
   // landing, lockout-rate for honest-pool collapse, and "a defense
   // that closes by collapsing the honest pool is not a defense."
   // This cube reads on both: paired-decline contributes to ASR,
