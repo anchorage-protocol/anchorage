@@ -1963,8 +1963,9 @@ export class Server {
     // propose_sub_topic stages the proposal; the SubTopic itself is not
     // materialized until a curator decision (accept-as-active via
     // curator.acceptProposal, or defer-as-proposed via
-    // curator.deferSubTopic, per PRD §Sub-topic creation). v1 will add auto-
-    // discovery; the tool surface stays the same.
+    // curator.deferSubTopic, per PRD §Sub-topic creation). Phase 3
+    // (ROADMAP §Phase 3) layers graph-derived auto-discovery on top;
+    // the tool surface stays the same.
     proposeSubTopic: async (
       caller: Caller,
       input: ProposeSubTopicInput,

@@ -45,7 +45,7 @@ These are settled. Challenge them only with strong new evidence, not casual reth
 - **Redundant peer review with calibration**: N reviewers per proposal, salted with calibration items drawn from the graph's own validated history. Reviewer-as-staking.
 - **Reputation per-(cause, sub-topic)**: anchored at cause, refined by sub-topic. Non-transferable, non-monetizable, no token.
 - **Credit from graph**: contributor credit on manuscript projection is computable from graph state.
-- **Sub-topic creation is curator-gated in v0**; auto-discovery is a v1 feature.
+- **Sub-topic creation is curator-gated in v0**; auto-discovery is a Phase 3 feature (PRD §Sub-topic creation, ROADMAP §Phase 3).
 - **No CLA. DCO sign-off only.** Inbound = outbound.
 - **Direct push to `main`** for maintainers; PRs for everyone else.
 
