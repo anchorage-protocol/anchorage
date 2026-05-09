@@ -5650,10 +5650,16 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // test is fast and the aggregate stays a *derived* metric over
     // observations the per-cell tests already validated.
     //
-    // Future sweeps will widen this shape — more attack patterns,
-    // more knob axes, finer attack-success-rate resolution — and the
-    // assertion shape (named defense config → expected ASR) is the
-    // template they'll follow.
+    // Subsequent sweeps follow this template (named defense config
+    // → expected ASR, derived off the per-cell expected_status
+    // fields). Cubes #2–5 (assignment-gate thresholds; the
+    // encounter-domain widening; the contention-weighting × paired-
+    // decline-floor interaction; the difficulty-aware re-baseline)
+    // each layered on this shape, and cube #5 generalized the
+    // single-ASR aggregate to the (ASR, lockout-rate) two-metric
+    // split that closes the honest-pool-collapse vs attack-landed
+    // conflation when a defense's failure mode is the former — that
+    // refinement was retrofitted into cube #4 in turn.
     interface AsrCell {
       anti_correlation_threshold: number;
       contention_weighted: boolean;
