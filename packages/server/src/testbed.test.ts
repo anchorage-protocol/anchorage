@@ -1472,9 +1472,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // cannot solo-drive a convergence on either side. The minimum
     // honest-reviewer count to beat a coalition of size K on the
     // suppression vector is K+1 — three honest votes outpace two
-    // coalition rejects when the threshold is 3. This is the third-
-    // honest-reviewer effect named in the convergence-aware-defense
-    // commit's milestones.
+    // coalition rejects when the threshold is 3. This is the
+    // K+1-honest-reviewer regime ROADMAP §Status names ("K+1
+    // honest reviewers outvote a K-member coalition").
     //
     // What the lever doesn't do: it doesn't help on small sub-topics
     // where the eligible pool can't furnish K+1 honest reviewers
