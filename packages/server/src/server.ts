@@ -2564,10 +2564,13 @@ export class Server {
   // convergent vote merges; divergent vote routes to a richer path.
   // The richer-path branch — more reviewers / curator escalation /
   // open_question carry-forward — isn't implemented in v0; this is
-  // the "convergent merges, otherwise hold" half. `revise` votes are
-  // counted toward neither threshold (revise is "needs work, not
-  // yet"); they remain available as a signal for future divergence
-  // resolution.
+  // the "convergent merges" half, with the divergence-closure sweep
+  // (`server.curator.archiveStaleProposals`) handling the unresolved
+  // divergence side at the configured window (PRD §Reviewer
+  // assignment "Divergence has a closure mechanism", ROADMAP
+  // §Status). `revise` votes are counted toward neither threshold
+  // (revise is "needs work, not yet"); they remain available as a
+  // signal for future divergence resolution.
   //
   // Some proposal kinds are curator-only (sub_topic, change_of_home
   // per PRD §Write-path tools (propose_change_of_home) and §Sub-topic creation) and are excluded from auto-resolution
