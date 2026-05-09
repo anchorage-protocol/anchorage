@@ -6853,10 +6853,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // alpha doesn't change Carol/Dave's demonstrated either. Cube #2
   // pins the sybil orthogonality at alpha=1; this cube is patient-
   // only, focused on the alpha-driven re-tuning question.
-  type AlphaCubeConfig =
-    | 'off'
-    | 'cube2-thresholds'
-    | 'retuned-thresholds';
+  type AlphaCubeConfig = 'off' | 'cube2-thresholds' | 'retuned-thresholds';
   interface AlphaGateSweepCell {
     name: string;
     review_credit_contention_alpha: number;
@@ -6942,24 +6939,21 @@ describe('testbed: synthetic populations against the wired surface', () => {
       expected_false_positive_lockout: false,
     },
   ];
-  it.each(alphaGateSweepCells)(
-    'difficulty-aware gate sweep: $name',
-    async ({
-      review_credit_contention_alpha,
+  it.each(alphaGateSweepCells)('difficulty-aware gate sweep: $name', async ({
+    review_credit_contention_alpha,
+    assignment_min_recent,
+    assignment_min_demonstrated,
+    expected_attack_succeeded,
+    expected_false_positive_lockout,
+  }) => {
+    const result = await runPatientAdversaryGateScenario({
       assignment_min_recent,
       assignment_min_demonstrated,
-      expected_attack_succeeded,
-      expected_false_positive_lockout,
-    }) => {
-      const result = await runPatientAdversaryGateScenario({
-        assignment_min_recent,
-        assignment_min_demonstrated,
-        review_credit_contention_alpha,
-      });
-      expect(result.attack_succeeded).toBe(expected_attack_succeeded);
-      expect(result.false_positive_lockout).toBe(expected_false_positive_lockout);
-    },
-  );
+      review_credit_contention_alpha,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.false_positive_lockout).toBe(expected_false_positive_lockout);
+  });
 
   it('difficulty-aware gate sweep cube: attack-success-rate and lockout-rate aggregate by (alpha, config)', () => {
     // Same aggregate shape the prior four cubes pin, with one
