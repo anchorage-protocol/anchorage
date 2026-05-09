@@ -72,7 +72,7 @@ See [ROADMAP.md](./ROADMAP.md) for phasing.
 While we're still designing, the contributions that help most:
 
 - **Pressure-testing the design.** Issues pointing at specific failure modes in the governance design are gold.
-- **Seed cause and sub-topic candidates** that fit the criteria in [docs/seed-topic.md](./docs/seed-topic.md) once that file lands.
+- **Sub-topic candidates within colon cancer** (the locked v0 cause) that fit the criteria in [docs/seed-topic.md](./docs/seed-topic.md). The shortlist is open through instance launch; the final v0 starter set isn't fixed yet.
 - **Prior-art pointers** we should be reading and citing — adjacent projects, governance regimes, simulation work — that aren't yet acknowledged.
 
 Code contributions will follow the code. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the (currently lightweight) process.
