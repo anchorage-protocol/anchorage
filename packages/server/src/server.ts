@@ -955,9 +955,9 @@ export class Server {
   }
 
   // Pick a calibration target for a reviewer in this cause. Calibration
-  // items are accepted-from-history proposals (PRD §Calibration batches
-  // PRD §Calibration batches: "drawn from the graph's own validated history — proposals
-  // that survived multiple confirmations and have been stable"). The
+  // items are accepted-from-history proposals (PRD §Calibration batches:
+  // "drawn from the graph's own validated history — proposals that
+  // survived multiple confirmations and have been stable"). The
   // task wears the same `review` shape as a real review task; the
   // accepted-status seam is what tells `cast_review_vote` to score
   // against ground truth instead of running convergence. Conflict-of-
