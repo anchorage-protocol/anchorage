@@ -1407,7 +1407,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // fails=0), so their convergence weights are ≥ 1 and the weighted-
     // sum threshold is reached. Compare against the previous test,
     // where the same coalition's weights collapsed to 0 and no-effect
-    // stayed staged. This is the regression handle on the open vector.
+    // stayed staged. This is the regression handle on the
+    // calibration-bypassed config — the closure stack (pool-size
+    // scaling at K+1 honest reviewers, stratified-by-history
+    // assignment for the small-pool case) lands in the next two
+    // scenarios.
     const excerpts = [...server.store.proposals.values()].filter(
       (p) => p.payload.kind === 'excerpt',
     );
