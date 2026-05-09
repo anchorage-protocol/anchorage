@@ -1464,9 +1464,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // where the eligible pool can't furnish K+1 honest reviewers
     // (PRD §Adversary taxonomy, Coalition bullet — "how the regime
     // degrades on small sub-topics where the floor isn't reached").
-    // And the
-    // assignment-time stratification work that closes that
-    // degradation is still the next defense target.
+    // The closure for that degradation is stratified-by-history
+    // assignment (PRD §Reviewer assignment, ROADMAP §Status —
+    // v0 stratum primitive + cross-stratum draw rule + the
+    // stratification-degraded flag that tightens convergence
+    // thresholds when fewer than N strata are reachable); the
+    // closure scenario sits separately in the same describe-block
+    // (calibration-aware coalition bypassing both calibration
+    // defenses fails once Carol+Dave have built shared vote-history
+    // and the cross-stratum draw routes Dave away from the contested
+    // proposal). This pool-size scenario stays as the regression
+    // handle on the lever-by-itself: the pool-size lever and the
+    // stratification stack compose, and pinning each in isolation
+    // is what keeps both legible when their composition gets edited.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
