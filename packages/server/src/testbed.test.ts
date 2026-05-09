@@ -5879,9 +5879,20 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     // Bootstrap rotation: three convergences, each with two
     // contributor-initiated accept votes. Each reviewer appears in
-    // two of the three pairs and ends with demonstrated=2.0. Pairs
-    // are carol+erin, carol+frank, erin+frank. After this, all
-    // three clear any demo-gate threshold ≤ 1.5.
+    // two of the three pairs and ends with demonstrated = 2 *
+    // alpha (each unanimous-easy convergence earns alpha credit
+    // under PRD §Reputation's review_credit_contention_alpha
+    // primitive). Pairs are carol+erin, carol+frank, erin+frank.
+    // The post-bootstrap demonstrated value is load-bearing for the
+    // alpha re-baseline cube (cube #5): cube-#2 thresholds at
+    // alpha=1 expect demonstrated=2.0 (clears demo=1.5); the alpha-
+    // shrinkage at alpha=0.5 produces demonstrated=1.0 (fails
+    // demo=1.5 → false-positive lockout); the re-tuned demo=0.75
+    // recovers the closure with honest-pool headroom of 0.25.
+    // Changing BOOTSTRAP_COUNT or the pair structure changes the
+    // bootstrap demonstrated value and silently de-calibrates
+    // cube #5's re-tuned threshold — keep the rotation as-is or
+    // re-derive the cube's expected lockout cells.
     const bootstrapPairs: Array<[typeof carol, typeof carol]> = [
       [carol, erin],
       [carol, frank],
