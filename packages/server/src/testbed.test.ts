@@ -7058,6 +7058,60 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(lockoutRate('0.5|retuned-thresholds')).toBe(0);
   });
 
+  // Cube #5 is patient-only because the sybil-amplified closure is
+  // alpha-invariant by mechanism: the demo gate fires on Eve via
+  // null-policy regardless of accumulation rate, and Carol/Dave's
+  // priming in the sybil runner uses the curator-fallback path
+  // (`bumpReputation` directly), which doesn't go through the
+  // convergence-driven `applyReputationUpdates` where alpha lives.
+  // That mechanism argument is unenforced unless a regression pins
+  // it — these cells run cube #2's four sybil configs at alpha=0.5
+  // and assert each `attack_succeeded` matches the alpha=1 value
+  // cube #2 already pinned. Any future change that wires
+  // alpha-scaling into the curator-fallback rep path or otherwise
+  // makes the sybil runner alpha-sensitive will trip these and
+  // force a re-evaluation of cube #5's patient-only scoping.
+  const sybilAlphaInvarianceCells = [
+    {
+      name: 'sybil, recent=0, demo=0 (no defenses)',
+      assignment_min_recent: 0,
+      assignment_min_demonstrated: 0,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'sybil, recent=0.5, demo=0 (recent gate inert against fresh recruit)',
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 0,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'sybil, recent=0, demo=1.5 (demo gate fires on Eve)',
+      assignment_min_recent: 0,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'sybil, recent=0.5, demo=1.5 (composition closes)',
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: false,
+    },
+  ];
+  it.each(
+    sybilAlphaInvarianceCells,
+  )('sybil-amplified alpha-invariance: $name matches alpha=1 outcome at alpha=0.5', async ({
+    assignment_min_recent,
+    assignment_min_demonstrated,
+    expected_attack_succeeded,
+  }) => {
+    const result = await runSybilAmplifiedGateScenario({
+      assignment_min_recent,
+      assignment_min_demonstrated,
+      review_credit_contention_alpha: 0.5,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
