@@ -1116,9 +1116,9 @@ export class Server {
     },
 
     // Curator-seeded sub-topics start `active`; contributor-proposed
-    // sub-topics (via the future `propose_sub_topic` tool) start
-    // `proposed` and need curator approval to activate. PRD §Sub-topic
-    // creation governance.
+    // sub-topics (via the wired `propose_sub_topic` tool) start
+    // `proposed` and need curator approval (curator.acceptProposal)
+    // to flip to `active`. PRD §Sub-topic creation governance.
     seedSubTopic: (input: SeedSubTopicInput): SubTopic => {
       const parsed = SeedSubTopicInput.parse(input);
       const causeId = parsed.cause_id as CauseId;
