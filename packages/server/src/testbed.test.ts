@@ -6534,11 +6534,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
   });
 
   it('gate-threshold sweep cube: attack-success-rate and lockout-rate aggregate by defense config', () => {
-    // Two-metric aggregate per cube #5's template (PRD
-    // §architecture parameter-sweeps): group cells by (defense
-    // knobs), read both ASR and lockout-rate. Computed off the
-    // static expected fields the per-cell tests already validated,
-    // so the aggregate stays a fast read over locked observations.
+    // Two-metric aggregate per cube #5's template (PRD §Adversary
+    // testbed, Architecture, "Parameter sweeps"): group cells by
+    // (defense knobs), read both ASR and lockout-rate. Computed
+    // off the static expected fields the per-cell tests already
+    // validated, so the aggregate stays a fast read over locked
+    // observations.
     // The lockout-rate split distinguishes "defense closed an
     // attack" from "defense closed because honest review collapsed
     // at the same gate"; with the sybil runner's honest-pool
