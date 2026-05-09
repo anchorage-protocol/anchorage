@@ -4205,9 +4205,16 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // standalone invariant — change the bookkeeping math and this
     // test catches it without the gate-scenario noise.
     //
-    // Class-aware thresholds (PRD §Reputation, "review-credit
-    // normalized by claim difficulty") and demonstrated-component
-    // eligibility-tier gating remain future iterations.
+    // The two refinements adjacent to this scenario *are* wired and
+    // covered by their own scenarios — difficulty-normalized review
+    // credit (PRD §Reputation, "review-credit normalized by claim
+    // difficulty") via the global `review_credit_contention_alpha`,
+    // and demonstrated-component gating via `assignment_min_demon-
+    // strated`. What remains as future iterations is class-aware
+    // *variation* of those primitives: per-proposal-kind / per-sub-
+    // topic alpha values, and the named eligibility tiers (PRD §Repu-
+    // tation, "Eligibility tiers public; numeric reputation private")
+    // the demonstrated gate would feed once tiers are defined.
     const PRIMING_COUNT = 4;
     const sources = new Map<string, string>();
     for (let i = 1; i <= PRIMING_COUNT; i++) {
