@@ -86,9 +86,11 @@ export class FakeVerifier implements Verifier {
 // Light normalization for span matching: collapse runs of whitespace
 // (including newlines) to a single space and trim. Enough to absorb
 // reflow differences between the source and a contributor's quote.
-// The full normalization spec PRD §Verification engine references will land with
-// the verification engine; this is the test-fixture rule, not the
-// spec.
+// PRD §Verification engine commits to a fuller spec ("whitespace,
+// quote-style, and a small set of typographic equivalences"); only
+// the whitespace dimension is wired here. Quote-style and typographic
+// equivalences are the outstanding scope, not the verification engine
+// itself, which routes every write tool through this module today.
 function normalize(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
