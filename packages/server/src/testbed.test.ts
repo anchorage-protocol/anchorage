@@ -4459,9 +4459,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
   });
 
   it('patient-adversary archetype: assignment gate refuses a drained adversary on the fresh drift attempt (PRD §Reputation, recent-activity gates assignment)', async () => {
-    // Closes the loop the bookkeeping scenario above named as the
-    // next slice. With `assignment_min_recent > 0` set, the recent-
-    // activity component is now consumed at request_assignment time:
+    // The companion scenario the bookkeeping scenario above points
+    // at: with `assignment_min_recent > 0` set, the recent-activity
+    // component is consumed at request_assignment time:
     // a caller whose decayed recent has fallen below threshold (and
     // who has any rep entries in the cause — fresh-reviewer bypass
     // still applies) is refused. The patient-adversary signature is
