@@ -6553,25 +6553,36 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     off side-steps it entirely (the full-weight rule is a cw=on
   //     branch).
   //
-  // The over-clustering pattern is not adversarial — the "attack
-  // succeeded" axis here measures *suppression by archival* on a
-  // contested target honest reviewers should have closed. From the
-  // proposer's perspective the failure mode is identical to a
-  // coalition's suppression-by-archival, which is why it sits in
-  // the same cube and reads on the same metric.
+  // The over-clustering pattern is not adversarial — there is no
+  // coalition in that runner, only three honest reviewers. The
+  // failure mode (contested ≠ accepted) is honest-pool collapse
+  // by the cluster gate, not an attack landing. From the proposer's
+  // perspective the *outcome* is the same shape as a coalition
+  // suppression-by-archival, which is why the patterns sit in one
+  // cube; but the *cause* is opposite, and reading both under one
+  // attack_succeeded metric would conflate "defense closed an
+  // attack" with "defense closed because honest review collapsed."
+  // Cube #5's two-metric template (PRD §architecture parameter-
+  // sweeps) names exactly this distinction: ASR for real attacks
+  // landing, lockout-rate for honest-pool collapse, and "a defense
+  // that closes by collapsing the honest pool is not a defense."
+  // This cube reads on both: paired-decline contributes to ASR,
+  // over-clustering contributes to lockout-rate.
   //
-  // Expected ASR shape — (cw=off, floor=any): 0% (decline-aware
-  // raw-weight regime closes paired-decline; over-clustering does
-  // not trigger because the full-weight rule is a cw=on branch).
-  // (cw=on, floor=1): 50% (paired-decline still closes through
-  // Frank/Hank, but the over-clustering scenario lands the false-
-  // positive directly on contested — three honest reviewers in the
-  // pool with no fresh-singleton fallback). (cw=on, floor=2): 0%
-  // (the composition is the stable point — paired-decline closure
-  // survives, over-clustering closed by the floor). The headline:
-  // the floor is what makes the cw + decline-aware composition
-  // safe against the small-honest-pool case where there's no
-  // fresh-singleton bypass.
+  // Expected shape — (cw=off, floor=any): ASR=0%, lockout=0%
+  // (decline-aware raw-weight closes paired-decline; over-
+  // clustering does not trigger because the full-weight rule is a
+  // cw=on branch). (cw=on, floor=1): ASR=0%, lockout=50%
+  // (paired-decline still closes through Frank/Hank, but the over-
+  // clustering scenario lands the false-positive lockout on
+  // contested — three honest reviewers in the pool with no fresh-
+  // singleton fallback). (cw=on, floor=2): ASR=0%, lockout=0%
+  // (the stable composition — paired-decline closure survives,
+  // over-clustering false-positive closed by the floor). The
+  // headline: the floor is what makes the cw + decline-aware
+  // composition safe against the small-honest-pool case where
+  // there's no fresh-singleton bypass — and what makes that
+  // visible is the lockout-rate metric, not ASR.
   type ClusterDeclineFloorAttackPattern =
     | 'paired-decline-multi-round'
     | 'over-clustering-false-positive';
@@ -6581,6 +6592,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     stratum_contention_weighted: boolean;
     stratum_decline_min_paired: number;
     expected_attack_succeeded: boolean;
+    expected_false_positive_lockout: boolean;
   }
   const clusterDeclineFloorSweepCells: ClusterDeclineFloorSweepCell[] = [
     // Raw-weight regime, paired-decline multi-round. Carol+Dave's
@@ -6596,6 +6608,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       stratum_contention_weighted: false,
       stratum_decline_min_paired: 1,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
     },
     {
       name: 'paired-decline, cw=off, floor=2 (raw-weight closure; floor inert)',
@@ -6603,6 +6616,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       stratum_contention_weighted: false,
       stratum_decline_min_paired: 2,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
     },
     // Contention-weighted, floor=1: the over-clustering pathology
     // partially fires on priming — primingB ends staged because
@@ -6628,6 +6642,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       stratum_contention_weighted: true,
       stratum_decline_min_paired: 1,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
     },
     // Contention-weighted, floor=2: Carol-Dave clusters cleanly (2
     // paired declines meet the floor); honest pairs stay singletons
@@ -6639,6 +6654,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       stratum_contention_weighted: true,
       stratum_decline_min_paired: 2,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
     },
     // Over-clustering, raw weights. Carol-Dave and Carol-Erin each
     // have 2 vote-vote agreements + 1 decline-involved disagreement;
@@ -6654,6 +6670,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       stratum_contention_weighted: false,
       stratum_decline_min_paired: 1,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
     },
     {
       name: 'over-clustering, cw=off, floor=2 (raw-weight regime, full-weight rule inert)',
@@ -6661,6 +6678,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       stratum_contention_weighted: false,
       stratum_decline_min_paired: 2,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
     },
     // Contention-weighted + floor=1: the named pathology. Carol-
     // Dave's single decline-involved encounter at full weight
@@ -6675,7 +6693,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
       pattern: 'over-clustering-false-positive',
       stratum_contention_weighted: true,
       stratum_decline_min_paired: 1,
-      expected_attack_succeeded: true,
+      expected_attack_succeeded: false,
+      expected_false_positive_lockout: true,
     },
     // Floor=2 closes the false-positive: each honest pair has 1
     // decline-involved encounter < floor → contributes 0 weight,
@@ -6688,15 +6707,15 @@ describe('testbed: synthetic populations against the wired surface', () => {
       stratum_contention_weighted: true,
       stratum_decline_min_paired: 2,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
     },
   ];
-  it.each(
-    clusterDeclineFloorSweepCells,
-  )('cluster-decline floor sweep: $name → attack_succeeded=$expected_attack_succeeded', async ({
+  it.each(clusterDeclineFloorSweepCells)('cluster-decline floor sweep: $name', async ({
     pattern,
     stratum_contention_weighted,
     stratum_decline_min_paired,
     expected_attack_succeeded,
+    expected_false_positive_lockout,
   }) => {
     const contested_status =
       pattern === 'paired-decline-multi-round'
@@ -6713,37 +6732,40 @@ describe('testbed: synthetic populations against the wired surface', () => {
               stratum_decline_min_paired,
             })
           ).contested_status;
-    // attack_succeeded is the proposer's-perspective failure mode:
-    // anything other than 'accepted' on a target honest reviewers
-    // should have closed. The cube exercises three suppression
-    // modes: 'rejected' (convergence in the wrong direction —
-    // paired-decline closure failing under (cw=off) regimes wired
-    // by the prior cube but kept here as a regression handle on
-    // the broader read), 'unresolved-archived' (the over-
-    // clustering scenario archives contested after the divergence
-    // window when stratification-degraded threshold tightening
-    // blocks convergence), and 'staged' (the paired-decline
-    // runner under cw=on + floor=1: priming itself breaks, the
-    // suppression round can't push contested past its degraded
-    // threshold either, the runner does not advance time so the
-    // archival sweep doesn't fire and the proposal stays staged).
-    // All three read as suppression on the proposer's side.
-    const attack_succeeded = contested_status !== 'accepted';
+    // The cube reads two metrics (per cube #5's template), keyed on
+    // pattern. The paired-decline runner has a real adversary
+    // (Carol+Dave) and contested ≠ accepted is suppression-by-
+    // attack landing → ASR. The over-clustering runner has no
+    // adversary and contested ≠ accepted is honest-pool collapse
+    // by the cluster gate → lockout-rate. The cube exercises three
+    // suppression modes ('rejected', 'unresolved-archived',
+    // 'staged') under the paired-decline runner and the same
+    // outcome shape under the over-clustering runner; what
+    // changes between them is the *cause*, which is what the
+    // pattern-keyed split makes visible.
+    const attack_succeeded =
+      pattern === 'paired-decline-multi-round' && contested_status !== 'accepted';
+    const false_positive_lockout =
+      pattern === 'over-clustering-false-positive' && contested_status !== 'accepted';
     expect(attack_succeeded).toBe(expected_attack_succeeded);
+    expect(false_positive_lockout).toBe(expected_false_positive_lockout);
   });
 
-  it('cluster-decline floor sweep cube: attack-success-rate aggregates by defense config', () => {
-    // Same aggregate-ASR shape the prior three cubes pin: group
-    // cells by the defense config, tally attack-pattern wins, assert
-    // per-config ASR. The metric is computed off the static
-    // expected_attack_succeeded fields the per-cell tests already
-    // validated, so the aggregate stays a fast read over locked
-    // observations rather than a re-run of the cube.
+  it('cluster-decline floor sweep cube: attack-success-rate and lockout-rate aggregate by defense config', () => {
+    // Two-metric aggregate per cube #5's template (PRD
+    // §architecture parameter-sweeps): group cells by defense
+    // config and read both ASR and lockout-rate, computed off the
+    // static expected fields the per-cell tests already validated
+    // so the aggregate stays a fast read over locked observations
+    // rather than a re-run of the cube. The split is what
+    // distinguishes "defense closed an attack" from "defense
+    // closed because honest review collapsed at the same gate."
     interface AsrCell {
       stratum_contention_weighted: boolean;
       stratum_decline_min_paired: number;
       total: number;
       attacks_succeeded: number;
+      lockouts: number;
     }
     const grouped = new Map<string, AsrCell>();
     for (const cell of clusterDeclineFloorSweepCells) {
@@ -6753,9 +6775,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
         stratum_decline_min_paired: cell.stratum_decline_min_paired,
         total: 0,
         attacks_succeeded: 0,
+        lockouts: 0,
       };
       g.total += 1;
       if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      if (cell.expected_false_positive_lockout) g.lockouts += 1;
       grouped.set(key, g);
     }
     const asr = (key: string): number => {
@@ -6763,31 +6787,41 @@ describe('testbed: synthetic populations against the wired surface', () => {
       if (!g) throw new Error(`missing defense config: ${key}`);
       return g.attacks_succeeded / g.total;
     };
+    const lockoutRate = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.lockouts / g.total;
+    };
 
     // Raw-weight regime: the contention-weighting full-weight rule
     // for declines is inactive, so the floor parameter has no
-    // effect. Both cells in each row close on outcome (paired-
-    // decline via raw anti-correlation on the 2 paired declines;
-    // over-clustering via the cluster-disabling raw-weight reading
-    // of the asymmetric trigger encounter).
+    // effect. Paired-decline closes via raw anti-correlation on
+    // the 2 paired declines (no attacks land); over-clustering's
+    // asymmetric trigger encounter at raw weights lights nothing
+    // (no honest-pool collapse). Both metrics at 0%.
     expect(asr('0|1')).toBe(0);
+    expect(lockoutRate('0|1')).toBe(0);
     expect(asr('0|2')).toBe(0);
+    expect(lockoutRate('0|2')).toBe(0);
     // Contention-weighted with floor=1 (the unsafe composition):
-    // the over-clustering false-positive lands the contested
-    // target in 'unresolved-archived' (three honest reviewers with
-    // no fresh-singleton fallback all gated out). The paired-
-    // decline runner has the same false-clustering happen on
-    // priming but Frank+Hank walk in fresh in Round 2 and carry
-    // contested through. ASR = 50% — the gap the floor closes on
-    // the small-honest-pool case.
-    expect(asr('1|1')).toBe(0.5);
+    // the paired-decline runner lands no attack — Frank+Hank walk
+    // in fresh in Round 2 and carry contested. The over-clustering
+    // runner lands the false-positive lockout: three honest
+    // reviewers in the small pool all false-cluster, no fresh-
+    // singleton fallback, contested archives. ASR=0%, lockout=50%
+    // — the gap the floor closes, made visible by the two-metric
+    // split. (The previous one-metric aggregate read this cell as
+    // ASR=50%, conflating honest-pool collapse with attack
+    // landing.)
+    expect(asr('1|1')).toBe(0);
+    expect(lockoutRate('1|1')).toBe(0.5);
     // Contention-weighted with floor=2 (the stable composition):
-    // both attack patterns close. ASR = 0%. This is the headline —
-    // the floor is what makes the cw + decline-aware composition
-    // safe against the small-honest-pool case. cw=off side-steps
-    // the issue (the full-weight rule is a cw=on branch); cw=on
-    // requires the floor.
+    // both metrics at 0%. The headline — the floor is what makes
+    // the cw + decline-aware composition safe against the small-
+    // honest-pool case. cw=off side-steps the issue (the full-
+    // weight rule is a cw=on branch); cw=on requires the floor.
     expect(asr('1|2')).toBe(0);
+    expect(lockoutRate('1|2')).toBe(0);
 
     // Coverage invariant: every defense config in the cube has both
     // attack patterns. A future cell expansion that breaks this
