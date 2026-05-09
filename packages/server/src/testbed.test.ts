@@ -1141,9 +1141,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // What this defense does not do: stop a calibration-aware
     // adversary that holds bias on real proposals while voting
     // ground-truth on calibration items (PRD §Adversary taxonomy,
-    // Strategic adversary). That's an
-    // open testbed target that builds on this seam, not a regression
-    // of it.
+    // Strategic adversary). That archetype is wired as the next
+    // scenario's regression handle on this seam, and the closure
+    // stack lands in the two scenarios after — pool-size scaling
+    // at K+1 honest reviewers and stratified-by-history assignment
+    // for the small-pool case (PRD §Reviewer assignment, ROADMAP
+    // §Status).
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
