@@ -66,7 +66,7 @@ Every node has:
 - `status` — `staged` (under review), `active` (merged), `superseded` (replaced), `rejected` (review failed), `unresolvable` (anchors only — re-verification has failed and the node surfaces as a frontier item; see [Verification engine](#verification-engine))
 - `created_by`, `created_at`, `updated_at`
 
-The **active node rule** (matching Galleon's contract): a node is *inactive* if it is the `from` end of a `supersedes` edge.
+The **active node rule**: a node is *inactive* if it is the `from` end of a `supersedes` edge.
 
 ### Edges
 
