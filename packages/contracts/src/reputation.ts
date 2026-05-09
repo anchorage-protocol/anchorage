@@ -19,10 +19,16 @@ import { Timestamp } from './timestamps.js';
 // half-lives are testbed-tuned and live in the server's review
 // config; the contract is intentionally neutral about the formula.
 //
-// Eligibility/assignment gating consuming these components is *not*
-// yet wired in v0 — the components are bookkeeping today and become
-// gates when the testbed picks thresholds. PRD §Reputation: "Specific
-// formulas tuned in testbed."
+// Eligibility and assignment gating consuming these components is
+// wired today via the server's `assignment_min_demonstrated` and
+// `assignment_min_recent` review-config knobs (PRD §Reputation,
+// ROADMAP §Status); thresholds default to 0 (gates inert) so existing
+// scenarios are unaffected, and per-archetype scenarios in
+// testbed.test pin the consumption shape under the patient-adversary
+// drained-recent and sybil-amplified never-proven signatures. The
+// stored fields stay schema-neutral about the gates; specific
+// threshold values remain testbed-tuned per PRD §Reputation
+// ("Specific formulas tuned in testbed").
 export const Reputation = z
   .object({
     identity_id: IdentityId,
