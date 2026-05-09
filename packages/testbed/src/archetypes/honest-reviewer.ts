@@ -4,13 +4,18 @@ import { type AnchorageClient, AnchorageClientError } from '../client.js';
 // honest-reviewer: a contributor that pulls review assignments and
 // votes on them. The decision is delegated to a `decide` callback so
 // the archetype can host different reviewer behaviors over the same
-// loop machinery — accept-all (the simplest honest baseline), the
-// "principled reviewer" (decides based on the payload's grounding),
-// or future adversary variants like "always-accept lazy reviewer"
-// (the calibration-trip test target — calibration items are accepted
-// proposals from validated history; a lazy-accept reviewer trips
-// calibration as soon as a calibration item is reject-worthy in
-// context).
+// loop machinery. The wired deciders below cover the lazy /
+// strategic-coalition / decline-pattern axes of the adversary
+// taxonomy: `acceptAllDecider` is the always-accept lazy reviewer
+// that calibration injection traps when a calibration item lands
+// reject-worthy in context (calibration items are accepted-from-
+// validated-history proposals, scored against ground truth on
+// `cast_review_vote`); `payloadBiasedDecider` is the strategic-
+// adversary primitive (configurable hidden objective + biased
+// rationale strings); `payloadDecliningDecider` is the decline-
+// pattern primitive (declines outside the adversary's preferred
+// shape, surfacing on the curator-side `declinePatterns` projection
+// and the assignment-time decline-rate gate).
 //
 // The rationale string is part of the contract — PRD §Write-path
 // tools (cast_review_vote) requires a rationale on every vote. The `decide` callback supplies
@@ -78,9 +83,18 @@ export const rejectAllDecider: ReviewDecider = {
 // The rationale strings are surfaced over the wire and visible to
 // reviewers and curators. A real strategic adversary would phrase
 // rationales innocuously; the configurable strings let scenarios
-// model that. Calibration's job (Phase-2 work) is to detect bias
-// despite innocuous rationales by seeding the batch with proposals
-// of known ground truth.
+// model that. Calibration is the v0-wired defense that detects bias
+// despite innocuous rationales: assignment-injected items drawn from
+// validated history, scored against ground truth on `cast_review_vote`
+// (PRD §Calibration batches). The strategic-coalition standalone
+// scenarios exercise both halves — the rep-ledger cost on bias-
+// misaligned calibration items, and the calibration-aware convergence
+// weighting that compounds it. The calibration-aware variant of the
+// strategic archetype (votes with ground truth on calibration items
+// but biased on real proposals) is the bypass that the calibration-
+// aware-coalition standalone scenario pins, with stratification + the
+// cluster-signal refinements (contention-weighted, anti-correlation,
+// decline-aware) as the next layers the testbed exercises.
 export interface PayloadBiasedDeciderConfig {
   acceptIf: (payload: ProposalPayload) => boolean;
   rationaleAccept?: string;
