@@ -22,9 +22,14 @@ import { type AnchorageClient, AnchorageClientError } from '../client.js';
 //   - Run until no more eligible assignments are available, recording
 //     a small log of what it did.
 //
-// Future archetypes (lazy, hallucinator, strategic adversary, …) all
-// implement the same shape but with different behaviors — selective
-// declines, fabricated spans, calibration-trip targeting, etc.
+// Sibling archetypes implement the same shape but with different
+// behaviors: honest-weak (verifier-rejection-tolerant content provider
+// for the friction-rate axis), hallucinator (fabricated spans the
+// verifier rejects), and the reviewer archetypes (`runHonestReviewer`
+// with `acceptAllDecider` for the lazy pattern, `payloadBiasedDecider`
+// for the strategic-coalition pattern, `payloadDecliningDecider` for
+// the decline-pattern abuse pattern). All wired in the testbed today;
+// the contract above is the shared shape.
 
 export interface ContentForExcerpt {
   content: string;
