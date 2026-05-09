@@ -19,7 +19,7 @@ What problem does this solve? What attack does it close, or what contributor exp
 
 ## Adversary check
 
-Once the testbed exists, every governance change must be evaluated against the adversary suite before merging. If you have an early read on which adversary populations this change helps or hurts against, share it. If not, that's fine — the testbed will check.
+Every governance change must be evaluated against the adversary suite before merging — see [ROADMAP §Status](../../ROADMAP.md#status) for what the testbed currently covers and the wired closure stack. If you have an early read on which adversary populations this change helps or hurts against, share it. If not, that's fine — the testbed will check.
 
 ## Tradeoffs
 
