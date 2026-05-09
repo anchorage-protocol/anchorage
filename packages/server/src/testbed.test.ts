@@ -6048,6 +6048,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   }): Promise<{
     attack_succeeded: boolean;
     false_positive_lockout: boolean;
+    carol_demonstrated: number;
   }> {
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
@@ -6281,9 +6282,24 @@ describe('testbed: synthetic populations against the wired surface', () => {
     );
     const erinVoted = erinResult.actions.some((a) => a.kind === 'voted');
     const false_positive_lockout = erinIdleNotFound && !erinVoted && target?.status !== 'accepted';
+    // Surface Carol's demonstrated for the sybil alpha-invariance
+    // regression to pin: the structural sybil close (Eve null-policy
+    // demo gate) depends on Carol+Dave clearing the same gate, and
+    // their post-coalition-priming demonstrated lands exactly on the
+    // strict-less-than predicate at alpha=0.5 (3 unanimous accepts ×
+    // 0.5 = 1.5, equal to demo=1.5 → passes). The regression below
+    // pins the value so a change to the priming count, alpha, or the
+    // gate predicate trips a named invariant rather than silently
+    // shifting the closure mechanism.
+    const carolRep = await server.tools.queryReputation(
+      { identity_id: carol.id },
+      { cause_id: cause.id },
+    );
+    const carolRow = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id);
     return {
       attack_succeeded: target?.status === 'rejected',
       false_positive_lockout,
+      carol_demonstrated: carolRow?.demonstrated ?? 0,
     };
   }
 
@@ -7038,9 +7054,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // closure is alpha-invariant by null-policy (the gate fires on a
   // zero-rep identity at any alpha), and Carol/Dave's coalition
   // priming runs as contributor-initiated convergence so their
-  // demonstrated does scale with alpha but stays at threshold (3
+  // demonstrated does scale with alpha but lands at threshold (3
   // priming accepts × alpha = 1.5 at alpha=0.5, exactly equal to the
-  // demo=1.5 gate's strict-less-than predicate, so they pass). The
+  // demo=1.5 gate's strict-less-than predicate, so they pass — pinned
+  // explicitly by the post-priming-demonstrated regression below). The
   // sybil runner's honest-pool bootstrap follows the same shape the
   // patient runner uses and exhibits the same alpha-shrinkage failure
   // mode under cube-#2 thresholds — bootstrap demonstrated falls from
@@ -7291,6 +7308,31 @@ describe('testbed: synthetic populations against the wired surface', () => {
     });
     expect(result.attack_succeeded).toBe(expected_attack_succeeded);
     expect(result.false_positive_lockout).toBe(expected_false_positive_lockout);
+  });
+
+  it('sybil-amplified at alpha=0.5: Carol+Dave post-priming demonstrated lands at the demo=1.5 gate threshold', async () => {
+    // The structural sybil close at demo=1.5 depends on Carol+Dave
+    // passing the gate by exactly the strict-less-than predicate (3
+    // unanimous priming accepts × alpha=0.5 = 1.5, equal to the
+    // threshold → passes). Without this knife-edge, Carol+Dave fail
+    // the gate alongside Eve and the closure-by-attack vs closure-by-
+    // lockout split that cube #2's two-metric template reads becomes
+    // ambiguous on the sybil side. Run at the demo>0 regime (gates
+    // open against fresh callers via null-policy is irrelevant here —
+    // this assertion isolates the post-priming rep value, not the
+    // gate behavior) so contested stalls 'staged' rather than
+    // converging: Carol's reject lands but applyReputationUpdates
+    // only fires on convergence, so her demonstrated reflects exactly
+    // the 3 priming accepts × alpha. A change to the priming count,
+    // alpha, or the contention-alpha credit formula trips this named
+    // invariant rather than silently shifting Carol's demonstrated
+    // off the gate threshold.
+    const result = await runSybilAmplifiedGateScenario({
+      assignment_min_recent: 0,
+      assignment_min_demonstrated: 1.5,
+      review_credit_contention_alpha: 0.5,
+    });
+    expect(result.carol_demonstrated).toBeCloseTo(1.5, 10);
   });
 
   it('sybil-amplified at alpha=0.5 under cube-#5 re-tuned thresholds: closes attack by honest defense', async () => {
