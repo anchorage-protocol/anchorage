@@ -2225,15 +2225,34 @@ export class Server {
       if (isCalibration) {
         // Calibration scoring against ground truth. The proposal
         // survived to acceptance in validated history, so the
-        // expected vote is `accept`. PRD §Calibration batches: "Reviewers who
-        // fail calibration lose reputation"; PRD §Reputation: "rejected
-        // calibration items both decrease reputation." `revise` is a
-        // no-op for symmetry with the convergence-driven rep path,
-        // which also doesn't move rep on revise (PRD §Reputation-246
-        // are silent on revise; treating it as no-op preserves the
-        // "reviewer asked for more" signal without forcing it onto
-        // a binary scoring axis). The vote does not run convergence
-        // — the proposal is already resolved.
+        // expected vote is `accept`. PRD §Calibration batches:
+        // "Reviewers who fail calibration lose reputation"; PRD
+        // §Reputation: "rejected calibration items both decrease
+        // reputation." `revise` is a no-op for symmetry with the
+        // convergence-driven rep path, which also doesn't move rep
+        // on revise (PRD §Reputation is silent on revise; treating
+        // it as no-op preserves the "reviewer asked for more"
+        // signal without forcing it onto a binary scoring axis).
+        // The vote does not run convergence — the proposal is
+        // already resolved.
+        //
+        // Calibration credit is *not* alpha-scaled. PRD §Reputation
+        // commits `review_credit_contention_alpha` as the
+        // difficulty-normalization knob on convergence-derived
+        // review credit, applied in `applyReputationUpdates` per-
+        // convergence. The calibration path is ground-truth-
+        // individual (each item's correct answer is known), not
+        // convergence-derived, so applying contention-scaling here
+        // would be a category error: there's no contention to
+        // measure on a single calibration vote, and the calibration
+        // signal's whole point is to be a clean honesty channel
+        // independent of the convergence-tally seam. Cube #5 (the
+        // alpha re-baseline) reads off this distinction: the recent
+        // gate's threshold survives alpha < 1 because the recent
+        // buffer's quiet-window decay is dominated by alpha-
+        // invariant calibration credit, while the demo gate's
+        // threshold has to scale by alpha because the bootstrap
+        // demonstrated buffer is convergence-derived.
         const subTopicId = this.reputationSubTopicFor(proposal);
         const causeId = this.reputationCauseFor(proposal);
         if (subTopicId && causeId && parsed.decision !== 'revise') {
