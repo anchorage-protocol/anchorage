@@ -150,6 +150,8 @@ Read-path is largely MCP *resources* (passive), with a few active tools for quer
 
 Tool surface is intentionally small. Each tool has tight typing, server-side validation, and clear failure modes.
 
+*Implementation status:* the four query tools above are wired in v0 (ROADMAP §Status: "all 17 tools from the PRD ... and the read-path projections `query_frontier`, `query_proposals`, `fetch_calibration_batch`, `query_reputation`"). The four resources (`cause://`, `sub-topic://`, `node://`, `subgraph://`) are committed by the PRD as the passive browsing surface but are not yet implemented — they land alongside Phase 2's user-facing frontier surfaces and the Web UI browse layer (ROADMAP §Phase 2 §Scope). The Phase 1 testbed-driven adversary loop only needs the active query tools to observe archetype state, so resource-shaped browsing is a Phase 2 affordance and not a Phase 1 testbed primitive.
+
 ---
 
 ## Verification engine
