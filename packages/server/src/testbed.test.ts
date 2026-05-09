@@ -1079,12 +1079,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
       decide: naiveBiasedDecider,
     });
 
-    // Convergence still flips with the bias — calibration does not
-    // close the convergence-layer surface, only the rep-ledger one.
-    // This part of the assertion is the regression handle on the
-    // open-attack scenario above: if a future change closes the
-    // convergence vector too, this expectation should be updated
-    // alongside.
+    // Convergence still flips with the bias — calibration alone does
+    // not close the convergence-layer surface, only the rep-ledger
+    // one. The convergence-layer closure (calibration-aware-
+    // convergence weighting votes by per-(cause, sub-topic)
+    // calibration record) lands in the next scenario; this
+    // assertion is the regression handle on the calibration-only
+    // config so the convergence-still-flips observation stays
+    // observable when calibration alone is the only defense.
     const excerpts = [...server.store.proposals.values()].filter(
       (p) => p.payload.kind === 'excerpt',
     );
