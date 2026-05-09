@@ -2868,12 +2868,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // checked invariant; this test stays as the regression handle
     // on each refinement-alone config so the gap between thresholds
     // remains observable when the composition is unwired. The
-    // *next* testbed target on this seam — if a coalition surfaces
-    // that walks around the composition by avoiding co-voting on
-    // any contentious item — is whatever adaptation works around
-    // that constraint (PRD §Reviewer assignment names calibration-
-    // item-specific agreement and payload-feature vote patterns
-    // as the candidate refinements).
+    // seam beyond the composition closure — a coalition that
+    // avoids co-voting on any contentious item — has its concrete
+    // instance in the multi-proposal paired-decline coalition,
+    // closed structurally by the encounter-domain extension
+    // (`stratum_include_declines`) + paired-decline floor and
+    // operationally by the divergence-closure archival sweep
+    // (PRD §Reviewer assignment, ROADMAP §Status). Adaptations
+    // that route around both closures — coordinating off-platform
+    // so coalition members share no encounter at all — remain
+    // testbed targets if they surface; PRD §Reviewer assignment
+    // names calibration-item-specific agreement and payload-
+    // feature vote patterns as the candidate refinements for
+    // those.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
