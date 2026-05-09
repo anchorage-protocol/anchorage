@@ -65,7 +65,7 @@ See [ROADMAP.md](./ROADMAP.md) for phasing.
 - [PRD](./docs/prd.md) — data model, governance, calibration, credit, adversary testbed.
 - [Governance](./docs/governance.md) — contribution norms, review responsibilities, dispute resolution.
 - [Roadmap](./ROADMAP.md) — phased plan from simulation testbed to public instance.
-- [Seed topic](./docs/seed-topic.md) — the first cause the public instance will host, the starter sub-topics, and why. *(TBD)*
+- [Seed topic](./docs/seed-topic.md) — the first cause the public instance will host, the starter sub-topics, and why.
 
 ## Contributing
 
