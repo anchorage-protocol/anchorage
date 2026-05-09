@@ -4189,8 +4189,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     //     active between drift attempts, which is the patient-
     //     adversary's defining signature), her recent component
     //     decays toward zero while demonstrated is preserved. The
-    //     gap is the measurement an assignment-gating slice will
-    //     read against.
+    //     gap is the measurement the assignment-gating companion
+    //     scenario below reads against.
     //   - Carol's calibration record is all-passes; her vote weight
     //     at convergence stays well above the fresh-reviewer floor
     //     of 1.
