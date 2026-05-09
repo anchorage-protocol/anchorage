@@ -4380,13 +4380,15 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     // Cumulative buffer over per-drift cost: Carol's drift bandwidth
     // measured by the slow-decay component is the same as a single
-    // cumulative tally would give. No live gate yet *consumes* the
-    // demonstrated component to deny her further assignment, so this
-    // pin remains exactly as wide as before the two-component slice
-    // landed — and intentionally so. Eligibility tiers gating on
-    // demonstrated and assignment filters gating on recent are the
-    // next testbed iteration; their landing should be what tightens
-    // this number, not the bookkeeping change underneath them.
+    // cumulative tally would give. The gates that *consume* the
+    // components (assignment_min_demonstrated for eligibility tiers,
+    // assignment_min_recent for assignment draws) are both wired and
+    // exercised in the gate-scenario right below — but they default
+    // to 0 in this scenario, so this pin reads the bookkeeping-only
+    // cumulative buffer (the lever the gate scenario consumes), not
+    // the gated drift bandwidth. The gate scenario tightens this
+    // number from cumulative-buffer to 1; this scenario locks in the
+    // upstream lever it consumes.
     const driftBandwidth = Math.floor(carolDemonstrated / server.review.reviewer_inaccurate_loss);
     expect(driftBandwidth).toBeGreaterThan(1);
 
@@ -4394,12 +4396,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // half-lives (Carol stops being recently active — the patient-
     // adversary's defining behavior between drift attempts) and re-
     // read. Demonstrated should be unchanged; recent should fall
-    // toward zero. The gap is the lever. A future assignment-gating
-    // slice that requires recent ≥ some threshold for a draw closes
-    // the patient-adversary loop on this side: Carol can keep
-    // demonstrated high indefinitely, but cannot keep recent high
-    // without continuing to vote — and the votes themselves are
-    // observable.
+    // toward zero. The gap is the lever. The wired assignment-gating
+    // (assignment_min_recent > 0, exercised in the gate scenario
+    // below) closes the patient-adversary loop on this side: Carol
+    // can keep demonstrated high indefinitely, but cannot keep
+    // recent high without continuing to vote — and the votes
+    // themselves are observable.
     const QUIET_HALF_LIVES = 6;
     clock.advance(RECENT_HALF_LIFE_SECONDS * QUIET_HALF_LIVES * 1000);
     const carolRepAfter = await carolClient.queryReputation({ cause_id: cause.id });

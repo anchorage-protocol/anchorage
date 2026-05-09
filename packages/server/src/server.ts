@@ -2339,13 +2339,17 @@ export class Server {
   };
 
   readonly curator = {
-    // Curator-mediated acceptance. Phase 1 surface: until the review
-    // loop lands (assignment-driven sampling, vote tallying,
-    // convergence resolution), this is how staged proposals advance.
-    // Phase 2 keeps it as the curator-escalation path described in
-    // PRD §Reviewer assignment (step 4: curator escalation) and as the
-    // mechanism the eventual review-convergence code calls when it
-    // decides a proposal has accumulated enough accept-votes. The
+    // Curator-mediated acceptance. The review loop is wired
+    // (assignment-driven sampling at request_assignment, vote tallying
+    // through cast_review_vote, convergence resolution in
+    // resolveByConvergence), so contested proposals advance through
+    // the review path. This curator entry point persists for two
+    // reasons: (1) it is the curator-escalation path described in PRD
+    // §Reviewer assignment (step 4: curator escalation) for proposals
+    // the review loop cannot resolve (small pools, stale divergences
+    // routed here); (2) curator-only proposal kinds (sub_topic,
+    // change_of_home) and the testbed's scenario setup go through
+    // this seam directly rather than through the review loop. The
     // result includes whichever id the proposal materialized: a
     // node_id for graph-creating kinds, a sub_topic_id for sub_topic
     // kind, or neither for in-place mutations (membership, supersedes,
