@@ -4168,17 +4168,18 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Two-component bookkeeping is wired (PRD §Reputation): every
     // reputation event moves both components together; on read,
     // each component decays exponentially per its own half-life.
-    // The gating layers on top — `assignment_min_recent` (fast-decay
-    // recent-activity gating assignment) and `assignment_min_demon-
-    // strated` (slow-decay demonstrated-competence gating eligibility
-    // tiers) — are also wired and have their own scenarios below
-    // (the recent-gate scenario downstream pins Carol failing the
-    // gate after a quiet window; the demo-gate scenario pins fresh
-    // identities being refused at request_assignment until they
-    // bootstrap via contributor-initiated voting). This scenario
-    // stays focused on the bookkeeping and decay layer in isolation:
-    // gates default to 0 here so the rep-ledger movement is what's
-    // observed, not the gate behavior layered on top.
+    // The gating layers on top — `assignment_min_recent` (fast-decay,
+    // recent-activity gating assignment) and the slow-decay
+    // `assignment_min_demonstrated` (demonstrated-competence gating
+    // eligibility tiers) — are also wired and have their own
+    // scenarios below (the recent-gate scenario downstream pins
+    // Carol failing the gate after a quiet window; the demo-gate
+    // scenario pins fresh identities being refused at
+    // request_assignment until they bootstrap via contributor-
+    // initiated voting). This scenario stays focused on the
+    // bookkeeping and decay layer in isolation: gates default to 0
+    // here so the rep-ledger movement is what's observed, not the
+    // gate behavior layered on top.
     //
     // Setup: the same calibration-aware predicate the existing
     // calibration-aware-coalition tests use (accept anchors and
