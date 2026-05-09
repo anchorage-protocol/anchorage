@@ -1309,8 +1309,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // weights stay at full strength), and the rep ledger no longer
     // dominates honest reviewers — the coalition gains rep on every
     // calibration item AND on the bias-driven convergence outcomes.
-    // This is the open testbed target the convergence-aware defense
-    // commit's ROADMAP entry named.
+    // This scenario stays as the regression handle on the
+    // calibration-bypassed config; the closures the same describe-
+    // block wires below — pool-size scaling at K+1 honest reviewers
+    // (next scenario) and stratified-by-history assignment for the
+    // small-pool case (scenario after) — close it from above (PRD
+    // §Reviewer assignment, ROADMAP §Status).
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
