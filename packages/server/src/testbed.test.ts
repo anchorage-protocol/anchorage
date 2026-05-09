@@ -7047,8 +7047,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // 2.0 to 1.0 and re-trips lockout. The sybil cells would reproduce
   // cube #5's patient headline (lockout-by-shrunken-bootstrap, recovered
   // by demo-threshold re-tuning) without surfacing a new closure
-  // mechanism, so the sybil baseline at alpha=0.5 is pinned by the
-  // dedicated regression cells below rather than absorbed here.
+  // mechanism, so the sybil baseline at alpha=0.5 is pinned by two
+  // dedicated regressions below rather than absorbed here: the
+  // four-cell `sybilAlphaInvarianceCells` block re-runs cube #2's
+  // configs at alpha=0.5 (recent-only invariant, demo>0 re-tripping
+  // lockout), and a single re-tuned-thresholds cell pins that
+  // (recent=0.5, demo=0.75) closes the sybil attack by honest
+  // defense — the same shape cube #5's patient cell reads at the
+  // same configuration.
   type AlphaCubeConfig = 'off' | 'cube2-thresholds' | 'retuned-thresholds';
   interface AlphaGateSweepCell {
     name: string;
@@ -7285,6 +7291,32 @@ describe('testbed: synthetic populations against the wired surface', () => {
     });
     expect(result.attack_succeeded).toBe(expected_attack_succeeded);
     expect(result.false_positive_lockout).toBe(expected_false_positive_lockout);
+  });
+
+  it('sybil-amplified at alpha=0.5 under cube-#5 re-tuned thresholds: closes attack by honest defense', async () => {
+    // Pins the claim cube #5's patient-only scoping rests on: the
+    // sybil baseline at the re-tuned thresholds (recent=0.5, demo=
+    // 0.75) reads honest defense at both metrics, the same shape
+    // the patient cube reads at the same configuration. Under the
+    // re-tuned demo gate, the honest pool's alpha-shrunken bootstrap
+    // demonstrated (1.0) sits above the threshold (0.75) with the
+    // same 0.25 headroom the patient cube's headroom-preserving
+    // re-tuning is calibrated for, while Carol+Dave's coalition
+    // demonstrated (1.5) and Eve's null-policy zero-rep close stay
+    // alpha-invariant. Mechanism: Eve fails the demo gate by null-
+    // policy; Carol gets routed and rejects; Dave is cross-stratum-
+    // gated; Erin+Frank's accepts converge contested across
+    // singleton strata. If a future change makes the sybil runner
+    // diverge from the patient closure under the same re-tuned
+    // thresholds, this fires and the cube #5 patient-only scoping
+    // needs re-evaluation.
+    const result = await runSybilAmplifiedGateScenario({
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 0.75,
+      review_credit_contention_alpha: 0.5,
+    });
+    expect(result.attack_succeeded).toBe(false);
+    expect(result.false_positive_lockout).toBe(false);
   });
 
   it('surfaces typed error codes through AnchorageClientError', async () => {
