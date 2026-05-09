@@ -68,7 +68,10 @@ export type AssignmentTask = z.infer<typeof AssignmentTask>;
 // Lifecycle: offered (system pushed via request_assignment) →
 // accepted → submitted; or offered → declined; or offered → expired.
 // Decline is non-punitive on its own (PRD §Capacity and assignment);
-// pattern-decline is an abuse signal handled at the curator layer.
+// pattern-decline is an abuse signal handled by both a curator-side
+// projection (`declinePatterns`) and an assignment-time gate
+// (`assignment_max_decline_rate`) — same per-(cause, reviewer)
+// cumulative rate consumed at two surfaces.
 export const AssignmentStatus = z.enum(['offered', 'accepted', 'submitted', 'declined', 'expired']);
 export type AssignmentStatus = z.infer<typeof AssignmentStatus>;
 
@@ -84,8 +87,11 @@ export const Assignment = z
     fulfilled_by: ProposalId.optional(),
     // reason given on decline (PRD §Capacity and assignment).
     // Set on transition to `declined`. Persisted because pattern-
-    // declines are an abuse signal handled at the curator layer —
-    // the reason is what the curator inspects when patterns surface.
+    // declines surface to the curator-side `declinePatterns`
+    // projection where the reason is what the curator inspects
+    // when patterns surface — the assignment-time
+    // `assignment_max_decline_rate` gate reads only the cumulative
+    // rate, so the reason stays curator-facing by construction.
     decline_reason: z.string().min(1).optional(),
     created_at: Timestamp,
     updated_at: Timestamp,
