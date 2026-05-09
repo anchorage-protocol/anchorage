@@ -5757,7 +5757,13 @@ describe('testbed: synthetic populations against the wired surface', () => {
   async function runPatientAdversaryGateScenario(params: {
     assignment_min_recent: number;
     assignment_min_demonstrated: number;
-  }): Promise<{ attack_succeeded: boolean }> {
+    review_credit_contention_alpha?: number;
+  }): Promise<{
+    attack_succeeded: boolean;
+    carol_demonstrated: number;
+    carol_recent: number;
+    false_positive_lockout: boolean;
+  }> {
     const BOOTSTRAP_COUNT = 3;
     const PRIMING_COUNT = 4;
     const TOTAL_PRIMING = BOOTSTRAP_COUNT + PRIMING_COUNT;
@@ -5784,6 +5790,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
         recent_half_life_seconds: RECENT_HALF_LIFE_SECONDS,
         assignment_min_recent: params.assignment_min_recent,
         assignment_min_demonstrated: params.assignment_min_demonstrated,
+        review_credit_contention_alpha: params.review_credit_contention_alpha ?? 1,
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
@@ -5919,17 +5926,21 @@ describe('testbed: synthetic populations against the wired surface', () => {
       decide: acceptAllDecider,
     });
 
-    // The first contested target should now have converged to
-    // accepted (Erin + Frank's accepts dominate Carol's reject) —
-    // sanity check that the scenario's pre-conditions held before
-    // the gate-of-interest fires. If this is wrong every cell of
-    // the cube is suspect, so it's an invariant on every cell.
+    // The first contested target should converge to accepted under
+    // the canonical patient-adversary scenario (Erin + Frank's
+    // accepts dominate Carol's reject). Under cube #2's alpha=1
+    // thresholds, this always holds. Under the alpha cube's
+    // re-baseline with cube-#2 thresholds at alpha < 1, the demo
+    // gate's value-comparison can false-positive on honest
+    // reviewers whose bootstrap demonstrated shrinks proportionally
+    // — Erin/Frank get locked out at first request_assignment, the
+    // first contested target stalls staged, and the runner reports
+    // `false_positive_lockout` so the alpha cube can distinguish
+    // "attack closed by gate" from "honest review collapsed at the
+    // same gate." Cube #2's cells still observe lockout=false
+    // because their thresholds were calibrated for alpha=1.
     const firstContested = server.store.proposals.get(firstContestedProposalId);
-    if (firstContested?.status !== 'accepted') {
-      throw new Error(
-        `patient-adversary runner pre-condition: first contested expected accepted, got ${firstContested?.status}`,
-      );
-    }
+    const false_positive_lockout = firstContested?.status !== 'accepted';
 
     // Quiet window: Carol stops being recently active, by definition
     // of the patient-adversary archetype. Six recent half-lives
@@ -5976,7 +5987,23 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const carolRejects = [...server.store.reviewVotes.values()].filter(
       (v) => v.reviewer_id === carol.id && v.decision === 'reject',
     );
-    return { attack_succeeded: carolRejects.length >= 2 };
+    // Read Carol's rep at the post-quiet-window tick the gate
+    // consumed. The cube layered on this runner uses these to make
+    // the alpha-driven shrinkage of the demonstrated buffer visible
+    // alongside the attack-success outcome — the lift the difficulty-
+    // normalization wedge produces is mostly accounted for by the
+    // change in the demonstrated number, not a separate mechanism.
+    const carolRep = await server.tools.queryReputation(
+      { identity_id: carol.id },
+      { cause_id: cause.id },
+    );
+    const carolRow = carolRep.entries.find((e) => e.sub_topic_id === subTopic.id);
+    return {
+      attack_succeeded: carolRejects.length >= 2,
+      carol_demonstrated: carolRow?.demonstrated ?? 0,
+      carol_recent: carolRow?.recent ?? 0,
+      false_positive_lockout,
+    };
   }
 
   // Sybil-amplified-coalition runner: established Carol+Dave priming
@@ -5987,6 +6014,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   async function runSybilAmplifiedGateScenario(params: {
     assignment_min_recent: number;
     assignment_min_demonstrated: number;
+    review_credit_contention_alpha?: number;
   }): Promise<{ attack_succeeded: boolean }> {
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
@@ -6016,6 +6044,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
         // what closes the attack pattern.
         assignment_min_recent: params.assignment_min_recent,
         assignment_min_demonstrated: params.assignment_min_demonstrated,
+        review_credit_contention_alpha: params.review_credit_contention_alpha ?? 1,
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
@@ -6742,6 +6771,238 @@ describe('testbed: synthetic populations against the wired surface', () => {
     for (const cell of grouped.values()) {
       expect(cell.total).toBe(2);
     }
+  });
+
+  // Fifth parameter sweep cube: re-baseline cube #2 (the assignment-
+  // gate threshold cube) under the difficulty-aware regime that
+  // `review_credit_contention_alpha < 1` enables. PRD §Reputation
+  // commits the alpha primitive: reviewer rep deltas scale by
+  // `alpha + (1-alpha) * contention`, so unanimous-easy convergences
+  // earn `alpha` of the base delta and contentious convergences earn
+  // the full delta. Calibration credit (PRD §Calibration batches)
+  // flows through `bumpReputation` directly without going through
+  // the convergence-driven `applyReputationUpdates`, so it is *not*
+  // alpha-scaled — the calibration path is ground-truth-individual,
+  // not convergence-derived, and stays a pure-honesty channel.
+  //
+  // What the alpha primitive shrinks: the convergence-path reviewer
+  // credit, which dominates an honest reviewer's bootstrap
+  // demonstrated buffer in the patient runner. Specifically the
+  // 3-rotation bootstrap gives each reviewer demonstrated = 2 *
+  // alpha after the contributor-initiated ramp:
+  //   alpha=1.0 → bootstrap demonstrated = 2.0  (cube-#2 baseline)
+  //   alpha=0.5 → bootstrap demonstrated = 1.0  (half-credit ramp)
+  //
+  // The cube reads the same (recent, demo) gate composition cube #2
+  // pinned at alpha=1 — same thresholds (recent=0.5, demo=1.5),
+  // same archetype, same defense knobs — and observes that the
+  // thresholds calibrated for alpha=1 *false-positive-lock-out
+  // honest reviewers* under alpha=0.5: their bootstrap demonstrated
+  // (1.0) falls below the demo gate's value-comparison threshold
+  // (1.5), they fail at first request_assignment, the first
+  // contested target stalls staged, and the patient archetype's
+  // drift never starts. Cube reports both `attack_succeeded` and
+  // `false_positive_lockout` so "attack closed by the gate's
+  // designed mechanism" can be distinguished from "honest review
+  // collapsed at the same gate" — the second is a defense
+  // failure, not a defense success, even though attack_succeeded
+  // reads false in both cases.
+  //
+  // Re-tuned thresholds: cube #2's (recent=0.5, demo=1.5) was
+  // calibrated against the alpha=1 bootstrap demonstrated of 2.0,
+  // leaving 0.5 of headroom. To preserve that headroom under
+  // alpha=0.5 (bootstrap = 1.0), the demo gate must come down to
+  // 0.75 (half the cube-#2 value, half the cube-#2 headroom). The
+  // recent gate's quiet-window decay is dominated by calibration
+  // credit (alpha-invariant), so the recent threshold scales less.
+  // The re-tuned cell pins (recent=0.5, demo=0.75) under alpha=0.5:
+  // honest reviewers pass (1.0 > 0.75), Carol's drift gets routed,
+  // her recent decays through the quiet window, the recent gate
+  // fires on the second drift, and the headroom-on-honest-pool
+  // invariant is preserved.
+  //
+  // Sybil-amplified is dropped from this cube — the demo gate's
+  // closure on Eve is alpha-invariant (null-policy fires regardless
+  // of accumulation rate), and the sybil runner's curator-fallback
+  // priming path doesn't accrue applyReputationUpdates rep, so
+  // alpha doesn't change Carol/Dave's demonstrated either. Cube #2
+  // pins the sybil orthogonality at alpha=1; this cube is patient-
+  // only, focused on the alpha-driven re-tuning question.
+  type AlphaCubeConfig =
+    | 'off'
+    | 'cube2-thresholds'
+    | 'retuned-thresholds';
+  interface AlphaGateSweepCell {
+    name: string;
+    review_credit_contention_alpha: number;
+    config: AlphaCubeConfig;
+    assignment_min_recent: number;
+    assignment_min_demonstrated: number;
+    expected_attack_succeeded: boolean;
+    expected_false_positive_lockout: boolean;
+  }
+  const alphaGateSweepCells: AlphaGateSweepCell[] = [
+    // Alpha=1.0, no defense — the v0-baseline floor row. Patient
+    // archetype lands its drift, no honest-pool collapse.
+    {
+      name: 'alpha=1.0, gates off (no defense, attack lands)',
+      review_credit_contention_alpha: 1.0,
+      config: 'off',
+      assignment_min_recent: 0,
+      assignment_min_demonstrated: 0,
+      expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
+    },
+    // Alpha=1.0, cube-#2 thresholds — the cube-#2 result preserved.
+    // Recent gate fires on Carol's quiet-window-drained recent;
+    // demo gate doesn't fire (her demonstrated buffer holds).
+    // Honest pool clears the demo gate (bootstrap demonstrated=2.0
+    // > 1.5).
+    {
+      name: 'alpha=1.0, cube-#2 thresholds (cube-#2 result preserved)',
+      review_credit_contention_alpha: 1.0,
+      config: 'cube2-thresholds',
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
+    },
+    // Alpha=0.5, no defense — same floor row at the difficulty-
+    // aware regime. Alpha shrinks the rep buffer Carol builds, but
+    // with no gate consuming it the attack still lands.
+    {
+      name: 'alpha=0.5, gates off (no defense, attack lands)',
+      review_credit_contention_alpha: 0.5,
+      config: 'off',
+      assignment_min_recent: 0,
+      assignment_min_demonstrated: 0,
+      expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
+    },
+    // Alpha=0.5, cube-#2 thresholds (untuned re-baseline) — the
+    // failure mode the re-tuning is meant to address. Honest
+    // reviewers' bootstrap demonstrated (1.0) falls below cube-#2's
+    // demo gate (1.5), they're locked out at first request_
+    // assignment, the first contested target stalls staged, and the
+    // patient archetype's drift never starts. attack_succeeded
+    // reads false but only because honest review collapsed —
+    // false_positive_lockout=true.
+    {
+      name: 'alpha=0.5, cube-#2 thresholds (untuned: false-positive on honest reviewers)',
+      review_credit_contention_alpha: 0.5,
+      config: 'cube2-thresholds',
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: false,
+      expected_false_positive_lockout: true,
+    },
+    // Alpha=0.5, re-tuned thresholds — the headline. Demo gate
+    // comes down from 1.5 to 0.75 (half cube-#2's value, scaled by
+    // alpha to preserve the same honest-pool headroom). Recent
+    // gate stays at 0.5 because the recent decay through the quiet
+    // window is dominated by calibration credit, which is alpha-
+    // invariant. With these thresholds, Erin/Frank's bootstrap
+    // demonstrated (1.0) clears the demo gate (1.0 > 0.75), the
+    // first contested target converges accepted, the quiet window
+    // drains Carol's recent, the recent gate fires on her second
+    // drift, and the patient archetype's drift bandwidth stays at
+    // 1 — same closure as cube-#2's alpha=1 cell.
+    {
+      name: 'alpha=0.5, re-tuned thresholds (closure recovered, no false-positive)',
+      review_credit_contention_alpha: 0.5,
+      config: 'retuned-thresholds',
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 0.75,
+      expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
+    },
+  ];
+  it.each(alphaGateSweepCells)(
+    'difficulty-aware gate sweep: $name',
+    async ({
+      review_credit_contention_alpha,
+      assignment_min_recent,
+      assignment_min_demonstrated,
+      expected_attack_succeeded,
+      expected_false_positive_lockout,
+    }) => {
+      const result = await runPatientAdversaryGateScenario({
+        assignment_min_recent,
+        assignment_min_demonstrated,
+        review_credit_contention_alpha,
+      });
+      expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+      expect(result.false_positive_lockout).toBe(expected_false_positive_lockout);
+    },
+  );
+
+  it('difficulty-aware gate sweep cube: attack-success-rate and lockout-rate aggregate by (alpha, config)', () => {
+    // Same aggregate shape the prior four cubes pin, with one
+    // refinement: the metric is now {ASR, lockout-rate} rather than
+    // ASR alone. The lockout-rate is what makes the alpha cube
+    // distinguishable from cube #2: a cell with ASR=0% and lockout=
+    // 100% is *not* a defense success — honest review collapsed
+    // alongside the attack, and a real instance under those
+    // thresholds would be unable to function. Computed off the
+    // static expected fields the per-cell tests already validated,
+    // so the aggregate stays a fast read over locked observations.
+    interface AsrCell {
+      review_credit_contention_alpha: number;
+      config: AlphaCubeConfig;
+      total: number;
+      attacks_succeeded: number;
+      lockouts: number;
+    }
+    const grouped = new Map<string, AsrCell>();
+    for (const cell of alphaGateSweepCells) {
+      const key = `${cell.review_credit_contention_alpha}|${cell.config}`;
+      const g = grouped.get(key) ?? {
+        review_credit_contention_alpha: cell.review_credit_contention_alpha,
+        config: cell.config,
+        total: 0,
+        attacks_succeeded: 0,
+        lockouts: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      if (cell.expected_false_positive_lockout) g.lockouts += 1;
+      grouped.set(key, g);
+    }
+    const asr = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.attacks_succeeded / g.total;
+    };
+    const lockoutRate = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.lockouts / g.total;
+    };
+
+    // Floor: gates off → attack succeeds, no false-positive on
+    // honest reviewers (the gate isn't fired, so it can't false-
+    // positive). Both alphas read identically here.
+    expect(asr('1|off')).toBe(1);
+    expect(lockoutRate('1|off')).toBe(0);
+    expect(asr('0.5|off')).toBe(1);
+    expect(lockoutRate('0.5|off')).toBe(0);
+    // Cube-#2 thresholds at alpha=1: the v0-baseline result
+    // preserved — gate closes the patient archetype, no false-
+    // positive on honest pool.
+    expect(asr('1|cube2-thresholds')).toBe(0);
+    expect(lockoutRate('1|cube2-thresholds')).toBe(0);
+    // Cube-#2 thresholds at alpha=0.5: ASR=0% and lockout=100%.
+    // The "defense closed the attack" observation is false here —
+    // honest review collapsed at the same gate. This is the failure
+    // mode the re-tuning addresses.
+    expect(asr('0.5|cube2-thresholds')).toBe(0);
+    expect(lockoutRate('0.5|cube2-thresholds')).toBe(1);
+    // Re-tuned thresholds at alpha=0.5: ASR=0% and lockout=0%.
+    // The same closure cube #2 achieved at alpha=1 is recovered
+    // under alpha=0.5 by scaling the demo threshold to the new
+    // bootstrap demonstrated rate. This is the headline.
+    expect(asr('0.5|retuned-thresholds')).toBe(0);
+    expect(lockoutRate('0.5|retuned-thresholds')).toBe(0);
   });
 
   it('surfaces typed error codes through AnchorageClientError', async () => {
