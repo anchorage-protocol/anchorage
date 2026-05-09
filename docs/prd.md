@@ -310,9 +310,9 @@ Several adversary vectors that previously needed elaborate defenses collapse und
 
 What remains, and what the testbed continues to exercise:
 
-- **Patient adversary accepting clean assignments** to build rep over time, then drifting on a contested assigned proposal. Decay + two-component reputation + class-aware thresholds are the defenses.
-- **Decline-pattern abuse** — declining everything outside the adversary's preferred sub-topic to approximate selectivity. Decline-tracking + curator escalation handle this.
-- **Sybil farms providing capacity to absorb assignments** — global anti-abuse signals, identity-cost.
+- **Patient adversary accepting clean assignments** to build rep over time, then drifting on a contested assigned proposal. Two-component reputation with fast-decay recent gating assignment (`assignment_min_recent`) + difficulty-aware review credit (`review_credit_contention_alpha`) are the wired convergence-path defenses; calibration injection is a parallel ground-truth-individual channel that stays alpha-invariant by construction.
+- **Decline-pattern abuse** — declining everything outside the adversary's preferred sub-topic to approximate selectivity. The wired stack composes three layers: a curator-side `declinePatterns` projection (visibility), the assignment-time decline-rate gate (`assignment_max_decline_rate`, throughput-cap operational), and the cluster-signal decline-aware extension (`stratum_include_declines`, structural — encounters widen to `{accept, reject, decline}` so paired-decline coalitions light up the anti-correlation primitive that vote-only encounters miss).
+- **Sybil farms providing capacity to absorb assignments** — load-bearing defenses (identity-binding cost, rate-limited issuance, global anti-abuse signals) live below the v0 MCP layer and are not testbed-knob-expressible today (see [Identity](#identity) for the wiring status). The testbed-side regression handle is the sybil-amplified-coalition scenario in the [adversary taxonomy](#adversary-taxonomy); the MCP-layer closure stack composes with — but does not substitute for — the identity layer below.
 - **Hallucinated submissions on assigned tasks** — verification engine + reviewer responsibility.
 
 ### Adversary taxonomy
