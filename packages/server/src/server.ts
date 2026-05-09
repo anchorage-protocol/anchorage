@@ -623,8 +623,10 @@ export class Server {
   // graph by construction: a state change that closes a gap (an
   // excerpt landing on an orphan anchor; a review vote arriving on a
   // staged proposal) makes the frontier item disappear on the next
-  // call without bookkeeping. Used by `query_frontier` today and by
-  // `request_assignment` when that lands.
+  // call without bookkeeping. Used by `query_frontier` and by
+  // `request_assignment` (both wired and routed through this single
+  // projection — the assignment loop draws from the same frontier
+  // items the read-path query surfaces).
   //
   // v0 covers three of the four FrontierKind variants:
   //
@@ -1908,11 +1910,13 @@ export class Server {
     // sub-topic to a different one within the same cause. Rare in
     // practice — most apparent "wrong sub-topic" cases turn out to be
     // membership-needed cases, which is why the membership tool is the
-    // first thing contributors should reach for. PRD §Write-path tools (propose_change_of_home) marks
-    // this curator-approved; today every proposal is curator-mediated,
-    // and when the review loop lands change_of_home stays on the
-    // curator path while other proposal kinds move to the reviewer
-    // pool.
+    // first thing contributors should reach for. PRD §Write-path tools
+    // (propose_change_of_home) marks this curator-approved; the review
+    // loop is wired and other proposal kinds resolve through it
+    // (resolveByConvergence on accumulated votes), but change_of_home
+    // and sub_topic stay on the curator path — short-circuited inside
+    // resolveByConvergence by their kind, accepted only via
+    // curator.acceptProposal.
     proposeChangeOfHome: async (
       caller: Caller,
       input: ProposeChangeOfHomeInput,
@@ -2645,8 +2649,10 @@ export class Server {
   //   - Curator-only kinds (sub_topic, change_of_home) never reach
   //     this path; resolveByConvergence short-circuits earlier.
   //   - revise votes count for neither tier and earn no rep movement
-  //     (they remain available for the divergence-resolution path
-  //     when that lands).
+  //     (they remain available as a divergence signal — divergent
+  //     proposals route to the divergence-closure sweep
+  //     curator.archiveStaleProposals after the tunable window, per
+  //     PRD §Reviewer assignment).
   //   - Self-supersedes carve-outs (PRD §Reputation) don't apply yet —
   //     supersedes acceptance updates the from-node's status but
   //     doesn't flow back into this path; supersedes-driven
