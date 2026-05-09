@@ -6026,7 +6026,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     assignment_min_recent: number;
     assignment_min_demonstrated: number;
     review_credit_contention_alpha?: number;
-  }): Promise<{ attack_succeeded: boolean }> {
+  }): Promise<{
+    attack_succeeded: boolean;
+    false_positive_lockout: boolean;
+  }> {
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
@@ -6149,7 +6152,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
         offset: 0,
       },
     });
-    await runHonestReviewer(erinClient, {
+    const erinResult = await runHonestReviewer(erinClient, {
       cause_id: cause.id,
       rate: 5,
       decide: acceptAllDecider,
@@ -6171,7 +6174,31 @@ describe('testbed: synthetic populations against the wired surface', () => {
     });
 
     const target = server.store.proposals.get(contested.proposal_id);
-    return { attack_succeeded: target?.status === 'rejected' };
+    // Lockout reading per cube #5's two-metric template: honest
+    // review collapsed at the gate. Erin is the lone honest
+    // reviewer in this runner; if her requestAssignment loop ended
+    // on `not_found` before she cast any vote and the contested
+    // target didn't reach 'accepted', the apparent closure was
+    // lockout-driven — the demo gate firing on Eve also fired on
+    // Erin (both have zero rep going into contested), and the
+    // contested target stalled because no honest vote landed, not
+    // because the attack was repelled. Erin's lack of bootstrap is
+    // the runner-fidelity gap: a realistic sybil scenario would
+    // bootstrap Erin first the way the patient runner bootstraps
+    // its honest reviewers, but doing so without false-clustering
+    // Erin into Carol+Dave's coalition (they prime by unanimous
+    // accepts on shared excerpts) is a design problem the runner
+    // hasn't solved yet. Until it does, the cube reads honestly:
+    // demo>0 cells close attack_succeeded by lockout, not defense.
+    const erinIdleNotFound = erinResult.actions.some(
+      (a) => a.kind === 'idle' && a.reason === 'not_found',
+    );
+    const erinVoted = erinResult.actions.some((a) => a.kind === 'voted');
+    const false_positive_lockout = erinIdleNotFound && !erinVoted && target?.status !== 'accepted';
+    return {
+      attack_succeeded: target?.status === 'rejected',
+      false_positive_lockout,
+    };
   }
 
   interface GateSweepCell {
@@ -6180,6 +6207,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     assignment_min_recent: number;
     assignment_min_demonstrated: number;
     expected_attack_succeeded: boolean;
+    expected_false_positive_lockout: boolean;
   }
   const gateSweepCells: GateSweepCell[] = [
     // Both gates off — neither archetype hits a defense. Floor row.
@@ -6189,6 +6217,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       assignment_min_recent: 0,
       assignment_min_demonstrated: 0,
       expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
     },
     {
       name: 'sybil-amplified coalition, recent=0, demo=0 (no defenses)',
@@ -6196,6 +6225,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       assignment_min_recent: 0,
       assignment_min_demonstrated: 0,
       expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
     },
     // Recent gate only — closes patient-adversary, sybil bypasses
     // (Eve has no rep so the recent-gate bypass applies; Carol/Dave
@@ -6206,6 +6236,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       assignment_min_recent: 0.5,
       assignment_min_demonstrated: 0,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
     },
     {
       name: 'sybil-amplified coalition, recent=0.5, demo=0 (gate inert against fresh recruit)',
@@ -6213,87 +6244,95 @@ describe('testbed: synthetic populations against the wired surface', () => {
       assignment_min_recent: 0.5,
       assignment_min_demonstrated: 0,
       expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
     },
-    // Demo gate only — closes sybil-amplified, patient bypasses
-    // (Carol's demonstrated stays high through the quiet window, so
-    // the eligibility-tier gate has no edge against her).
+    // Demo gate only — closes patient via no path (demonstrated
+    // buffer holds), and apparently closes sybil but actually via
+    // honest-pool collapse: Erin (lone honest reviewer) has zero
+    // rep going into contested because the runner doesn't bootstrap
+    // her, so the demo gate that fires on Eve also fires on Erin.
+    // Contested stalls 'staged' with Carol's lone reject, attack_
+    // succeeded reads false but the closure mechanism is lockout,
+    // not honest defense. Cube #5's two-metric template surfaces
+    // this directly: ASR closes here only because the lockout
+    // closes the path the attack would have taken.
     {
       name: 'patient adversary, recent=0, demo=1.5 (gate inert against demonstrated buffer)',
       pattern: 'patient',
       assignment_min_recent: 0,
       assignment_min_demonstrated: 1.5,
       expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
     },
     {
-      name: 'sybil-amplified coalition, recent=0, demo=1.5 (demo gate fires on Eve)',
+      name: 'sybil-amplified coalition, recent=0, demo=1.5 (demo gate fires on Eve and Erin; lockout-driven)',
       pattern: 'sybil',
       assignment_min_recent: 0,
       assignment_min_demonstrated: 1.5,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: true,
     },
-    // Composition — both gates closed against their named patterns.
+    // Composition — patient closes by recent-gate honest defense
+    // (Carol drains, Erin/Frank pass with bootstrap demonstrated=
+    // 2.0); sybil "closes" by the same demo-gate-on-Erin lockout
+    // the demo-only cell already exposes. Same caveat applies: the
+    // defense-success reading on the sybil side is lockout-driven
+    // until the runner gives Erin a bootstrap path that doesn't
+    // false-cluster her with Carol+Dave.
     {
       name: 'patient adversary, recent=0.5, demo=1.5 (composition closes)',
       pattern: 'patient',
       assignment_min_recent: 0.5,
       assignment_min_demonstrated: 1.5,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
     },
     {
-      name: 'sybil-amplified coalition, recent=0.5, demo=1.5 (composition closes)',
+      name: 'sybil-amplified coalition, recent=0.5, demo=1.5 (composition closes via Erin lockout)',
       pattern: 'sybil',
       assignment_min_recent: 0.5,
       assignment_min_demonstrated: 1.5,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: true,
     },
   ];
-  it.each(
-    gateSweepCells,
-  )('gate-threshold sweep: $name → attack_succeeded=$expected_attack_succeeded', async ({
+  it.each(gateSweepCells)('gate-threshold sweep: $name', async ({
     pattern,
     assignment_min_recent,
     assignment_min_demonstrated,
     expected_attack_succeeded,
+    expected_false_positive_lockout,
   }) => {
-    if (pattern === 'patient') {
-      const result = await runPatientAdversaryGateScenario({
-        assignment_min_recent,
-        assignment_min_demonstrated,
-      });
-      expect(result.attack_succeeded).toBe(expected_attack_succeeded);
-      // Cube #2 invariant: under the runner's default
-      // review_credit_contention_alpha = 1, the bootstrap
-      // demonstrated of 2.0 always clears cube-#2's demo
-      // threshold (≤ 1.5), so honest reviewers pass the gate at
-      // first request_assignment and the first contested target
-      // converges accepted. Cube #5 reads the breakdown of this
-      // invariant under alpha < 1; cube #2's job is to lock in
-      // that the alpha=1 regime never lockouts honest review.
-      // A future cell that pushes demo above 2.0 (or otherwise
-      // changes runner-default rep accumulation) trips this and
-      // forces the cube to either re-tune or move to cube #5.
-      expect(result.false_positive_lockout).toBe(false);
-    } else {
-      const result = await runSybilAmplifiedGateScenario({
-        assignment_min_recent,
-        assignment_min_demonstrated,
-      });
-      expect(result.attack_succeeded).toBe(expected_attack_succeeded);
-    }
+    const result =
+      pattern === 'patient'
+        ? await runPatientAdversaryGateScenario({
+            assignment_min_recent,
+            assignment_min_demonstrated,
+          })
+        : await runSybilAmplifiedGateScenario({
+            assignment_min_recent,
+            assignment_min_demonstrated,
+          });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.false_positive_lockout).toBe(expected_false_positive_lockout);
   });
 
-  it('gate-threshold sweep cube: attack-success-rate aggregates by defense config', () => {
-    // Same aggregate-ASR shape the decorrelation cube above pins:
-    // group cells by (defense knobs), tally attack-pattern wins,
-    // assert per-config ASR. The metric is computed off the static
-    // `expected_attack_succeeded` fields the per-cell tests already
-    // validated, so the aggregate is a fast read over locked
-    // observations rather than a re-run of the cube.
+  it('gate-threshold sweep cube: attack-success-rate and lockout-rate aggregate by defense config', () => {
+    // Two-metric aggregate per cube #5's template (PRD
+    // §architecture parameter-sweeps): group cells by (defense
+    // knobs), read both ASR and lockout-rate. Computed off the
+    // static expected fields the per-cell tests already validated,
+    // so the aggregate stays a fast read over locked observations.
+    // The lockout-rate split is what surfaces that the demo gate's
+    // apparent sybil closure in the runner's current state is
+    // honest-pool collapse, not honest defense — Erin doesn't
+    // bootstrap, the demo gate fires on her too, contested stalls.
     interface AsrCell {
       assignment_min_recent: number;
       assignment_min_demonstrated: number;
       total: number;
       attacks_succeeded: number;
+      lockouts: number;
     }
     const grouped = new Map<string, AsrCell>();
     for (const cell of gateSweepCells) {
@@ -6303,9 +6342,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
         assignment_min_demonstrated: cell.assignment_min_demonstrated,
         total: 0,
         attacks_succeeded: 0,
+        lockouts: 0,
       };
       g.total += 1;
       if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      if (cell.expected_false_positive_lockout) g.lockouts += 1;
       grouped.set(key, g);
     }
     const asr = (key: string): number => {
@@ -6313,22 +6354,41 @@ describe('testbed: synthetic populations against the wired surface', () => {
       if (!g) throw new Error(`missing defense config: ${key}`);
       return g.attacks_succeeded / g.total;
     };
+    const lockoutRate = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.lockouts / g.total;
+    };
 
-    // No defenses: both attacks succeed. Floor.
+    // No defenses: both attacks succeed, no gate to lockout.
     expect(asr('0|0')).toBe(1);
+    expect(lockoutRate('0|0')).toBe(0);
     // Recent gate alone: closes patient-adversary; sybil bypasses
     // because the gate has fresh-reviewer bypass and Eve sits at
-    // zero rep. ASR = 50% — half the surface remains.
+    // zero rep. No lockout — recent-gate's null-policy bypasses
+    // fresh reviewers, so Erin walks in and votes accept.
     expect(asr('0.5|0')).toBe(0.5);
-    // Demo gate alone: closes sybil-amplified; patient bypasses
-    // because Carol's demonstrated component is preserved across
-    // the quiet window (slow-decay) and clears any reasonable
-    // eligibility threshold from priming alone. ASR = 50% — the
-    // mirror image of the row above.
+    expect(lockoutRate('0.5|0')).toBe(0);
+    // Demo gate alone: ASR=50% reads as "sybil closes" but the
+    // closure mechanism is lockout, not honest defense. The demo
+    // gate's null-policy fires on every zero-rep caller; in the
+    // sybil runner Erin (lone honest reviewer) has zero rep
+    // because the runner doesn't bootstrap her, so the same gate
+    // that gates Eve also gates Erin. Contested stalls 'staged',
+    // attack_succeeded=false, lockout=true on the sybil side.
+    // Lockout rate = 50% (one of the two cells in this group).
     expect(asr('0|1.5')).toBe(0.5);
-    // Composition: each gate closes its named pattern, neither
-    // attack lands. ASR = 0%.
+    expect(lockoutRate('0|1.5')).toBe(0.5);
+    // Composition: ASR=0% — both attacks "close." But the sybil
+    // side closes by the same Erin-lockout the demo-only row
+    // exposes. Lockout rate = 50%. The orthogonal-defenses
+    // headline cube #2 sets is honestly read as "the recent gate
+    // closes patient by honest defense; the demo gate currently
+    // closes sybil by lockout in the runner — a realistic sybil
+    // scenario needs Erin-bootstrap that doesn't false-cluster
+    // her with Carol+Dave (open testbed work)."
     expect(asr('0.5|1.5')).toBe(0);
+    expect(lockoutRate('0.5|1.5')).toBe(0.5);
 
     // Coverage invariant: every defense config in the cube has both
     // attack patterns. A future cell expansion that breaks this
@@ -7066,35 +7126,43 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // convergence-driven `applyReputationUpdates` where alpha lives.
   // That mechanism argument is unenforced unless a regression pins
   // it — these cells run cube #2's four sybil configs at alpha=0.5
-  // and assert each `attack_succeeded` matches the alpha=1 value
-  // cube #2 already pinned. Any future change that wires
-  // alpha-scaling into the curator-fallback rep path or otherwise
-  // makes the sybil runner alpha-sensitive will trip these and
-  // force a re-evaluation of cube #5's patient-only scoping.
+  // and assert each `attack_succeeded` *and* `false_positive_lockout`
+  // match the alpha=1 values cube #2 already pinned (including the
+  // demo-gate cells where the closure is lockout-driven, not honest
+  // defense — the alpha-invariance pin must reproduce that exact
+  // shape, not just the attack_succeeded reading). Any future
+  // change that wires alpha-scaling into the curator-fallback rep
+  // path or otherwise makes the sybil runner alpha-sensitive will
+  // trip these and force a re-evaluation of cube #5's patient-only
+  // scoping.
   const sybilAlphaInvarianceCells = [
     {
       name: 'sybil, recent=0, demo=0 (no defenses)',
       assignment_min_recent: 0,
       assignment_min_demonstrated: 0,
       expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
     },
     {
       name: 'sybil, recent=0.5, demo=0 (recent gate inert against fresh recruit)',
       assignment_min_recent: 0.5,
       assignment_min_demonstrated: 0,
       expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
     },
     {
-      name: 'sybil, recent=0, demo=1.5 (demo gate fires on Eve)',
+      name: 'sybil, recent=0, demo=1.5 (demo gate fires on Eve and Erin; lockout-driven)',
       assignment_min_recent: 0,
       assignment_min_demonstrated: 1.5,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: true,
     },
     {
-      name: 'sybil, recent=0.5, demo=1.5 (composition closes)',
+      name: 'sybil, recent=0.5, demo=1.5 (composition closes via Erin lockout)',
       assignment_min_recent: 0.5,
       assignment_min_demonstrated: 1.5,
       expected_attack_succeeded: false,
+      expected_false_positive_lockout: true,
     },
   ];
   it.each(
@@ -7103,6 +7171,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     assignment_min_recent,
     assignment_min_demonstrated,
     expected_attack_succeeded,
+    expected_false_positive_lockout,
   }) => {
     const result = await runSybilAmplifiedGateScenario({
       assignment_min_recent,
@@ -7110,6 +7179,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       review_credit_contention_alpha: 0.5,
     });
     expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.false_positive_lockout).toBe(expected_false_positive_lockout);
   });
 
   it('surfaces typed error codes through AnchorageClientError', async () => {
