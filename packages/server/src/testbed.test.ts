@@ -4131,7 +4131,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(contestedVotes.map((v) => v.reviewer_id).sort()).toEqual([carol.id, erin.id].sort());
   });
 
-  it('patient-adversary archetype: two-component bookkeeping exposes the recent-activity drain that assignment-gating will consume (PRD §Reputation)', async () => {
+  it('patient-adversary archetype: two-component bookkeeping exposes the recent-activity drain that assignment-gating consumes (PRD §Reputation)', async () => {
     // PRD §Adversary taxonomy (Patient adversary): "Strategic
     // adversary with a long horizon — builds reputation honestly for
     // months before drift attempts. Tests whether per-(cause, sub-
