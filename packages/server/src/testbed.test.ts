@@ -7038,13 +7038,13 @@ describe('testbed: synthetic populations against the wired surface', () => {
   });
 
   it('cluster-decline floor sweep cube: attack-success-rate and lockout-rate aggregate by defense config', () => {
-    // Two-metric aggregate per cube #5's template (PRD
-    // §architecture parameter-sweeps): group cells by defense
-    // config and read both ASR and lockout-rate, computed off the
-    // static expected fields the per-cell tests already validated
-    // so the aggregate stays a fast read over locked observations
-    // rather than a re-run of the cube. The split is what
-    // distinguishes "defense closed an attack" from "defense
+    // Two-metric aggregate per cube #5's template (PRD §Adversary
+    // testbed, Architecture, "Parameter sweeps"): group cells by
+    // defense config and read both ASR and lockout-rate, computed
+    // off the static expected fields the per-cell tests already
+    // validated so the aggregate stays a fast read over locked
+    // observations rather than a re-run of the cube. The split is
+    // what distinguishes "defense closed an attack" from "defense
     // closed because honest review collapsed at the same gate."
     interface AsrCell {
       stratum_contention_weighted: boolean;
