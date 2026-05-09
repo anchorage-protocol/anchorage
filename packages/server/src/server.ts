@@ -1517,7 +1517,7 @@ export class Server {
       return { ok: true };
     },
 
-    // PRD §Capacity and assignment (accept_assignment)-115: decline_assignment
+    // PRD §Capacity and assignment (decline_assignment): decline_assignment
     // moves an offered assignment to `declined`. Reason is required
     // and persisted — pattern-decline is an abuse signal handled at
     // the curator layer (PRD §Verification engine (Rate limits and abuse signals): "suspicious patterns ... flag
