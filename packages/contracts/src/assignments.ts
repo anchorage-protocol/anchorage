@@ -32,10 +32,11 @@ export const Capacity = z
   .strict();
 export type Capacity = z.infer<typeof Capacity>;
 
-// Tasks are concrete (PRD §request_assignment): a specific node-shape
-// to propose in a specific sub-topic, or a specific proposal to review.
-// Each variant carries the context needed to produce the work without
-// the contributor consulting the tool layer.
+// Tasks are concrete (PRD §Capacity and assignment, `request_assignment`
+// bullet: "a specific node-shape to propose, or a specific proposal to
+// review, in a specific sub-topic"). Each variant carries the context
+// needed to produce the work without the contributor consulting the
+// tool layer.
 const proposeTaskBase = {
   cause_id: CauseId,
   sub_topic_id: SubTopicId,
