@@ -1439,9 +1439,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // the bias-driven outcome) AND keeps its calibration passes
     // because narrow bias never fires on the calibration corpus.
     // So at least one coalition member's score is strictly above
-    // Erin's. The honest-dominance property the prior commit
-    // established does not hold against this archetype — the rep-
-    // ledger half is also bypassed.
+    // Erin's. The honest-dominance property the calibration-injection
+    // scenario above established does not hold against this archetype
+    // — the rep-ledger half is also bypassed.
     const erinRep = await erinClient.queryReputation({ cause_id: cause.id });
     const carolRep = await carolClient.queryReputation({ cause_id: cause.id });
     const daveRep = await daveClient.queryReputation({ cause_id: cause.id });
