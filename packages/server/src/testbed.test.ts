@@ -6022,6 +6022,25 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // past stratification" scenario above. attack_succeeded is "did
   // the contested target end rejected", which it does iff Eve walks
   // in past whatever gate is set.
+  //
+  // Honest-pool bootstrap: three fresh-honest reviewers (Erin, Frank,
+  // George) prime via contributor-initiated rotating pairs on three
+  // disjoint excerpts BEFORE the Carol+Dave coalition priming, the
+  // same shape `runPatientAdversaryGateScenario` uses to clear its
+  // honest pool past the demo gate without false-clustering. Each
+  // pair shares exactly one bootstrap proposal (below
+  // `stratum_min_shared_proposals: 2`) so the honest reviewers stay
+  // singletons in the cluster signal; Carol+Dave's coalition priming
+  // happens on separate excerpts so the honest bootstrap and the
+  // coalition cluster don't share any vote-history. The honest pool
+  // ends with demonstrated = 2 * alpha at alpha=1 (clears any demo
+  // threshold ≤ 1.5), and the demo-gate sybil-side closure now
+  // routes Carol-rejects + Erin-and-Frank-accepts to converge accepted
+  // — honest defense rather than the lockout the prior bootstrap-less
+  // shape produced. At alpha < 1 the honest bootstrap demonstrated
+  // shrinks proportionally and the demo gate can re-trip on the
+  // honest pool; the cube #5 sybil alpha-invariance regression below
+  // pins where that re-baseline lands.
   async function runSybilAmplifiedGateScenario(params: {
     assignment_min_recent: number;
     assignment_min_demonstrated: number;
@@ -6094,10 +6113,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
     if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
 
     const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+    const george = server.bootstrap.mintIdentity({ display_name: 'george' });
     const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
     const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
     const eve = server.bootstrap.mintIdentity({ display_name: 'eve' });
     const erinClient = await wireArchetype(server, erin.id);
+    const frankClient = await wireArchetype(server, frank.id);
+    const georgeClient = await wireArchetype(server, george.id);
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
     const eveClient = await wireArchetype(server, eve.id);
@@ -6105,6 +6128,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
       { identity_id: carol.id },
       { identity_id: dave.id },
       { identity_id: eve.id },
+      { identity_id: erin.id },
+      { identity_id: frank.id },
+      { identity_id: george.id },
     ]) {
       await server.tools.setCapacity(c, {
         cause_id: cause.id,
@@ -6112,6 +6138,56 @@ describe('testbed: synthetic populations against the wired surface', () => {
         kinds: ['review'],
       });
     }
+
+    // Honest-pool bootstrap excerpts — three disjoint excerpts on
+    // anchor1 that the rotating pairs converge below. Same anchor as
+    // the coalition priming so they share verifier source '1', but
+    // Carol/Dave never vote on these and the honest pool never votes
+    // on the coalition priming, so the cluster signal sees zero
+    // shared vote-history across the two halves of the priming phase.
+    const bootstrapExcerptIds: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `bootstrap stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      bootstrapExcerptIds.push(excerpt.proposal_id);
+    }
+
+    // Rotating pairs — same shape as the patient runner. Each
+    // honest reviewer appears in two of the three pairs and ends
+    // with demonstrated = 2 * alpha (the contention-0 unanimous
+    // priming earns alpha credit per vote under
+    // `review_credit_contention_alpha`). Pairs sharing one proposal
+    // sit below `stratum_min_shared_proposals: 2`, so no edges form
+    // among the honest pool — Erin, Frank, George remain singletons
+    // in the cluster signal at the time the contested target is
+    // staged.
+    const bootstrapPairs: Array<[typeof erin, typeof erin]> = [
+      [erin, frank],
+      [erin, george],
+      [frank, george],
+    ];
+    for (let i = 0; i < bootstrapPairs.length; i++) {
+      const proposalId = bootstrapExcerptIds[i];
+      if (!proposalId) throw new Error(`bootstrap excerpt ${i} missing`);
+      const pair = bootstrapPairs[i];
+      if (!pair) throw new Error(`bootstrap pair ${i} missing`);
+      for (const voter of pair) {
+        await server.tools.castReviewVote(
+          { identity_id: voter.id },
+          {
+            proposal_id: proposalId,
+            decision: 'accept',
+            rationale: 'consistent with prevailing evidence',
+          },
+        );
+      }
+    }
+
     for (let i = 0; i < 3; i++) {
       const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
         cause_id: cause.id,
@@ -6172,24 +6248,34 @@ describe('testbed: synthetic populations against the wired surface', () => {
       rate: 5,
       decide: calAwareBiasedDecider,
     });
+    // Frank and George run after the coalition has had its shot at
+    // contested, so the cube can read what the honest pool delivers
+    // once the bootstrap-fix routes the second accept past Eve's
+    // demo-gate closure (alpha=1) or fails to (alpha < 1, where the
+    // bootstrap demonstrated shrinks below the gate and Erin/Frank/
+    // George get locked out alongside Eve).
+    await runHonestReviewer(frankClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+    await runHonestReviewer(georgeClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
 
     const target = server.store.proposals.get(contested.proposal_id);
     // Lockout reading per cube #5's two-metric template: honest
-    // review collapsed at the gate. Erin is the lone honest
-    // reviewer in this runner; if her requestAssignment loop ended
-    // on `not_found` before she cast any vote and the contested
-    // target didn't reach 'accepted', the apparent closure was
-    // lockout-driven — the demo gate firing on Eve also fired on
-    // Erin (both have zero rep going into contested), and the
-    // contested target stalled because no honest vote landed, not
-    // because the attack was repelled. Erin's lack of bootstrap is
-    // the runner-fidelity gap: a realistic sybil scenario would
-    // bootstrap Erin first the way the patient runner bootstraps
-    // its honest reviewers, but doing so without false-clustering
-    // Erin into Carol+Dave's coalition (they prime by unanimous
-    // accepts on shared excerpts) is a design problem the runner
-    // hasn't solved yet. Until it does, the cube reads honestly:
-    // demo>0 cells close attack_succeeded by lockout, not defense.
+    // review collapsed at the gate. The honest pool is now Erin,
+    // Frank, George; if any of them had its requestAssignment loop
+    // end on `not_found` before casting a vote and the contested
+    // target didn't reach 'accepted', the closure is lockout-driven
+    // (the demo gate fired on the honest pool alongside Eve) rather
+    // than honest defense. Reading on Erin is sufficient because the
+    // bootstrap rotation is symmetric — at any alpha, Erin, Frank,
+    // and George share the same demonstrated value, so the demo gate
+    // either fires on all three or on none.
     const erinIdleNotFound = erinResult.actions.some(
       (a) => a.kind === 'idle' && a.reason === 'not_found',
     );
@@ -6265,20 +6351,20 @@ describe('testbed: synthetic populations against the wired surface', () => {
       expected_false_positive_lockout: false,
     },
     {
-      name: 'sybil-amplified coalition, recent=0, demo=1.5 (demo gate fires on Eve and Erin; lockout-driven)',
+      name: 'sybil-amplified coalition, recent=0, demo=1.5 (demo gate fires on Eve; honest pool clears via bootstrap)',
       pattern: 'sybil',
       assignment_min_recent: 0,
       assignment_min_demonstrated: 1.5,
       expected_attack_succeeded: false,
-      expected_false_positive_lockout: true,
+      expected_false_positive_lockout: false,
     },
     // Composition — patient closes by recent-gate honest defense
     // (Carol drains, Erin/Frank pass with bootstrap demonstrated=
-    // 2.0); sybil "closes" by the same demo-gate-on-Erin lockout
-    // the demo-only cell already exposes. Same caveat applies: the
-    // defense-success reading on the sybil side is lockout-driven
-    // until the runner gives Erin a bootstrap path that doesn't
-    // false-cluster her with Carol+Dave.
+    // 2.0); sybil closes by the demo gate firing on Eve while the
+    // honest-pool bootstrap (Erin/Frank/George at demonstrated=2.0)
+    // clears the same gate, Carol gets routed and rejects, Dave is
+    // cross-stratum-gated, and Erin+Frank's accepts converge the
+    // contested target — honest defense at both metrics.
     {
       name: 'patient adversary, recent=0.5, demo=1.5 (composition closes)',
       pattern: 'patient',
@@ -6288,12 +6374,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
       expected_false_positive_lockout: false,
     },
     {
-      name: 'sybil-amplified coalition, recent=0.5, demo=1.5 (composition closes via Erin lockout)',
+      name: 'sybil-amplified coalition, recent=0.5, demo=1.5 (composition closes via honest pool)',
       pattern: 'sybil',
       assignment_min_recent: 0.5,
       assignment_min_demonstrated: 1.5,
       expected_attack_succeeded: false,
-      expected_false_positive_lockout: true,
+      expected_false_positive_lockout: false,
     },
   ];
   it.each(gateSweepCells)('gate-threshold sweep: $name', async ({
@@ -6323,10 +6409,16 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // knobs), read both ASR and lockout-rate. Computed off the
     // static expected fields the per-cell tests already validated,
     // so the aggregate stays a fast read over locked observations.
-    // The lockout-rate split is what surfaces that the demo gate's
-    // apparent sybil closure in the runner's current state is
-    // honest-pool collapse, not honest defense — Erin doesn't
-    // bootstrap, the demo gate fires on her too, contested stalls.
+    // The lockout-rate split distinguishes "defense closed an
+    // attack" from "defense closed because honest review collapsed
+    // at the same gate"; with the sybil runner's honest-pool
+    // bootstrap rotation in place, the demo gate's sybil-side
+    // closure now reads as honest defense (Erin/Frank reach
+    // demonstrated=2.0 ahead of contested, Carol gets routed and
+    // rejects, Dave is cross-stratum-gated, Eve fails the demo
+    // gate, the honest pool's two accepts converge contested
+    // accepted) and lockout-rate sits at zero across the cube at
+    // alpha=1.
     interface AsrCell {
       assignment_min_recent: number;
       assignment_min_demonstrated: number;
@@ -6369,26 +6461,28 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // fresh reviewers, so Erin walks in and votes accept.
     expect(asr('0.5|0')).toBe(0.5);
     expect(lockoutRate('0.5|0')).toBe(0);
-    // Demo gate alone: ASR=50% reads as "sybil closes" but the
-    // closure mechanism is lockout, not honest defense. The demo
-    // gate's null-policy fires on every zero-rep caller; in the
-    // sybil runner Erin (lone honest reviewer) has zero rep
-    // because the runner doesn't bootstrap her, so the same gate
-    // that gates Eve also gates Erin. Contested stalls 'staged',
-    // attack_succeeded=false, lockout=true on the sybil side.
-    // Lockout rate = 50% (one of the two cells in this group).
+    // Demo gate alone: ASR=50% — patient is inert against the
+    // demonstrated buffer (Carol's priming demonstrated holds
+    // above the threshold), sybil closes by the demo gate firing
+    // on Eve. The honest-pool bootstrap rotation lifts the sybil
+    // closure off the prior lockout-driven reading: Erin/Frank/
+    // George each reach demonstrated=2.0 (clears 1.5) before
+    // contested, so the demo gate fires on Eve alone and Erin's
+    // accept + Frank's accept (across singleton strata) lands the
+    // 2-vote convergence past Carol's reject and Dave's cross-
+    // stratum gating. Lockout rate = 0%.
     expect(asr('0|1.5')).toBe(0.5);
-    expect(lockoutRate('0|1.5')).toBe(0.5);
-    // Composition: ASR=0% — both attacks "close." But the sybil
-    // side closes by the same Erin-lockout the demo-only row
-    // exposes. Lockout rate = 50%. The orthogonal-defenses
-    // headline cube #2 sets is honestly read as "the recent gate
-    // closes patient by honest defense; the demo gate currently
-    // closes sybil by lockout in the runner — a realistic sybil
-    // scenario needs Erin-bootstrap that doesn't false-cluster
-    // her with Carol+Dave (open testbed work)."
+    expect(lockoutRate('0|1.5')).toBe(0);
+    // Composition: ASR=0%, lockout=0% — both attacks close by
+    // honest defense. Patient closes by recent-gate (Carol's
+    // recent drains past the quiet window, the gate refuses her
+    // second drift). Sybil closes by the same honest-pool
+    // bootstrap pattern the demo-only row already exercises, with
+    // the recent gate adding nothing because Erin/Frank/George's
+    // bootstrap recent matches their demonstrated above any
+    // threshold ≤ 0.5 at alpha=1.
     expect(asr('0.5|1.5')).toBe(0);
-    expect(lockoutRate('0.5|1.5')).toBe(0.5);
+    expect(lockoutRate('0.5|1.5')).toBe(0);
 
     // Coverage invariant: every defense config in the cube has both
     // attack patterns. A future cell expansion that breaks this
@@ -6940,13 +7034,21 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // fires on the second drift, and the headroom-on-honest-pool
   // invariant is preserved.
   //
-  // Sybil-amplified is dropped from this cube — the demo gate's
-  // closure on Eve is alpha-invariant (null-policy fires regardless
-  // of accumulation rate), and the sybil runner's curator-fallback
-  // priming path doesn't accrue applyReputationUpdates rep, so
-  // alpha doesn't change Carol/Dave's demonstrated either. Cube #2
-  // pins the sybil orthogonality at alpha=1; this cube is patient-
-  // only, focused on the alpha-driven re-tuning question.
+  // Sybil-amplified is dropped from this cube. Eve's demo-gate
+  // closure is alpha-invariant by null-policy (the gate fires on a
+  // zero-rep identity at any alpha), and Carol/Dave's coalition
+  // priming runs as contributor-initiated convergence so their
+  // demonstrated does scale with alpha but stays at threshold (3
+  // priming accepts × alpha = 1.5 at alpha=0.5, exactly equal to the
+  // demo=1.5 gate's strict-less-than predicate, so they pass). The
+  // sybil runner's honest-pool bootstrap follows the same shape the
+  // patient runner uses and exhibits the same alpha-shrinkage failure
+  // mode under cube-#2 thresholds — bootstrap demonstrated falls from
+  // 2.0 to 1.0 and re-trips lockout. The sybil cells would reproduce
+  // cube #5's patient headline (lockout-by-shrunken-bootstrap, recovered
+  // by demo-threshold re-tuning) without surfacing a new closure
+  // mechanism, so the sybil baseline at alpha=0.5 is pinned by the
+  // dedicated regression cells below rather than absorbed here.
   type AlphaCubeConfig = 'off' | 'cube2-thresholds' | 'retuned-thresholds';
   interface AlphaGateSweepCell {
     name: string;
@@ -7118,56 +7220,59 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(lockoutRate('0.5|retuned-thresholds')).toBe(0);
   });
 
-  // Cube #5 is patient-only because the sybil-amplified closure is
-  // alpha-invariant by mechanism: the demo gate fires on Eve via
-  // null-policy regardless of accumulation rate, and Carol/Dave's
-  // priming in the sybil runner uses the curator-fallback path
-  // (`bumpReputation` directly), which doesn't go through the
-  // convergence-driven `applyReputationUpdates` where alpha lives.
-  // That mechanism argument is unenforced unless a regression pins
-  // it — these cells run cube #2's four sybil configs at alpha=0.5
-  // and assert each `attack_succeeded` *and* `false_positive_lockout`
-  // match the alpha=1 values cube #2 already pinned (including the
-  // demo-gate cells where the closure is lockout-driven, not honest
-  // defense — the alpha-invariance pin must reproduce that exact
-  // shape, not just the attack_succeeded reading). Any future
-  // change that wires alpha-scaling into the curator-fallback rep
-  // path or otherwise makes the sybil runner alpha-sensitive will
-  // trip these and force a re-evaluation of cube #5's patient-only
-  // scoping.
+  // Sybil-amplified at alpha=0.5: the runner is now partially
+  // alpha-sensitive by mechanism. Eve's demo-gate closure remains
+  // alpha-invariant — the gate's null-policy fires on a zero-rep
+  // identity at any alpha — but the honest-pool bootstrap rotation
+  // (Erin/Frank/George contributor-initiated accepts on disjoint
+  // bootstrap excerpts) flows through the convergence-driven
+  // `applyReputationUpdates` where alpha lives, so the bootstrap
+  // demonstrated shrinks from 2.0 at alpha=1 to 1.0 at alpha=0.5.
+  // On demo>0 cells the same demo gate that fires on Eve now also
+  // fires on the honest pool, and the closure observation flips from
+  // honest defense (alpha=1, cube #2) to lockout (alpha=0.5, this
+  // regression). Recent-only cells stay alpha-invariant: no demo
+  // gate fires on the honest pool at demo=0, and Eve's null-policy
+  // close on the recent-gate cell still bypasses (fresh callers
+  // bypass the recent gate by construction). The cells pin the
+  // alpha=0.5 baseline directly rather than asserting equality with
+  // alpha=1 — the partial-invariance shape is the load-bearing
+  // observation, and cube #5 stays patient-only because the patient-
+  // side re-tuning headline already covers the same shrinkage failure
+  // mode at the same gate; adding sybil cells would reproduce the
+  // patient cube's lockout-vs-defense split without surfacing a new
+  // closure mechanism.
   const sybilAlphaInvarianceCells = [
     {
-      name: 'sybil, recent=0, demo=0 (no defenses)',
+      name: 'sybil, recent=0, demo=0 (no defenses, alpha-invariant)',
       assignment_min_recent: 0,
       assignment_min_demonstrated: 0,
       expected_attack_succeeded: true,
       expected_false_positive_lockout: false,
     },
     {
-      name: 'sybil, recent=0.5, demo=0 (recent gate inert against fresh recruit)',
+      name: 'sybil, recent=0.5, demo=0 (recent gate inert against fresh recruit, alpha-invariant)',
       assignment_min_recent: 0.5,
       assignment_min_demonstrated: 0,
       expected_attack_succeeded: true,
       expected_false_positive_lockout: false,
     },
     {
-      name: 'sybil, recent=0, demo=1.5 (demo gate fires on Eve and Erin; lockout-driven)',
+      name: 'sybil, recent=0, demo=1.5 (Eve null-policy still closes; honest pool also locks out as bootstrap demonstrated shrinks)',
       assignment_min_recent: 0,
       assignment_min_demonstrated: 1.5,
       expected_attack_succeeded: false,
       expected_false_positive_lockout: true,
     },
     {
-      name: 'sybil, recent=0.5, demo=1.5 (composition closes via Erin lockout)',
+      name: 'sybil, recent=0.5, demo=1.5 (composition: Eve null-policy closes; honest pool locks out at the demo gate)',
       assignment_min_recent: 0.5,
       assignment_min_demonstrated: 1.5,
       expected_attack_succeeded: false,
       expected_false_positive_lockout: true,
     },
   ];
-  it.each(
-    sybilAlphaInvarianceCells,
-  )('sybil-amplified alpha-invariance: $name matches alpha=1 outcome at alpha=0.5', async ({
+  it.each(sybilAlphaInvarianceCells)('sybil-amplified at alpha=0.5: $name', async ({
     assignment_min_recent,
     assignment_min_demonstrated,
     expected_attack_succeeded,
