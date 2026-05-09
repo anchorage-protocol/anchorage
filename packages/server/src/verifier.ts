@@ -27,14 +27,19 @@ export interface Verifier {
   verifySpan(ref: ExternalRef, span: QuotedSpan): Promise<void>;
 }
 
-// Phase-1 default: shape is already enforced by the contracts schema,
-// so this verifier just synthesizes a deterministic placeholder hash
-// from the ref itself. The fetching verifier replaces it once the
-// verification engine lands; until then, downstream code can treat
+// StructuralVerifier is the v0 stand-in for live-fetch verification:
+// shape is already enforced by the contracts schema, so this verifier
+// just synthesizes a deterministic placeholder hash from the ref
+// itself. The live-fetch verifier (PubMed/Crossref/URL resolution and
+// source caching, README §Status / ROADMAP §Status next-milestones —
+// stays a stub until the testbed needs it) replaces this; the
+// verification-engine seam itself — Verifier interface + this module —
+// is wired today and routes every write tool through verifyExternalRef
+// / verifySpan. Until live-fetch lands, downstream code can treat
 // content_hash as a stable identifier even though it doesn't reflect
 // real source content.
 //
-// Span verification here is a no-op pending the same fetching engine.
+// Span verification here is a no-op pending the live-fetch verifier.
 // It is *not* a permissive default for tests — tests use FakeVerifier,
 // which can be configured with source fixtures to exercise the
 // rejection path.
@@ -44,7 +49,7 @@ export class StructuralVerifier implements Verifier {
     return { content_hash: `placeholder:${hash}` };
   }
   async verifySpan(_ref: ExternalRef, _span: QuotedSpan): Promise<void> {
-    // Pending verification engine. See class comment.
+    // Pending the live-fetch verifier. See class comment.
   }
 }
 
