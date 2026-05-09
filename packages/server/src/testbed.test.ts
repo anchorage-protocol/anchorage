@@ -2659,10 +2659,15 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // 1.0 (perfect decorrelation only) is the cleanest defense
     // against the strict coalition variant; weaker thresholds
     // catch noisier adversaries at the cost of admitting more
-    // honest false positives. The next testbed target on this seam
-    // is a coalition that mixes some agreement *and* some
-    // disagreement on non-bias-zone proposals, sitting in the gap
-    // between the two thresholds.
+    // honest false positives. The mixed-strategy variant that
+    // sits in the gap between either refinement alone — agreement
+    // 0.5 / disagreement 0.5 across shared priming, below threshold
+    // 1.0 in both directions — is scenarioed separately in the
+    // same describe-block and closes under the *composition* of
+    // contention-weighted edges + anti-correlation: contention
+    // weighting reweights the pair-stat so the weighted disagreement
+    // ratio collapses back to 1.0 and the anti-correlation edge
+    // fires.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
