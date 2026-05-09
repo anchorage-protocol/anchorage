@@ -41,31 +41,37 @@ async function fixtureWithClient() {
 }
 
 describe('mcp transport', () => {
-  it('lists every registered tool', async () => {
+  // Mirrors ToolName in @anchorage/contracts/tools.ts. Asserted as a
+  // set rather than just per-name presence, so a tool added to the
+  // registry without an MCP-side registration (or vice versa) trips
+  // this test rather than slipping through silently — the same drift
+  // that hid query_reputation from the contracts-side ToolName test
+  // before the exhaustiveness pin landed there.
+  const REGISTERED_TOOL_NAMES = [
+    'set_capacity',
+    'request_assignment',
+    'accept_assignment',
+    'decline_assignment',
+    'submit_assigned_proposal',
+    'propose_anchor',
+    'propose_excerpt',
+    'propose_synthesis',
+    'propose_supersedes',
+    'propose_membership',
+    'propose_change_of_home',
+    'propose_sub_topic',
+    'cast_review_vote',
+    'query_frontier',
+    'query_proposals',
+    'fetch_calibration_batch',
+    'query_reputation',
+  ] as const;
+
+  it('lists every registered tool (exhaustive — no drift between MCP wrapper and ToolName)', async () => {
     const { client } = await fixtureWithClient();
     const { tools } = await client.listTools();
-    const names = new Set(tools.map((t) => t.name));
-    // The 16 tools enumerated in ToolName must all be reachable.
-    for (const expected of [
-      'set_capacity',
-      'request_assignment',
-      'accept_assignment',
-      'decline_assignment',
-      'submit_assigned_proposal',
-      'propose_anchor',
-      'propose_excerpt',
-      'propose_synthesis',
-      'propose_supersedes',
-      'propose_membership',
-      'propose_change_of_home',
-      'propose_sub_topic',
-      'cast_review_vote',
-      'query_frontier',
-      'query_proposals',
-      'fetch_calibration_batch',
-    ]) {
-      expect(names.has(expected)).toBe(true);
-    }
+    const names = tools.map((t) => t.name);
+    expect([...names].sort()).toEqual([...REGISTERED_TOOL_NAMES].sort());
   });
 
   it('round-trips propose_anchor, returning the proposal_id in structuredContent', async () => {
