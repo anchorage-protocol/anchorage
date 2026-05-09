@@ -16,7 +16,7 @@ The contributions we want, in priority order:
 
 2. **New attack patterns and defense refinements.** A new adversary archetype, a new parameter-sweep cube measuring an interaction the existing cubes don't, or a refinement to one of the cluster-signal / calibration / assignment-gate primitives. See ROADMAP §Status for the current frontier.
 
-3. **Seed cause and sub-topic candidates.** Suggestions that fit the criteria in [docs/seed-topic.md](./docs/seed-topic.md). Final v0 starter set is locked at instance-launch time, not now.
+3. **Sub-topic candidates within colon cancer** (the locked v0 cause — see [docs/seed-topic.md](./docs/seed-topic.md) for the rationale). Suggestions that fit the criteria in seed-topic.md. Final v0 starter set is locked at instance-launch time, not now. Post-v0 causes are a separate flow once the public instance is running.
 
 4. **Prior-art pointers.** Projects, papers, governance regimes, or simulation work we should be reading and citing. We try to list everything we owe to in the README's *Prior art* section; gaps there are real.
 
