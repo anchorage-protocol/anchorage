@@ -210,11 +210,11 @@ export type FetchCalibrationBatchOutput = z.infer<typeof FetchCalibrationBatchOu
 // tiers are defined).
 //
 // Each entry returns both reputation components per PRD §Reputation:
-// `demonstrated` (slow-decay competence, intended to gate eligibility
-// tiers) and `recent` (fast-decay activity, intended to gate
-// assignment). Values are decayed forward to the server's current
-// time before return — clients see the live numbers, not the
-// snapshots at last bump.
+// `demonstrated` (slow-decay competence, gates pool admission via
+// `assignment_min_demonstrated`) and `recent` (fast-decay activity,
+// gates assignment via `assignment_min_recent`). Values are decayed
+// forward to the server's current time before return — clients see
+// the live numbers, not the snapshots at last bump.
 export const QueryReputationInput = z.object({ cause_id: CauseId }).strict();
 export type QueryReputationInput = z.infer<typeof QueryReputationInput>;
 export const ReputationEntry = z

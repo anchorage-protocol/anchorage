@@ -9,9 +9,10 @@ import { Timestamp } from './timestamps.js';
 // system has routed someone, not a self-declared specialty.
 //
 // Two-component per PRD §Reputation: a *demonstrated*-competence
-// component (slow-decay, intended to gate eligibility tiers) and a
-// *recent*-activity component (fast-decay, intended to gate
-// assignment). Both fields move together on every reputation event —
+// component (slow-decay, gates pool admission via
+// `assignment_min_demonstrated`) and a *recent*-activity component
+// (fast-decay, gates assignment via `assignment_min_recent`). Both
+// fields move together on every reputation event —
 // the differential behavior comes from the decay half-lives, applied
 // on read at the server layer. The stored values are the snapshots
 // at `updated_at`; consumers must decay forward to "now" themselves
