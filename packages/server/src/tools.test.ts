@@ -2253,10 +2253,14 @@ describe('two-component reputation decay', () => {
   //     component decaying independently per its own half-life.
   //   - subsequent bumps land on the freshly-decayed value, so the
   //     stored snapshot stays a faithful at-bump-time anchor.
-  // Eligibility and assignment gates that would *consume* these
-  // components are deliberately not wired in v0 — they're the next
-  // testbed slice. This is the bookkeeping-correctness handle that
-  // those slices read against.
+  // The eligibility and assignment gates that *consume* these
+  // components — `assignment_min_recent` (fast-decay, gates
+  // assignment) and `assignment_min_demonstrated` (slow-decay,
+  // gates eligibility tiers) — are wired today (PRD §Reputation,
+  // ROADMAP §Status) and have their own scenarios in testbed.test.
+  // This test stays as the bookkeeping-correctness handle those
+  // gates read against: change the decay math and this test fires
+  // before the gate scenarios start observing inconsistent values.
   it('decays demonstrated and recent on read with their respective half-lives', async () => {
     // tickMs=0 — auto-advance per now() call would otherwise eat
     // into the half-life across the dozen-odd clock reads each tool
