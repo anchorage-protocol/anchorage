@@ -6255,17 +6255,31 @@ describe('testbed: synthetic populations against the wired surface', () => {
     assignment_min_demonstrated,
     expected_attack_succeeded,
   }) => {
-    const result =
-      pattern === 'patient'
-        ? await runPatientAdversaryGateScenario({
-            assignment_min_recent,
-            assignment_min_demonstrated,
-          })
-        : await runSybilAmplifiedGateScenario({
-            assignment_min_recent,
-            assignment_min_demonstrated,
-          });
-    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    if (pattern === 'patient') {
+      const result = await runPatientAdversaryGateScenario({
+        assignment_min_recent,
+        assignment_min_demonstrated,
+      });
+      expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+      // Cube #2 invariant: under the runner's default
+      // review_credit_contention_alpha = 1, the bootstrap
+      // demonstrated of 2.0 always clears cube-#2's demo
+      // threshold (≤ 1.5), so honest reviewers pass the gate at
+      // first request_assignment and the first contested target
+      // converges accepted. Cube #5 reads the breakdown of this
+      // invariant under alpha < 1; cube #2's job is to lock in
+      // that the alpha=1 regime never lockouts honest review.
+      // A future cell that pushes demo above 2.0 (or otherwise
+      // changes runner-default rep accumulation) trips this and
+      // forces the cube to either re-tune or move to cube #5.
+      expect(result.false_positive_lockout).toBe(false);
+    } else {
+      const result = await runSybilAmplifiedGateScenario({
+        assignment_min_recent,
+        assignment_min_demonstrated,
+      });
+      expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    }
   });
 
   it('gate-threshold sweep cube: attack-success-rate aggregates by defense config', () => {
