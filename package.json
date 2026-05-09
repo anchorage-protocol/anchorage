@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b",
+    "typecheck:tests": "tsc -p packages/contracts/tsconfig.test.json && tsc -p packages/testbed/tsconfig.test.json && tsc -p packages/server/tsconfig.test.json",
     "test": "pnpm -r run test",
     "lint": "biome check .",
     "format": "biome format --write ."

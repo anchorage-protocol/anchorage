@@ -22,5 +22,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm typecheck:tests
       - run: pnpm test
       - run: pnpm build

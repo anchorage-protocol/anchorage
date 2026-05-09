@@ -1,3 +1,4 @@
+import type { NodeId, ProposalId } from '@anchorage/contracts';
 import {
   AnchorageClient,
   acceptAllDecider,
@@ -96,7 +97,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // is *not* the contributor that runs the archetype; bob is. The
     // proposer-can't-review-own-work invariant doesn't apply here —
     // it's an assignment-eligibility check, and bob is fresh.
-    const anchorIds: string[] = [];
+    const anchorIds: NodeId[] = [];
     for (let i = 1; i <= 3; i++) {
       const a = await server.tools.proposeAnchor(
         { identity_id: alice.id },
@@ -721,7 +722,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Capture node IDs in creation order so the content provider can
     // mark specific anchors as "weak-spot" by index without depending
     // on id-gen seeds.
-    const anchorIds: string[] = [];
+    const anchorIds: NodeId[] = [];
     for (let i = 1; i <= 8; i++) {
       const a = await server.tools.proposeAnchor(
         { identity_id: alice.id },
@@ -746,11 +747,15 @@ describe('testbed: synthetic populations against the wired surface', () => {
       forAnchor: (anchorId) => {
         // PMID is recoverable from creation index since the test
         // built them in order; the verifier matches against PMID's
-        // configured source text.
-        const idx = anchorIds.indexOf(anchorId);
+        // configured source text. ContentProvider.forAnchor's
+        // parameter is plain string by design (the testbed package
+        // doesn't depend on contracts), so we re-brand at the
+        // boundary to match the locally-typed NodeId arrays.
+        const branded = anchorId as NodeId;
+        const idx = anchorIds.indexOf(branded);
         if (idx < 0) return null;
         const pmid = String(idx + 1);
-        if (weakSpots.has(anchorId)) {
+        if (weakSpots.has(branded)) {
           return {
             content: `weak-model paraphrase for paper ${pmid}`,
             quoted_span: {
@@ -3420,8 +3425,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
       ['3', 'arm C: treatment X has no effect in stage IV patients across the second cohort'],
     ]);
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 1000);
     const server = new Server({
-      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      clock,
       idGen: new SeededIdGen('h'),
       verifier: new FakeVerifier(new Set(), new Map(), sources),
       review: {
@@ -3602,7 +3608,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // the seam. From the proposer's perspective neither target was
     // accepted; the coalition's distributed lone-reject succeeded at
     // suppression-by-archival.
-    server.clock.advance(120_000);
+    clock.advance(120_000);
     const archived = server.curator.archiveStaleProposals({
       window_seconds: 60,
       cause_id: cause.id,
@@ -3693,7 +3699,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       // Three anchors, one per priming target + one for the contested
       // target. Anchor proposals are accepted by the curator so the
       // excerpts below have a parent to attach to.
-      const anchorIds: string[] = [];
+      const anchorIds: NodeId[] = [];
       for (let i = 1; i <= 3; i++) {
         const ap = await server.tools.proposeAnchor(aliceCaller, {
           cause_id: cause.id,
@@ -5120,7 +5126,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     // Three anchors: one per priming target + one for the contested
     // target. Curator-accepted so the excerpts have a parent.
-    const anchorIds: string[] = [];
+    const anchorIds: NodeId[] = [];
     for (let i = 1; i <= 3; i++) {
       const ap = await server.tools.proposeAnchor(aliceCaller, {
         cause_id: cause.id,
@@ -5282,8 +5288,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
       ['3', 'arm C: treatment X works in stage III patients across cohort B'],
       ['4', 'arm D: treatment X works in stage III patients across cohort C'],
     ]);
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 1000);
     const server = new Server({
-      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      clock,
       idGen: new SeededIdGen(
         `oc-cw${params.stratum_contention_weighted ? '1' : '0'}-f${params.stratum_decline_min_paired}`,
       ),
@@ -5310,7 +5317,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     });
     const aliceCaller = { identity_id: alice.id };
 
-    const anchorIds: string[] = [];
+    const anchorIds: NodeId[] = [];
     for (let i = 1; i <= 4; i++) {
       const ap = await server.tools.proposeAnchor(aliceCaller, {
         cause_id: cause.id,
@@ -5423,7 +5430,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       decide: acceptAllDecider,
     });
 
-    server.clock.advance(120_000);
+    clock.advance(120_000);
     server.curator.archiveStaleProposals({ window_seconds: 60, cause_id: cause.id });
 
     const target = server.store.proposals.get(contested.proposal_id);
@@ -5888,7 +5895,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       description: 'x',
       scope_query: 'x',
     });
-    const primingAnchorIds: string[] = [];
+    const primingAnchorIds: NodeId[] = [];
     for (let i = 1; i <= TOTAL_PRIMING; i++) {
       const a = await server.tools.proposeAnchor(
         { identity_id: alice.id },
@@ -5938,7 +5945,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // proposer-side request_assignment, which would otherwise also
     // need bootstrapping. Span content matches the verifier sources
     // so excerpts pass the verify step.
-    const stagedExcerptIds: string[] = [];
+    const stagedExcerptIds: ProposalId[] = [];
     for (const anchorId of primingAnchorIds) {
       const e = await server.tools.proposeExcerpt(
         { identity_id: alice.id },
@@ -6233,7 +6240,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Carol/Dave never vote on these and the honest pool never votes
     // on the coalition priming, so the cluster signal sees zero
     // shared vote-history across the two halves of the priming phase.
-    const bootstrapExcerptIds: string[] = [];
+    const bootstrapExcerptIds: ProposalId[] = [];
     for (let i = 0; i < 3; i++) {
       const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
         cause_id: cause.id,
