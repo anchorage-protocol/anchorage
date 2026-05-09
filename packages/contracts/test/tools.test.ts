@@ -231,28 +231,40 @@ describe('Review and read-path tool I/O', () => {
 });
 
 describe('ToolName registry', () => {
-  it('enumerates all 16 tools', () => {
-    const expected = [
-      'set_capacity',
-      'request_assignment',
-      'accept_assignment',
-      'decline_assignment',
-      'submit_assigned_proposal',
-      'propose_anchor',
-      'propose_excerpt',
-      'propose_synthesis',
-      'propose_supersedes',
-      'propose_membership',
-      'propose_change_of_home',
-      'propose_sub_topic',
-      'cast_review_vote',
-      'query_frontier',
-      'query_proposals',
-      'fetch_calibration_batch',
-    ];
+  // The expected list mirrors the PRD's MCP tool surface (Capacity &
+  // assignment + contributor-initiated proposals + read-path tools).
+  // Adding a tool to ToolName without updating this list would silently
+  // drift the spec from the wired registry — the per-name parse check
+  // is necessary but not sufficient on its own; the count + options
+  // exhaustiveness assertion below is what catches that case.
+  const expected = [
+    'set_capacity',
+    'request_assignment',
+    'accept_assignment',
+    'decline_assignment',
+    'submit_assigned_proposal',
+    'propose_anchor',
+    'propose_excerpt',
+    'propose_synthesis',
+    'propose_supersedes',
+    'propose_membership',
+    'propose_change_of_home',
+    'propose_sub_topic',
+    'cast_review_vote',
+    'query_frontier',
+    'query_proposals',
+    'fetch_calibration_batch',
+    'query_reputation',
+  ] as const;
+
+  it('parses every expected tool name', () => {
     for (const name of expected) {
       expect(ToolName.parse(name)).toBe(name);
     }
+  });
+
+  it('exposes exactly the expected tools (no drift between enum and spec)', () => {
+    expect([...ToolName.options].sort()).toEqual([...expected].sort());
   });
 
   it('rejects an unknown tool name', () => {
