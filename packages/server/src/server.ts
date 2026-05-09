@@ -1519,11 +1519,16 @@ export class Server {
 
     // PRD §Capacity and assignment (decline_assignment): decline_assignment
     // moves an offered assignment to `declined`. Reason is required
-    // and persisted — pattern-decline is an abuse signal handled at
-    // the curator layer (PRD §Verification engine (Rate limits and abuse signals): "suspicious patterns ... flag
-    // for curator review"), and the reason is what a curator inspects
-    // when a pattern surfaces. Declining individual assignments is
-    // explicitly non-punitive on its own (PRD §Capacity and assignment (decline)).
+    // and persisted — pattern-decline surfaces to the curator-side
+    // `declinePatterns` projection (PRD §Verification engine, Rate
+    // limits and abuse signals: "suspicious patterns ... flag for
+    // curator review") where the reason is what a curator inspects
+    // when a pattern surfaces; the assignment-time
+    // `assignment_max_decline_rate` gate reads only the cumulative
+    // rate (PRD §Capacity and assignment), so the reason stays
+    // curator-facing by construction. Declining individual
+    // assignments is explicitly non-punitive on its own (PRD
+    // §Capacity and assignment (decline)).
     declineAssignment: async (
       caller: Caller,
       input: DeclineAssignmentInput,
