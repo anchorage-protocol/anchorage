@@ -7,12 +7,23 @@ describe('Identity', () => {
     display_name: 'aurelius',
     status: 'active' as const,
     created_at: '2026-05-06T12:00:00.000Z',
+    attestation_level: 0,
   };
 
   it('parses a valid identity', () => {
     const parsed = Identity.parse(valid);
     expect(parsed.display_name).toBe('aurelius');
     expect(parsed.status).toBe('active');
+    expect(parsed.attestation_level).toBe(0);
+  });
+
+  it('rejects a negative attestation_level', () => {
+    expect(() => Identity.parse({ ...valid, attestation_level: -1 })).toThrow();
+  });
+
+  it('rejects a missing attestation_level (required field)', () => {
+    const { attestation_level: _omit, ...rest } = valid;
+    expect(() => Identity.parse(rest)).toThrow();
   });
 
   it('rejects an unknown field (strict)', () => {
