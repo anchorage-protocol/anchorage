@@ -6519,8 +6519,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     const clock = new FakeClock('2026-01-01T00:00:00.000Z', 0);
     const RECENT_HALF_LIFE_SECONDS = params.recent_half_life_seconds ?? 60;
-    const QUIET_WINDOW_SECONDS =
-      params.quiet_window_seconds ?? RECENT_HALF_LIFE_SECONDS * 6;
+    const QUIET_WINDOW_SECONDS = params.quiet_window_seconds ?? RECENT_HALF_LIFE_SECONDS * 6;
     const server = new Server({
       clock,
       idGen: new SeededIdGen('pgs'),
@@ -10361,7 +10360,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     dave_voted: boolean;
   }> {
     if (params.honest_pool_size < 1 || params.honest_pool_size > 3) {
-      throw new Error(`runStratifiedPoolSizeScenario: H=${params.honest_pool_size} out of range [1,3]`);
+      throw new Error(
+        `runStratifiedPoolSizeScenario: H=${params.honest_pool_size} out of range [1,3]`,
+      );
     }
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
@@ -10531,7 +10532,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
         { identity_id: dave.id },
         { cause_id: cause.id },
       );
-      if (daveAssignment.task.kind === 'review' && daveAssignment.task.proposal_id === contestedId) {
+      if (
+        daveAssignment.task.kind === 'review' &&
+        daveAssignment.task.proposal_id === contestedId
+      ) {
         await server.tools.castReviewVote(
           { identity_id: dave.id },
           {
@@ -10928,9 +10932,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     contested_status: string;
   }> {
     if (params.honest_pool_size < 2 || params.honest_pool_size > 3) {
-      throw new Error(
-        `runVoteThresholdScenario: H=${params.honest_pool_size} out of range [2,3]`,
-      );
+      throw new Error(`runVoteThresholdScenario: H=${params.honest_pool_size} out of range [2,3]`);
     }
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
@@ -11054,10 +11056,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
           { identity_id: honest.id },
           { cause_id: cause.id },
         );
-        if (
-          assignment.task.kind !== 'review' ||
-          assignment.task.proposal_id !== contestedId
-        ) {
+        if (assignment.task.kind !== 'review' || assignment.task.proposal_id !== contestedId) {
           continue;
         }
         await server.tools.castReviewVote(
@@ -11193,7 +11192,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
       attacks_succeeded: number;
       stalled: number;
     }
-    function group(keyOf: (cell: VoteThresholdSweepCell) => number): Map<number, VoteThresholdAsrCell> {
+    function group(
+      keyOf: (cell: VoteThresholdSweepCell) => number,
+    ): Map<number, VoteThresholdAsrCell> {
       const m = new Map<number, VoteThresholdAsrCell>();
       for (const cell of voteThresholdSweepCells) {
         const k = keyOf(cell);
@@ -11592,7 +11593,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
       expected_no_effect_rejected_count: 0,
     },
   ];
-  it.each(wideCalibrationDensitySweepCells)('wide calibration density × aware sweep: $name', async ({
+  it.each(
+    wideCalibrationDensitySweepCells,
+  )('wide calibration density × aware sweep: $name', async ({
     calibration_inject_every_n,
     calibration_aware_convergence,
     expected_attack_succeeded,
@@ -11768,9 +11771,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // here pins the dynamic the rule would have to defeat, and stays as
   // the regression handle for any future change to the corpus-draw
   // policy.
-  async function runCorpusContaminationScenario(params: {
-    contaminate: boolean;
-  }): Promise<{
+  async function runCorpusContaminationScenario(params: { contaminate: boolean }): Promise<{
     bias_misaligned_statuses: string[];
     bias_misaligned_rejected_count: number;
   }> {
@@ -11960,9 +11961,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // fraction of the targets. The aware closure's strength is a
     // function of corpus composition over the run, not a static
     // property of the (every_n × aware) configuration.
-    expect(on.bias_misaligned_rejected_count).toBeGreaterThan(
-      off.bias_misaligned_rejected_count,
-    );
+    expect(on.bias_misaligned_rejected_count).toBeGreaterThan(off.bias_misaligned_rejected_count);
   });
 
   // Fourteenth parameter sweep cube: the (stratification × threshold)
@@ -12429,26 +12428,23 @@ describe('testbed: synthetic populations against the wired surface', () => {
       expected_dave_voted: false,
     },
   ];
-  it.each(stratThresholdSweepCells)(
-    'stratification × threshold sweep: $name',
-    async ({
+  it.each(stratThresholdSweepCells)('stratification × threshold sweep: $name', async ({
+    stratification_enabled,
+    votes_to_reject,
+    honest_pool_size,
+    expected_attack_succeeded,
+    expected_stalled,
+    expected_dave_voted,
+  }) => {
+    const result = await runStratificationThresholdScenario({
       stratification_enabled,
       votes_to_reject,
       honest_pool_size,
-      expected_attack_succeeded,
-      expected_stalled,
-      expected_dave_voted,
-    }) => {
-      const result = await runStratificationThresholdScenario({
-        stratification_enabled,
-        votes_to_reject,
-        honest_pool_size,
-      });
-      expect(result.attack_succeeded).toBe(expected_attack_succeeded);
-      expect(result.stalled).toBe(expected_stalled);
-      expect(result.dave_voted).toBe(expected_dave_voted);
-    },
-  );
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.stalled).toBe(expected_stalled);
+    expect(result.dave_voted).toBe(expected_dave_voted);
+  });
 
   it('stratification × threshold sweep cube: ASR + stall-rate aggregate by (strat, vto), strat, vto, and H', () => {
     // Aggregate per the two-metric template cube #5 introduced and
