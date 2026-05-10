@@ -3679,9 +3679,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // outcome flip?) is timing-dependent — the cross-stratum gate
     // fires at request_assignment, so it can only protect *future*
     // routings, and the minimal 2-target seam loses both lone-rejects
-    // before any cluster-history accumulates. A multi-round closure
-    // scenario where priming history is built first lands in a
-    // follow-up cycle alongside an aggregate-ASR cube.
+    // before any cluster-history accumulates. The next scenario
+    // wires the multi-round closure with priming history built first,
+    // and cube #3 (`stratum_include_declines`) joins both halves to
+    // the aggregate-ASR property downstream.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients across cohort A'],
