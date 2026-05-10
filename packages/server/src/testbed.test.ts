@@ -6498,6 +6498,15 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // sweeping the decay axis pass both explicitly.
     recent_half_life_seconds?: number;
     quiet_window_seconds?: number;
+    // Cube #17 (demo-decay-cadence) override. Default Infinity
+    // preserves the slow-decay-stockpile-holds behavior cubes #2,
+    // #5, and #15 are calibrated against (Carol's demonstrated
+    // stockpile holds across the quiet window because the demo
+    // half-life is infinite by default); finite values opt the demo
+    // component into the same exponential-decay regime cube #15
+    // sweeps for the recent component, exposing the demo gate's
+    // firing axis on the patient archetype.
+    demonstrated_half_life_seconds?: number;
   }): Promise<{
     attack_succeeded: boolean;
     carol_demonstrated: number;
@@ -6527,7 +6536,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       review: {
         calibration_inject_every_n: 2,
         calibration_aware_convergence: true,
-        demonstrated_half_life_seconds: Infinity,
+        demonstrated_half_life_seconds: params.demonstrated_half_life_seconds ?? Infinity,
         recent_half_life_seconds: RECENT_HALF_LIFE_SECONDS,
         assignment_min_recent: params.assignment_min_recent,
         assignment_min_demonstrated: params.assignment_min_demonstrated,
@@ -13057,6 +13066,247 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
     for (const cell of groupedByT.values()) {
       expect(cell.total).toBe(3);
+    }
+  });
+
+  // Seventeenth parameter sweep cube: the (demonstrated half-life ×
+  // quiet window) ratio-invariance cube on the patient-adversary
+  // archetype, the demonstrated-component sibling of cube #15. PRD
+  // §Reputation commits the two-component bookkeeping ("every
+  // reputation event moves a slow-decay demonstrated and a fast-decay
+  // recent component together"); cube #15 read the recent-component
+  // closure axis through the recent gate. Cube #17 reads the
+  // demonstrated-component closure axis through the demo gate, with
+  // the recent path inert by both knob and value (recent gate
+  // disabled, recent half-life Infinity), isolating the demo-decay
+  // axis from the recent-decay axis cube #15 measured.
+  //
+  // Defense layers in scope:
+  //   - demonstrated_half_life_seconds T_demo ∈ {60, 600}: decay rate
+  //     axis on the demonstrated component, the runner extension on
+  //     `runPatientAdversaryGateScenario` plumbed through to the
+  //     server's `demonstrated_half_life_seconds` config (default
+  //     Infinity preserves cubes #2, #5, and #15's calibration).
+  //   - quiet_window_seconds W = T_demo × r: drift-cadence axis,
+  //     same shape as cube #15 — the cube derives W from T_demo at
+  //     four ratios so the W/T_demo axis is directly read across all
+  //     eight cells, with two T_demo values per ratio for the
+  //     ratio-invariance aggregate.
+  //   - assignment_min_demonstrated fixed at 1.5: cube #2's
+  //     calibrated value, the same threshold the demo gate consumed
+  //     against the sybil-amplified-coalition pattern. Holding it
+  //     fixed isolates the (T_demo, W) axis from the threshold axis
+  //     cube #2 already measured on the demo gate.
+  //   - assignment_min_recent fixed at 0 + recent_half_life Infinity:
+  //     recent path inert at *both* layers (gate disabled by knob,
+  //     recent component doesn't decay). Carol's recent stays at R₀
+  //     ≈ 8 throughout, well above any threshold; the only defense
+  //     in this cube is the demo gate, and the only reason Carol's
+  //     second drift attempt fails is if demo drained below 1.5.
+  //
+  // The composition reads:
+  //   r=1 (W = T_demo): demo(W) = R₀/2 ≈ 4. Above threshold 1.5 →
+  //     gate doesn't fire → ASR=100%. Same at T_demo ∈ {60, 600}.
+  //   r=2 (W = 2 T_demo): demo(W) = R₀/4 ≈ 2. Still above 1.5 →
+  //     gate doesn't fire → ASR=100%. Same at both T_demo values.
+  //   r=3 (W = 3 T_demo): demo(W) = R₀/8 = 1. Below 1.5 → gate
+  //     fires → Carol's second drift attempt refused at
+  //     request_assignment with `not_found` → ASR=0%. *The closure
+  //     cross-point* — between r=2 and r=3 in this cube, which
+  //     sits at log2(R₀/threshold_demo) = log2(8/1.5) ≈ 2.4
+  //     half-lives, the cross-point predicted by the exponential-
+  //     decay law at the demo threshold.
+  //   r=6 (W = 6 T_demo): demo(W) = R₀/64 ≈ 0.125. Below 1.5 →
+  //     gate fires → ASR=0%. Same at both T_demo values; the
+  //     cube #15 r=6 closure cell replayed on the demo axis.
+  //
+  // Eight cells over (T_demo ∈ {60, 600}) × (r ∈ {1, 2, 3, 6}) drive
+  // `it.each`, with W computed as T_demo × r per cell. The aggregate
+  // by ratio reads (100%, 100%, 0%, 0%) at (r=1, 2, 3, 6) — the
+  // closure cross-point is bracketed by adjacent-ratio cells at r ∈
+  // {2, 3}, sharper than cube #15's r ∈ {2, 6} bracket since the demo
+  // threshold (1.5) sits closer to the per-half-life decay step than
+  // the recent threshold (0.5). The aggregate by T_demo reads (50%,
+  // 50%) — *identical values across both T_demo axes*, the ratio-
+  // invariance reading on the demo axis paralleling cube #15's
+  // observation on the recent axis.
+  //
+  // The headline reading is the *cross-point dependence on the gate
+  // threshold*: cube #15 closes at log2(R₀/0.5) ≈ 4 half-lives
+  // (between r=2 and r=6 in cube #15's coarser bracket); cube #17
+  // closes at log2(R₀/1.5) ≈ 2.4 half-lives (between r=2 and r=3 in
+  // cube #17's tighter bracket). Both cubes show ratio invariance —
+  // the closure depends on W/T, not on T or W independently — but
+  // the *value* of the W/T cross-point depends on the threshold the
+  // gate is configured against. Together cubes #15 and #17 close
+  // the reputation-decay design pass at three layers: the recent
+  // axis (cube #15), the demonstrated axis (cube #17), and the
+  // structural ratio-invariance both cubes pin as the CI-checked
+  // invariant on PRD §Reputation's exponential-decay commitment.
+  // Any future change to the decay law that breaks ratio invariance
+  // (e.g. a per-event reset or a non-exponential decay) surfaces in
+  // both cubes as different aggregates across T groups.
+  interface DemoDecayCadenceSweepCell {
+    name: string;
+    demonstrated_half_life_seconds: number;
+    quiet_window_seconds: number;
+    ratio: number;
+    expected_attack_succeeded: boolean;
+  }
+  const demoDecayCadenceSweepCells: DemoDecayCadenceSweepCell[] = [
+    // r=1: W equals one demo half-life. demo(W) = R₀/2 ≈ 4 > 1.5 →
+    // gate doesn't fire. Same outcome at both T_demo values.
+    {
+      name: 'T_demo=60s, W=60s (1 demo half-life: R₀/2 above demo threshold; gate inert)',
+      demonstrated_half_life_seconds: 60,
+      quiet_window_seconds: 60,
+      ratio: 1,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'T_demo=600s, W=600s (1 demo half-life: R₀/2 above demo threshold; gate inert)',
+      demonstrated_half_life_seconds: 600,
+      quiet_window_seconds: 600,
+      ratio: 1,
+      expected_attack_succeeded: true,
+    },
+    // r=2: W equals two demo half-lives. demo(W) = R₀/4 ≈ 2 > 1.5 →
+    // gate doesn't fire. Same outcome at both T_demo values; the
+    // last leak before the cross-point.
+    {
+      name: 'T_demo=60s, W=120s (2 demo half-lives: R₀/4 above demo threshold; gate inert)',
+      demonstrated_half_life_seconds: 60,
+      quiet_window_seconds: 120,
+      ratio: 2,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'T_demo=600s, W=1200s (2 demo half-lives: R₀/4 above demo threshold; gate inert)',
+      demonstrated_half_life_seconds: 600,
+      quiet_window_seconds: 1200,
+      ratio: 2,
+      expected_attack_succeeded: true,
+    },
+    // r=3: W equals three demo half-lives. demo(W) = R₀/8 = 1 < 1.5
+    // → gate fires. *The closure cross-point* — between r=2 and
+    // r=3, which brackets log2(R₀/1.5) ≈ 2.4 half-lives.
+    {
+      name: 'T_demo=60s, W=180s (3 demo half-lives: R₀/8 below demo threshold; gate fires)',
+      demonstrated_half_life_seconds: 60,
+      quiet_window_seconds: 180,
+      ratio: 3,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'T_demo=600s, W=1800s (3 demo half-lives: R₀/8 below demo threshold; gate fires)',
+      demonstrated_half_life_seconds: 600,
+      quiet_window_seconds: 1800,
+      ratio: 3,
+      expected_attack_succeeded: false,
+    },
+    // r=6: W equals six demo half-lives. demo(W) = R₀/64 ≈ 0.125 <
+    // 1.5 → gate fires. Same outcome at both T_demo values, the
+    // cube #15 r=6 closure cell replayed on the demo axis.
+    {
+      name: 'T_demo=60s, W=360s (6 demo half-lives: R₀/64 below demo threshold; gate fires)',
+      demonstrated_half_life_seconds: 60,
+      quiet_window_seconds: 360,
+      ratio: 6,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'T_demo=600s, W=3600s (6 demo half-lives: R₀/64 below demo threshold; gate fires)',
+      demonstrated_half_life_seconds: 600,
+      quiet_window_seconds: 3600,
+      ratio: 6,
+      expected_attack_succeeded: false,
+    },
+  ];
+  it.each(demoDecayCadenceSweepCells)('demo decay-cadence sweep: $name', async ({
+    demonstrated_half_life_seconds,
+    quiet_window_seconds,
+    expected_attack_succeeded,
+  }) => {
+    const result = await runPatientAdversaryGateScenario({
+      // Recent path inert at both layers (gate disabled, decay
+      // disabled) — only the demo gate is active in this cube.
+      assignment_min_recent: 0,
+      assignment_min_demonstrated: 1.5,
+      recent_half_life_seconds: Number.POSITIVE_INFINITY,
+      quiet_window_seconds,
+      demonstrated_half_life_seconds,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    // false_positive_lockout reads false on every cell — the
+    // bootstrap rotation gives Erin/Frank demonstrated=2.0 (well
+    // above the 1.5 demo threshold; the bootstrap completes before
+    // the quiet window opens, so honest-pool demo doesn't decay
+    // below threshold by Carol's second drift attempt because the
+    // gate fires on Carol-not-yet-on-second-drift, not on the
+    // honest pool's standing). Pinning lockout=false catches a
+    // future bootstrap-shape change that would silently collapse
+    // the honest pool into the demo gate.
+    expect(result.false_positive_lockout).toBe(false);
+  });
+
+  it('demo decay-cadence sweep cube: ASR aggregates by ratio invariantly across T_demo, with cross-point bracketed at r ∈ {2, 3}', () => {
+    interface DemoDecayAsrCell {
+      key: number;
+      total: number;
+      attacks_succeeded: number;
+    }
+    function group(
+      keyOf: (cell: DemoDecayCadenceSweepCell) => number,
+    ): Map<number, DemoDecayAsrCell> {
+      const m = new Map<number, DemoDecayAsrCell>();
+      for (const cell of demoDecayCadenceSweepCells) {
+        const k = keyOf(cell);
+        const g = m.get(k) ?? { key: k, total: 0, attacks_succeeded: 0 };
+        g.total += 1;
+        if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+        m.set(k, g);
+      }
+      return m;
+    }
+    const groupedByRatio = group((c) => c.ratio);
+    const groupedByT = group((c) => c.demonstrated_half_life_seconds);
+    const asrOf = (m: Map<number, DemoDecayAsrCell>, k: number): number => {
+      const g = m.get(k);
+      if (!g) throw new Error(`missing key=${k}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // By ratio: r=1 at 100% (R₀/2 ≈ 4 > 1.5 at any T_demo); r=2 at
+    // 100% (R₀/4 ≈ 2 > 1.5 at any T_demo); r=3 at 0% (R₀/8 = 1 < 1.5
+    // at any T_demo) — *the cross-point*; r=6 at 0% (R₀/64 ≈ 0.125 <
+    // 1.5 at any T_demo). Closure crosses between r=2 and r=3, which
+    // brackets log2(R₀/1.5) ≈ 2.4 half-lives — the cross-point
+    // predicted by the exponential-decay law at the demo threshold.
+    expect(asrOf(groupedByRatio, 1)).toBe(1);
+    expect(asrOf(groupedByRatio, 2)).toBe(1);
+    expect(asrOf(groupedByRatio, 3)).toBe(0);
+    expect(asrOf(groupedByRatio, 6)).toBe(0);
+
+    // By T_demo: identical values across both T_demo axes — the
+    // ratio-invariance reading on the demo axis. Each T_demo has 4
+    // cells (one per ratio), 2 of which leak (r ∈ {1, 2}) and 2 of
+    // which close (r ∈ {3, 6}), so ASR=2/4 = 0.5. A future change to
+    // the demo-decay law that breaks ratio invariance would surface
+    // here as different aggregates across T_demo — the cube's CI-
+    // checked invariant.
+    expect(asrOf(groupedByT, 60)).toBe(0.5);
+    expect(asrOf(groupedByT, 600)).toBe(0.5);
+    expect(asrOf(groupedByT, 60)).toBe(asrOf(groupedByT, 600));
+
+    // Coverage invariants: every ratio cell has 2 T_demo values,
+    // every T_demo cell has 4 ratios. Same shape cubes #6-#15 carry;
+    // a future cell expansion that breaks the symmetry trips the
+    // assertion and forces the aggregate to be re-keyed.
+    for (const cell of groupedByRatio.values()) {
+      expect(cell.total).toBe(2);
+    }
+    for (const cell of groupedByT.values()) {
+      expect(cell.total).toBe(4);
     }
   });
 
