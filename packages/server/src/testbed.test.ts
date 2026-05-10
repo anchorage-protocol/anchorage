@@ -11276,9 +11276,13 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // calibration draws on those works-excerpts would *pass* the
   // coalition's bias-aligned vote (vote accept matches accepted-
   // from-history ground truth), restoring Dave's weight and
-  // breaking the closure. The all-no-effect runner avoids this
-  // corpus-contamination and reads the density-floor scaling law
-  // cleanly. ASR reads true iff any excerpt converges 'rejected';
+  // breaking the closure. The all-no-effect runner avoids that
+  // corpus-contamination dynamic by construction so the density-
+  // floor scaling law reads cleanly here; the avoided dynamic itself
+  // is wired downstream as `runCorpusContaminationScenario`, where
+  // 2 of 4 excerpts are bias-aligned and Dave's reject on the second
+  // bias-misaligned target lands at contaminated weight=2 to
+  // converge rejected. ASR reads true iff any excerpt converges 'rejected';
   // no_effect_rejected_count reads 0/4 (full closure), 4/4 (full
   // capture), or any partial in between.
   //
