@@ -4896,19 +4896,21 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // First defense knob for the multi-proposal coalition seam pinned
     // by the standalone scenario above. The seam evades the cluster
     // signal by paired-decline (no co-voting → no shared history → no
-    // edge metric to fire); the curator-side decline-pattern projection
-    // already surfaces the coalition by per-cause rate, and this gate
-    // elevates the same signal — same numerator, same denominator,
-    // same per-cause scope — into an assignment-time enforcement
-    // primitive at the rep-gate seam in `request_assignment`. The
-    // closure on the seam is throughput-mediated, not retroactive: the
-    // gate doesn't undo a lone-reject that already landed, it caps the
-    // rate at which the coalition can place new ones — for a
-    // coalition that paired-declines half its offers, the gate fires
-    // after the second decline and locks the member out of further
-    // routing. The orthogonal-defenses ASR cube against the cluster
-    // signal lands in the next cycle; this test pins the gate's
-    // mechanics standalone first.
+    // edge metric to fire); PRD §Capacity and assignment commits two
+    // surfaces against it on the same per-(cause, reviewer) cumulative-
+    // rate signal — the curator-side `declinePatterns` projection
+    // (visibility) and this gate (operational enforcement at the rep-
+    // gate seam in `request_assignment`). Same numerator, same
+    // denominator, same per-cause scope, so the projection and the
+    // gate operate on a single signal. The closure on the seam is
+    // throughput-mediated, not retroactive: the gate doesn't undo a
+    // lone-reject that already landed, it caps the rate at which the
+    // coalition can place new ones — for a coalition that paired-
+    // declines half its offers, the gate fires after the second
+    // decline and locks the member out of further routing. The
+    // orthogonal-defenses ASR cube against the cluster signal lands
+    // in the next cycle; this test pins the gate's mechanics
+    // standalone first.
     //
     // Properties pinned:
     //   1. Above threshold + above min_offers → request_assignment refused.
