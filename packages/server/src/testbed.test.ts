@@ -5507,9 +5507,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // coalition can place new ones — for a coalition that paired-
     // declines half its offers, the gate fires after the second
     // decline and locks the member out of further routing. The
-    // orthogonal-defenses ASR cube against the cluster signal lands
-    // in the next cycle; this test pins the gate's mechanics
-    // standalone first.
+    // structural closure on the same seam (the encounter-domain
+    // extension via `stratum_include_declines` reading paired-decline
+    // encounters as 100% disagreement under the existing anti-
+    // correlation primitive) is wired alongside this gate, and cube
+    // #3 (the cluster-signal-decline-aware ASR cube against the co-
+    // voting decorrelated and paired-decline multi-round coalitions
+    // earlier in this file) reads the structural closure's *additive
+    // lift* declines provide on top of the vote-only signal: 50% ASR
+    // vote-only, 0% ASR decline-aware. This test pins the gate's
+    // mechanics standalone — the gate operates on the cumulative-
+    // rate signal at request_assignment time, the structural closure
+    // operates on the per-encounter cluster primitive at vote-cast
+    // time; the two surfaces are complementary on a single signal.
     //
     // Properties pinned:
     //   1. Above threshold + above min_offers → request_assignment refused.
