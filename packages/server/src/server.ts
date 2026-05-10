@@ -2649,8 +2649,9 @@ export class Server {
   //   - Proposer's home-sub-topic rep moves with the outcome:
   //     +proposer_accepted_gain on accept, -proposer_rejected_loss on
   //     reject. Contributor-initiated proposals (no assignment_id)
-  //     are scaled by `contributor_initiated_factor` per PRD §Reputation
-  //     244's "substantially reduced weight" rule.
+  //     are scaled by `contributor_initiated_factor` per PRD §Reputation:
+  //     "Contributor-initiated work earns sub-topic rep at a
+  //     substantially reduced weight."
   //   - Reviewers who voted *with* the converged outcome get
   //     +reviewer_accurate_gain in the home sub-topic; reviewers who
   //     voted against it get -reviewer_inaccurate_loss. Reviewers
