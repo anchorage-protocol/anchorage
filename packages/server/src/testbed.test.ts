@@ -6473,15 +6473,18 @@ describe('testbed: synthetic populations against the wired surface', () => {
       expected_false_positive_lockout: false,
     },
     // Demo gate only — closes patient via no path (demonstrated
-    // buffer holds), and apparently closes sybil but actually via
-    // honest-pool collapse: Erin (lone honest reviewer) has zero
-    // rep going into contested because the runner doesn't bootstrap
-    // her, so the demo gate that fires on Eve also fires on Erin.
-    // Contested stalls 'staged' with Carol's lone reject, attack_
-    // succeeded reads false but the closure mechanism is lockout,
-    // not honest defense. Cube #5's two-metric template surfaces
-    // this directly: ASR closes here only because the lockout
-    // closes the path the attack would have taken.
+    // buffer holds, attack lands). Closes sybil via honest defense:
+    // Eve fails the demo gate by null-policy (zero rep), the honest
+    // pool's bootstrap rotation lifts Erin/Frank/George to
+    // demonstrated=2.0 (clears the 1.5 threshold) before contested,
+    // Carol gets routed and rejects, Dave is cross-stratum-gated, and
+    // Erin+Frank's accepts converge contested accepted across
+    // singleton strata. The bootstrap rotation is what lifts the
+    // sybil closure off the prior lockout-driven reading: without
+    // it, the demo gate would fire on Erin too and contested would
+    // stall 'staged' for the wrong reason. Cube #5's two-metric
+    // template surfaces this distinction (ASR vs lockout-rate);
+    // here the closure is honest defense at both metrics.
     {
       name: 'patient adversary, recent=0, demo=1.5 (gate inert against demonstrated buffer)',
       pattern: 'patient',
