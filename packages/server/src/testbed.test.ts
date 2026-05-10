@@ -1459,8 +1459,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
   it('pool-size scaling closes the calibration-aware coalition with sufficient honest reviewers', async () => {
     // PRD §Reviewer assignment: convergence and divergence
     // thresholds are claim-class-aware; high-stakes classes draw
-    // larger pools and tighter thresholds. The previous test
-    // surfaces the standing open vector:
+    // larger pools and tighter thresholds. The previous test pins
+    // the calibration-bypassed config:
     // a 2-of-3 calibration-aware coalition bypasses both calibration
     // defenses against a single honest reviewer at votes_to_X = 2.
     // This test is the regression handle on the pool-size lever:
@@ -1637,10 +1637,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
   it('stratification closes the calibration-aware coalition on the small-pool case', async () => {
     // The headline scenario stratification was committed for: a
     // calibration-aware coalition in a pool too small to furnish K+1
-    // honest reviewers. The previous calibration-aware-coalition test
-    // shows the bypass standing open at this pool size; this test
-    // adds stratification_enabled and demonstrates the cross-stratum
-    // draw rule closing the bias-suppression vector.
+    // honest reviewers. The calibration-aware-coalition test above
+    // pins the calibration-bypassed config at this pool size; this
+    // test closes that config from above with stratification_enabled,
+    // demonstrating the cross-stratum draw rule closing the
+    // bias-suppression vector.
     //
     // The cluster signal is built first via priming reviews — three
     // bias-aligned excerpts that Carol and Dave both vote accept on,
