@@ -9264,6 +9264,590 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // Ninth parameter sweep cube: the cluster-signal × budget-axis
+  // composition cube ROADMAP §Status named as the remaining
+  // qualitative axis after cubes #6/#7/#8 wired the K-axis and
+  // throughput-axis budget primitives. The headline is the
+  // *composition* of two defense layers — identity layer (binding-
+  // cost gate) and behavior layer (cluster signal) — against a
+  // sybil-amplified-coordinated-voting attack pattern that defeats
+  // either layer *alone*. Cubes #6/#7/#8 disable the cluster signal
+  // (per-sybil-acts-once attack has no shared history to cluster
+  // on, structurally inert by construction); cubes #1/#3/#4 read
+  // the cluster signal but disable the identity-layer cost
+  // primitives. Cube #9 is the first cube where both layers are
+  // active and the budget axis sweeps how *much* fresh-recruit
+  // capacity the operator can field against the cluster signal's
+  // closure of the established coalition.
+  //
+  // Attack pattern: Carol+Dave coalition with 3 priming proposals
+  // shared (cluster signal fires — Carol and Dave land in the same
+  // co-stratum cluster after `stratum_min_shared_proposals: 2`).
+  // After contested is staged, Carol requests assignment first and
+  // is routed (no co-stratum reviewer yet routed); Dave requests
+  // next and the cross-stratum gate refuses him with `not_found`
+  // (Carol-already-routed + Carol-Dave co-stratum). The coalition
+  // recruits Eve(s) — fresh identities with no shared history,
+  // each in their own singleton stratum — until budget exhausts.
+  // Each Eve mints (binding-cost gate fires server-side at
+  // `min_attestation_level: T`; harness-side `AdversaryBudget`
+  // mirrors the cost as α=T deducted from B per `tryMint`),
+  // requests assignment (singleton stratum, walks past the cluster
+  // signal), and casts reject. votes_to_reject=3 so Carol's lone
+  // reject is insufficient and Eve(s) are decisive: K_eff(Eves) =
+  // floor(B / T) when T > 0, else unbounded. Honest reviewers
+  // (Erin, Frank, George) cast accept — votes_to_accept=2, so
+  // their accepts converge contested 'accepted' if the rejects
+  // don't reach K*=3 first.
+  //
+  // The composition reads:
+  //   Identity layer alone (T=0, binding cost inert): Eves are
+  //     free; the operator can mint K*-1=2 Eves at any budget. The
+  //     cluster signal closes Dave but Carol+2 Eves = 3 rejects
+  //     converge contested rejected. ASR=100% across all B at T=0
+  //     — cluster signal alone is *insufficient*.
+  //   Behavior layer alone (T=2, cluster signal off): hypothetical
+  //     — without cluster signal, Dave walks in and casts reject
+  //     too. Carol+Dave+1 Eve = 3. The binding-cost gate would
+  //     then need to close Dave's *and* the Eve recruit, requiring
+  //     B < T to refuse all of them. Cube #9 holds cluster signal
+  //     *on* so the headline is the joint reading rather than the
+  //     individual-layer reading; the cluster-off baseline is what
+  //     cube #6 already measured, so cube #9's contribution is the
+  //     joint axis.
+  //   Composition (T=2, cluster signal on): the cluster signal
+  //     closes Dave, the binding-cost gate refuses Eve(s) when
+  //     B < T or when B affords fewer than K*-1 Eves. ASR=0% at
+  //     B=1 (Eve unaffordable) and B=2 (one Eve affordable, only
+  //     2 < K*=3 rejects); ASR=100% at B=4 (two Eves affordable,
+  //     Carol+2 Eves = K*=3, attack lands).
+  //
+  // Six cells over (T ∈ {0, 2}, B ∈ {1, 2, 4}) drive `it.each`.
+  // The aggregate groups by T (the defense-config axis) and reads
+  // ASR per group across the budget axis: T=0 at 100% — identity
+  // layer inert; cluster signal alone leaks at any budget. T=2 at
+  // 33% — composition closes 2 of 3 budget cells; the (T=2, B=4)
+  // cell is the leak where the budget axis defeats the composition.
+  // The (B=2, T=2) cell is the *threshold-budget* for the (K*=3)
+  // regime — one Eve affordable, but K*-1=2 needed; doubling
+  // budget to B=4 lifts ASR to 100%. The threshold-budget reading
+  // is the cost-multiplier signature cube #6 read at the (T=2,
+  // N=2) cell on the K-axis: the budget needed for attack
+  // feasibility scales with the binding-cost multiplier T and the
+  // additional-recruits-required floor K*-1.
+  //
+  // Cube #9 is the first cube to read the four-layer architecture's
+  // *full composition* under the named regression-handle attack
+  // pattern (sybil-amplified coordinated-voting). PRD §Identity's
+  // "the four identity-layer primitives are what closes the seam
+  // the behavior-based stack cannot" framing reads here as: at the
+  // (T=2, B<=2) cells the identity layer (binding-cost gate) is
+  // what closes the freshness bypass the cluster signal cannot
+  // reach; at the (T=2, B=4) cell the budget axis defeats the
+  // identity-layer closure; at T=0 the identity layer is inert and
+  // the cluster signal alone cannot close the recruit-amplification.
+  // The full composition closes only when *every* axis (cluster
+  // signal on, binding cost > 0, budget < K*-1 × T) aligns —
+  // exactly the multiplicative composition PRD §Identity commits.
+  async function runSybilAmplifiedCoordinatedSuppressionScenario(params: {
+    budget: number;
+    attestation_threshold: number;
+    votes_to_reject: number;
+  }): Promise<{
+    attack_succeeded: boolean;
+    contested_status: string;
+    eves_minted: number;
+    dave_gated: boolean;
+  }> {
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('sacs'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: params.votes_to_reject,
+        min_attestation_level: params.attestation_threshold,
+        // Cluster signal on with default-shaped config; the cube's
+        // headline is the joint reading of cluster signal + binding-
+        // cost gate, so both must be active.
+        stratification_enabled: true,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({
+      display_name: 'alice',
+      attestation_level: params.attestation_threshold,
+    });
+    const carol = server.bootstrap.mintIdentity({
+      display_name: 'carol',
+      attestation_level: params.attestation_threshold,
+    });
+    const dave = server.bootstrap.mintIdentity({
+      display_name: 'dave',
+      attestation_level: params.attestation_threshold,
+    });
+    const erin = server.bootstrap.mintIdentity({
+      display_name: 'erin',
+      attestation_level: params.attestation_threshold,
+    });
+    const frank = server.bootstrap.mintIdentity({
+      display_name: 'frank',
+      attestation_level: params.attestation_threshold,
+    });
+    const george = server.bootstrap.mintIdentity({
+      display_name: 'george',
+      attestation_level: params.attestation_threshold,
+    });
+
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+
+    for (const reviewer of [carol, dave, erin, frank, george]) {
+      await server.tools.setCapacity(
+        { identity_id: reviewer.id },
+        { cause_id: cause.id, rate: 5, kinds: ['review'] },
+      );
+    }
+
+    const aliceCaller = { identity_id: alice.id };
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    // Carol+Dave priming: 3 shared excerpts where they both vote
+    // accept. With `stratum_min_shared_proposals: 2` and
+    // `stratum_agreement_threshold: 1.0`, 3 unanimous shared votes
+    // clears the floor and pushes them into the same cluster. Each
+    // priming excerpt is curator-accepted post-vote so it doesn't
+    // sit in the staged queue confounding subsequent assignments.
+    for (let i = 0; i < 3; i++) {
+      const primer = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `priming stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        {
+          proposal_id: primer.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: dave.id },
+        {
+          proposal_id: primer.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      const after = server.store.proposals.get(primer.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(primer.proposal_id);
+      }
+    }
+
+    // Stage the contested target on a different anchor (paper 2)
+    // so the priming history doesn't include the contested-pattern
+    // span; the sybil farm's regression handle is the freshness
+    // bypass on a contested target whose vote-pattern is opposite
+    // to the priming-history pattern.
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+    const contestedId = contested.proposal_id;
+
+    // Adversary phase 1: Carol requests assignment, gets routed
+    // (no co-stratum reviewer yet routed for contested), casts
+    // reject.
+    const carolAssignment = await server.tools.requestAssignment(
+      { identity_id: carol.id },
+      { cause_id: cause.id },
+    );
+    if (carolAssignment.task.kind !== 'review') {
+      throw new Error('expected carol to be routed to a review task');
+    }
+    if (carolAssignment.task.proposal_id !== contestedId) {
+      throw new Error(
+        `expected carol routed to contested ${contestedId}, got ${carolAssignment.task.proposal_id}`,
+      );
+    }
+    await server.tools.castReviewVote(
+      { identity_id: carol.id },
+      {
+        proposal_id: contestedId,
+        decision: 'reject',
+        rationale: 'underpowered, methodological concerns',
+        assignment_id: carolAssignment.assignment_id,
+      },
+    );
+
+    // Adversary phase 2: Dave requests assignment, cluster signal
+    // closure fires (Carol-already-routed + Carol-Dave co-stratum
+    // → cross-stratum gate refuses Dave with `not_found`). This is
+    // the cluster-signal closure of the established-coalition half
+    // of the attack.
+    let daveGated = false;
+    try {
+      const daveAssignment = await server.tools.requestAssignment(
+        { identity_id: dave.id },
+        { cause_id: cause.id },
+      );
+      if (
+        daveAssignment.task.kind === 'review' &&
+        daveAssignment.task.proposal_id === contestedId
+      ) {
+        // If Dave wasn't gated, he would cast reject too. The cube's
+        // ASR readings are robust to this (Dave's reject would
+        // contribute one more vote toward K*, but the budget-bound
+        // cells still close because Eve(s) are also constrained), but
+        // surface the not-gated state so a wiring regression that
+        // disabled the cluster signal silently surfaces here rather
+        // than only via downstream ASR drift.
+        await server.tools.castReviewVote(
+          { identity_id: dave.id },
+          {
+            proposal_id: contestedId,
+            decision: 'reject',
+            rationale: 'underpowered, methodological concerns',
+            assignment_id: daveAssignment.assignment_id,
+          },
+        );
+      }
+    } catch (err) {
+      if (err instanceof ServerError && err.code === 'not_found') {
+        daveGated = true;
+      } else {
+        throw err;
+      }
+    }
+
+    // Adversary phase 3: Eve loop. Mint Eves until either budget
+    // exhausts or the contested target converges. Each Eve is a
+    // singleton in the cluster signal (no shared history) and walks
+    // past the cross-stratum gate. The harness-side budget mirrors
+    // the server-side `min_attestation_level` arithmetic:
+    // `tryMint(0)` deducts T from B (binding-cost layer); refusal
+    // mode 'budget' fires when B < T (the operator cannot afford
+    // another sybil at this rate). Issuance cap is held at infinity
+    // — cube #7 already measured the time-axis on the issuance cap;
+    // cube #9 isolates the binding-cost × cluster-signal composition.
+    const budget = new AdversaryBudget({
+      initial: params.budget,
+      attestation_cost: params.attestation_threshold,
+      issuance_cap_per_epoch: Number.POSITIVE_INFINITY,
+    });
+    const maxEvesNeeded = params.votes_to_reject - 1;
+    let evesMinted = 0;
+    while (evesMinted < maxEvesNeeded) {
+      const post = server.store.proposals.get(contestedId);
+      if (post?.status !== 'staged') break;
+      const mintResult = budget.tryMint(0);
+      if (!mintResult.ok) break;
+      const eve = server.bootstrap.mintIdentity({
+        display_name: `eve${evesMinted}`,
+        attestation_level: params.attestation_threshold,
+      });
+      evesMinted += 1;
+      await server.tools.setCapacity(
+        { identity_id: eve.id },
+        { cause_id: cause.id, rate: 5, kinds: ['review'] },
+      );
+      const eveAssignment = await server.tools.requestAssignment(
+        { identity_id: eve.id },
+        { cause_id: cause.id },
+      );
+      if (eveAssignment.task.kind !== 'review') {
+        throw new Error('expected eve routed to a review task');
+      }
+      if (eveAssignment.task.proposal_id !== contestedId) {
+        throw new Error(
+          `expected eve routed to contested ${contestedId}, got ${eveAssignment.task.proposal_id}`,
+        );
+      }
+      await server.tools.castReviewVote(
+        { identity_id: eve.id },
+        {
+          proposal_id: contestedId,
+          decision: 'reject',
+          rationale: 'underpowered, methodological concerns',
+          assignment_id: eveAssignment.assignment_id,
+        },
+      );
+    }
+
+    // Honest phase: Erin, Frank, George each request assignment
+    // (singleton strata) and cast accept. votes_to_accept=2; if
+    // contested is still staged after the adversary phase, the
+    // second honest accept converges it 'accepted'. If contested
+    // already converged 'rejected' (sybils reached K*), the loop
+    // short-circuits.
+    for (const honest of [erin, frank, george]) {
+      const post = server.store.proposals.get(contestedId);
+      if (post?.status !== 'staged') break;
+      try {
+        const honestAssignment = await server.tools.requestAssignment(
+          { identity_id: honest.id },
+          { cause_id: cause.id },
+        );
+        if (
+          honestAssignment.task.kind !== 'review' ||
+          honestAssignment.task.proposal_id !== contestedId
+        ) {
+          // No work or routed elsewhere — skip; the honest pool's
+          // role is to converge contested if possible, not to drive
+          // the runner.
+          continue;
+        }
+        await server.tools.castReviewVote(
+          { identity_id: honest.id },
+          {
+            proposal_id: contestedId,
+            decision: 'accept',
+            rationale: 'consistent with prevailing evidence',
+            assignment_id: honestAssignment.assignment_id,
+          },
+        );
+      } catch (err) {
+        if (err instanceof ServerError && err.code === 'not_found') {
+          // Honest reviewer also gated — the honest pool's stratum
+          // is singleton by construction (no shared history with
+          // anyone), so this should not fire. If it does, the cube's
+          // assumption that honest reviewers are routable to
+          // contested has been violated and the per-cell expectation
+          // needs re-checking.
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    const final = server.store.proposals.get(contestedId);
+    if (!final) throw new Error('contested proposal not found');
+    return {
+      attack_succeeded: final.status === 'rejected',
+      contested_status: final.status,
+      eves_minted: evesMinted,
+      dave_gated: daveGated,
+    };
+  }
+
+  interface ClusterBudgetSweepCell {
+    name: string;
+    budget: number;
+    attestation_threshold: number;
+    votes_to_reject: number;
+    expected_attack_succeeded: boolean;
+    expected_eves_minted: number;
+  }
+  const clusterBudgetSweepCells: ClusterBudgetSweepCell[] = [
+    // votes_to_reject=3 throughout; K* = 3 (Carol's 1 reject +
+    // K*-1=2 Eve rejects). K_eff(Eves) = floor(B / T) when T > 0,
+    // else unbounded (capped at K*-1=2 by the runner). Attack lands
+    // iff K_eff(Eves) >= K*-1 = 2.
+    {
+      name: 'T=0, B=1 (binding cost inert; Eves free, attack lands)',
+      budget: 1,
+      attestation_threshold: 0,
+      votes_to_reject: 3,
+      expected_attack_succeeded: true,
+      expected_eves_minted: 2,
+    },
+    {
+      name: 'T=0, B=2 (binding cost inert; Eves free, attack lands)',
+      budget: 2,
+      attestation_threshold: 0,
+      votes_to_reject: 3,
+      expected_attack_succeeded: true,
+      expected_eves_minted: 2,
+    },
+    {
+      name: 'T=0, B=4 (binding cost inert; Eves free, attack lands)',
+      budget: 4,
+      attestation_threshold: 0,
+      votes_to_reject: 3,
+      expected_attack_succeeded: true,
+      expected_eves_minted: 2,
+    },
+    {
+      name: 'T=2, B=1 (binding cost refuses Eve at first mint; composition closes)',
+      budget: 1,
+      attestation_threshold: 2,
+      votes_to_reject: 3,
+      expected_attack_succeeded: false,
+      expected_eves_minted: 0,
+    },
+    {
+      name: 'T=2, B=2 (one Eve affordable; insufficient at K*=3)',
+      budget: 2,
+      attestation_threshold: 2,
+      votes_to_reject: 3,
+      expected_attack_succeeded: false,
+      expected_eves_minted: 1,
+    },
+    {
+      name: 'T=2, B=4 (two Eves affordable; budget defeats composition)',
+      budget: 4,
+      attestation_threshold: 2,
+      votes_to_reject: 3,
+      expected_attack_succeeded: true,
+      expected_eves_minted: 2,
+    },
+  ];
+  it.each(clusterBudgetSweepCells)('cluster × budget sweep: $name', async ({
+    budget,
+    attestation_threshold,
+    votes_to_reject,
+    expected_attack_succeeded,
+    expected_eves_minted,
+  }) => {
+    const result = await runSybilAmplifiedCoordinatedSuppressionScenario({
+      budget,
+      attestation_threshold,
+      votes_to_reject,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.eves_minted).toBe(expected_eves_minted);
+    // Dave-gated invariant: the cluster signal must close Dave on
+    // every cell. If a future change disables or weakens the
+    // cluster signal, this assertion fires before the ASR readings
+    // drift, surfacing the regression at its root rather than via
+    // downstream ASR shift.
+    expect(result.dave_gated).toBe(true);
+  });
+
+  it('cluster × budget sweep cube: ASR aggregates by T and reads the identity × behavior layer composition', () => {
+    // Aggregate per the cube template: group cells by T (the
+    // identity-layer defense knob), read ASR per group across the
+    // budget axis. The headline is the *composition* — neither
+    // layer alone closes the sybil-amplified-coordinated-voting
+    // attack, both layers together close the threshold-budget
+    // cells (T=2, B<=2), and the (T=2, B=4) cell is the leak where
+    // the budget axis defeats the composition by affording K*-1=2
+    // Eves.
+    interface ClusterBudgetAsrCell {
+      attestation_threshold: number;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const groupedByT = new Map<number, ClusterBudgetAsrCell>();
+    for (const cell of clusterBudgetSweepCells) {
+      const g = groupedByT.get(cell.attestation_threshold) ?? {
+        attestation_threshold: cell.attestation_threshold,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      groupedByT.set(cell.attestation_threshold, g);
+    }
+    const asrByT = (t: number): number => {
+      const g = groupedByT.get(t);
+      if (!g) throw new Error(`missing T=${t}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // T=0: ASR=100% across all 3 budget cells. Identity layer
+    // inert; the cluster signal alone closes Dave but Eves walk
+    // past as fresh singletons, and at any budget the operator can
+    // mint K*-1=2 Eves at zero cost. The cluster signal alone is
+    // insufficient against the freshness bypass — exactly the seam
+    // the sybil-amplified-coalition scenario was the regression
+    // handle on, now read on the budget axis.
+    expect(asrByT(0)).toBe(1);
+    // T=2: ASR=33% across 3 budget cells. Composition closes the
+    // (B=1) cell (Eve unaffordable, binding-cost gate refuses) and
+    // the (B=2) cell (one Eve affordable, but K*-1=2 needed —
+    // composition closes by *insufficient-recruits*, not by
+    // refusal-of-recruits). The (B=4) cell is the leak where the
+    // budget axis affords two Eves and the composition fails.
+    expect(asrByT(2)).toBeCloseTo(1 / 3);
+
+    // Aggregate by B reads the cost-multiplier signature on the
+    // joint axis: at each budget level, ASR averages over T=0 and
+    // T=2 cells. The threshold-budget B=2 (where K*-1=2 Eves at
+    // T=2 cost B=4 to afford, so B=2 closes by composition) reads
+    // 50% — T=0 leaks (cluster signal alone), T=2 closes
+    // (composition); doubling budget to B=4 lifts ASR to 100% (T=2
+    // also leaks).
+    interface ClusterBudgetAsrByBCell {
+      budget: number;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const groupedByB = new Map<number, ClusterBudgetAsrByBCell>();
+    for (const cell of clusterBudgetSweepCells) {
+      const g = groupedByB.get(cell.budget) ?? {
+        budget: cell.budget,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      groupedByB.set(cell.budget, g);
+    }
+    const asrByB = (b: number): number => {
+      const g = groupedByB.get(b);
+      if (!g) throw new Error(`missing B=${b}`);
+      return g.attacks_succeeded / g.total;
+    };
+    expect(asrByB(1)).toBe(0.5);
+    expect(asrByB(2)).toBe(0.5);
+    expect(asrByB(4)).toBe(1);
+
+    // Coverage invariants: every T cell has 3 budget cells, every B
+    // cell has 2 T cells. A future cell expansion that breaks the
+    // symmetry trips the assertion and forces the aggregate to be
+    // re-keyed rather than silently averaging over uneven groups.
+    for (const cell of groupedByT.values()) {
+      expect(cell.total).toBe(3);
+    }
+    for (const cell of groupedByB.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
