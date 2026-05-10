@@ -2498,12 +2498,13 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // co-voted does, and that's the signal the clustering primitive
     // is actually trying to capture. The decorrelating-coalition
     // bypass — orthogonal failure mode to over-aggregation, vote-
-    // pattern-shaped instead of unanimous-priming-shaped — closes
-    // separately under the anti-correlation refinement (PRD
-    // §Reviewer assignment, ROADMAP §Status), scenarioed in the
-    // same describe-block above; the mixed-strategy variant that
-    // sits in the gap between either refinement alone closes only
-    // under the composition of both, also pinned separately.
+    // pattern-shaped instead of unanimous-priming-shaped — is
+    // scenarioed in the same describe-block above and closes
+    // separately under the anti-correlation refinement scenarioed
+    // below (PRD §Reviewer assignment, ROADMAP §Status); the
+    // mixed-strategy variant that sits in the gap between either
+    // refinement alone closes only under the composition of both,
+    // also pinned separately.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
