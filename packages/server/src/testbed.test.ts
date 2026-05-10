@@ -10795,6 +10795,445 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // Twelfth parameter sweep cube: the vote-aggregation thresholds
+  // cube on the K=2 coalition at coalition-first ordering. PRD
+  // §What's deliberately not specified names "Vote-aggregation
+  // thresholds (what counts as convergent vs divergent)" as a knob
+  // explicitly deferred to the testbed — `votes_to_accept` and
+  // `votes_to_reject` are direct config knobs that all prior cubes
+  // held at the (2, 2) default. Cube #12 is the first cube to read
+  // the threshold axes directly and measure how threshold tightening
+  // composes with pool size under the two-metric template.
+  //
+  // Attack pattern: K=2 coalition (Carol+Dave with naiveBiasedDecider
+  // applied to a single contested excerpt; stratification disabled
+  // and no priming, so the cluster signal is structurally inert and
+  // both coalition members vote freely on the contested target). The
+  // coalition runs *first* so the threshold-arithmetic reads cleanly
+  // — at votes_to_reject=2 the coalition's two rejects converge
+  // 'rejected' before the honest pool can vote; at votes_to_reject=3
+  // the coalition can't reach the threshold (K=2 < 3) and the
+  // proposal stays staged for the honest pool to drive convergence
+  // (or stall, if the honest pool can't reach votes_to_accept).
+  // Calibration channels off to isolate the threshold axes.
+  //
+  // Defense layers in scope:
+  //   - votes_to_reject ∈ {2, 3} (the coalition-capture axis):
+  //     tightening from 2 to 3 makes the K=2 coalition arithmetically
+  //     unable to reach the threshold, closing the capture half of
+  //     the attack outright. The cost is paid on the honest side
+  //     too (a tighter reject threshold means honest reviewers also
+  //     need 3 distinct rejects to suppress a genuinely bad
+  //     proposal), but that cost is invisible to this cube which
+  //     measures suppression of well-grounded content.
+  //   - votes_to_accept ∈ {2, 3} (the honest-convergence axis):
+  //     tightening from 2 to 3 requires more honest reviewers to
+  //     drive convergence. At fixed H, raising vta lifts stall_rate
+  //     when H < vta; the proposal sits staged with neither side
+  //     reaching their threshold.
+  //   - honest pool size H ∈ {2, 3} (the closure-quality axis from
+  //     cube #11): the number of honest reviewers running after the
+  //     coalition. Each contributes one accept toward votes_to_
+  //     accept; H ≥ vta is the saturation point for full closure.
+  //
+  // The composition reads:
+  //   vto=2 row: coalition's two rejects converge contested
+  //     'rejected' before honest pool votes. ASR=100% across all
+  //     (vta, H) combinations (4 cells). The vto=2 axis is the
+  //     "default-threshold capture" baseline — at K = vto, the
+  //     coalition wins by arithmetic regardless of how the honest
+  //     pool is configured downstream.
+  //   vto=3 row: coalition can't reach the threshold (K=2 < 3); the
+  //     honest pool drives convergence or stalls based on (vta, H).
+  //     - (vta=2, H=2): 2 accepts ≥ vta. Closes 'accepted'. ASR=0%,
+  //       stall=0%.
+  //     - (vta=2, H=3): same — 2nd accept already converges before
+  //       3rd reviewer votes. Closes 'accepted'. ASR=0%, stall=0%.
+  //     - (vta=3, H=2): 2 accepts < vta=3. Stalls 'staged'. ASR=0%,
+  //       stall=100%. The closure-quality failure mode at the
+  //       tighter accept threshold without proportional pool growth.
+  //     - (vta=3, H=3): 3 accepts = vta. Closes 'accepted'. ASR=0%,
+  //       stall=0%. The K+1-honest-reviewer dynamic PRD §Reviewer
+  //       assignment names — at H = vta = K+1, the honest pool
+  //       reaches the threshold the coalition cannot.
+  //
+  // Eight cells over (vto ∈ {2, 3}) × (vta ∈ {2, 3}) × (H ∈ {2, 3})
+  // drive `it.each`. The aggregate groups by vto (the coalition-
+  // capture knob) and reads (ASR + stall_rate) per group across
+  // (vta, H): vto=2 at (ASR=100%, stall=0%) — the regression handle
+  // on coalition-first capture at K = vto; vto=3 at (ASR=0%, stall=
+  // 25%) — capture is closed by arithmetic, stall fires only at
+  // (vta=3, H=2) where H < vta. The complementary aggregate by vta
+  // reads (ASR=50%, stall=0%) at vta=2 (vto=2 captures, vto=3
+  // closes; pool size never below vta) and (ASR=50%, stall=25%) at
+  // vta=3 (vto=2 still captures, vto=3 splits between closure at H=3
+  // and stall at H=2). The aggregate by H reads (ASR=50%, stall=25%)
+  // at H=2 (vto=2 captures, vto=3 closes at vta=2 / stalls at vta=3)
+  // and (ASR=50%, stall=0%) at H=3 (vto=2 still captures, vto=3
+  // closes at any vta).
+  //
+  // The headline is the *threshold-axis decomposition*:
+  //   - vto controls capture rate (tightening vto from K to K+1
+  //     closes the coalition by arithmetic; this is capture-
+  //     resistance bought purely by threshold).
+  //   - vta + H jointly control stall rate (tightening vta without
+  //     proportional pool growth lifts stalls; H = vta is the
+  //     saturation point for full closure).
+  //   - The (vta=3, H=2) stall is the *cost* of the closure-quality
+  //     axis — the operator who tightens vta without growing the
+  //     honest pool buys closure-quality failures, the same shape
+  //     cube #5 read on the alpha-recalibrated demo gate.
+  //
+  // The two-metric template generalizes here to the *threshold-pool
+  // interaction*: a defense knob that closes the attack by raising
+  // the convergence bar pays its closure-quality cost on the honest
+  // side at the same threshold, and the pool-size axis is what
+  // amortizes that cost. PRD §Reviewer assignment commits "the
+  // small-sub-topic case slower to close but not capturable by the
+  // pool-fits-the-coalition dynamic"; cube #11 read this on the
+  // stratification axis (cluster signal closes capture, pool size
+  // buys closure quality), cube #12 reads the analog on the
+  // threshold axis (vto closes capture, vta + H interaction buys
+  // closure quality). The two cubes cover complementary defenses
+  // against the same K=2 coalition at coalition-first ordering, and
+  // the (ASR, stall) numerical readings are structurally similar —
+  // the architecture generalizes across closure mechanisms.
+  async function runVoteThresholdScenario(params: {
+    votes_to_accept: number;
+    votes_to_reject: number;
+    honest_pool_size: number;
+  }): Promise<{
+    attack_succeeded: boolean;
+    stalled: boolean;
+    contested_status: string;
+  }> {
+    if (params.honest_pool_size < 2 || params.honest_pool_size > 3) {
+      throw new Error(
+        `runVoteThresholdScenario: H=${params.honest_pool_size} out of range [2,3]`,
+      );
+    }
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('vt'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: params.votes_to_accept,
+        votes_to_reject: params.votes_to_reject,
+        // Calibration channels off — the cube isolates the
+        // threshold × pool-size composition.
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        // Stratification disabled — the cube isolates threshold
+        // arithmetic from cluster-signal closure (cube #11 reads
+        // the stratification axis on a complementary attack
+        // pattern).
+        stratification_enabled: false,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    // Reviewers. K=2 coalition (Carol+Dave) plus H honest reviewers
+    // (Erin always, Frank at H ≥ 2, George at H = 3).
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const honestIdentities: Array<{ id: typeof erin.id; name: string }> = [
+      { id: erin.id, name: 'erin' },
+    ];
+    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+    honestIdentities.push({ id: frank.id, name: 'frank' });
+    if (params.honest_pool_size >= 3) {
+      const george = server.bootstrap.mintIdentity({ display_name: 'george' });
+      honestIdentities.push({ id: george.id, name: 'george' });
+    }
+    for (const id of [carol.id, dave.id, ...honestIdentities.map((h) => h.id)]) {
+      await server.tools.setCapacity(
+        { identity_id: id },
+        { cause_id: cause.id, rate: 5, kinds: ['review'] },
+      );
+    }
+
+    // CONTESTED: bias-misaligned excerpt. The coalition's
+    // naive bias predicate ("accept payloads containing 'works'")
+    // rejects "no effect" content; honest acceptAllDecider accepts.
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+    const contestedId = contested.proposal_id;
+
+    // ADVERSARY PHASE. Coalition runs first, both members vote
+    // reject via the assignment loop. Stratification is off so no
+    // gate fires; both rejects land. At votes_to_reject=2 the second
+    // reject converges contested 'rejected' before the honest pool
+    // votes; at votes_to_reject=3 the proposal stays staged.
+    for (const adv of [carol, dave]) {
+      const post = server.store.proposals.get(contestedId);
+      if (post?.status !== 'staged') break;
+      const assignment = await server.tools.requestAssignment(
+        { identity_id: adv.id },
+        { cause_id: cause.id },
+      );
+      if (assignment.task.kind !== 'review') {
+        throw new Error('expected adversary routed to review task');
+      }
+      if (assignment.task.proposal_id !== contestedId) {
+        throw new Error(
+          `expected adversary routed to contested ${contestedId}, got ${assignment.task.proposal_id}`,
+        );
+      }
+      await server.tools.castReviewVote(
+        { identity_id: adv.id },
+        {
+          proposal_id: contestedId,
+          decision: 'reject',
+          rationale: 'underpowered, methodological concerns',
+          assignment_id: assignment.assignment_id,
+        },
+      );
+    }
+
+    // HONEST PHASE. Honest reviewers run sequentially and vote
+    // accept. Each contributes one accept toward votes_to_accept.
+    // Loop short-circuits if contested already converged.
+    for (const honest of honestIdentities) {
+      const post = server.store.proposals.get(contestedId);
+      if (post?.status !== 'staged') break;
+      try {
+        const assignment = await server.tools.requestAssignment(
+          { identity_id: honest.id },
+          { cause_id: cause.id },
+        );
+        if (
+          assignment.task.kind !== 'review' ||
+          assignment.task.proposal_id !== contestedId
+        ) {
+          continue;
+        }
+        await server.tools.castReviewVote(
+          { identity_id: honest.id },
+          {
+            proposal_id: contestedId,
+            decision: 'accept',
+            rationale: 'consistent with prevailing evidence',
+            assignment_id: assignment.assignment_id,
+          },
+        );
+      } catch (err) {
+        if (err instanceof ServerError && err.code === 'not_found') {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    const final = server.store.proposals.get(contestedId);
+    if (!final) throw new Error('contested proposal not found');
+    return {
+      attack_succeeded: final.status === 'rejected',
+      stalled: final.status === 'staged',
+      contested_status: final.status,
+    };
+  }
+
+  interface VoteThresholdSweepCell {
+    name: string;
+    votes_to_accept: number;
+    votes_to_reject: number;
+    honest_pool_size: number;
+    expected_attack_succeeded: boolean;
+    expected_stalled: boolean;
+  }
+  const voteThresholdSweepCells: VoteThresholdSweepCell[] = [
+    // vto=2 row: K = vto, coalition reaches the threshold by
+    // arithmetic before honest pool votes. ASR=100% across all (vta,
+    // H). Pool size and accept threshold are irrelevant to capture
+    // when the coalition converges first.
+    {
+      name: 'vto=2, vta=2, H=2 (K=vto, coalition-first captures; baseline default-threshold capture)',
+      votes_to_accept: 2,
+      votes_to_reject: 2,
+      honest_pool_size: 2,
+      expected_attack_succeeded: true,
+      expected_stalled: false,
+    },
+    {
+      name: 'vto=2, vta=2, H=3 (K=vto, coalition-first captures; H buys nothing at coalition-first ordering)',
+      votes_to_accept: 2,
+      votes_to_reject: 2,
+      honest_pool_size: 3,
+      expected_attack_succeeded: true,
+      expected_stalled: false,
+    },
+    {
+      name: 'vto=2, vta=3, H=2 (K=vto, coalition-first captures; vta=3 irrelevant when capture happens first)',
+      votes_to_accept: 3,
+      votes_to_reject: 2,
+      honest_pool_size: 2,
+      expected_attack_succeeded: true,
+      expected_stalled: false,
+    },
+    {
+      name: 'vto=2, vta=3, H=3 (K=vto, coalition-first captures; vta=3 irrelevant)',
+      votes_to_accept: 3,
+      votes_to_reject: 2,
+      honest_pool_size: 3,
+      expected_attack_succeeded: true,
+      expected_stalled: false,
+    },
+    // vto=3 row: K=2 < vto=3, coalition cannot reach the threshold
+    // by arithmetic. Closure quality depends on (vta, H).
+    {
+      name: 'vto=3, vta=2, H=2 (K<vto: capture closed; H=vta=2 reaches accept threshold, full closure)',
+      votes_to_accept: 2,
+      votes_to_reject: 3,
+      honest_pool_size: 2,
+      expected_attack_succeeded: false,
+      expected_stalled: false,
+    },
+    {
+      name: 'vto=3, vta=2, H=3 (K<vto: capture closed; H>vta, full closure with margin)',
+      votes_to_accept: 2,
+      votes_to_reject: 3,
+      honest_pool_size: 3,
+      expected_attack_succeeded: false,
+      expected_stalled: false,
+    },
+    {
+      name: 'vto=3, vta=3, H=2 (K<vto: capture closed; H<vta, stalls — closure-quality failure)',
+      votes_to_accept: 3,
+      votes_to_reject: 3,
+      honest_pool_size: 2,
+      expected_attack_succeeded: false,
+      expected_stalled: true,
+    },
+    {
+      name: 'vto=3, vta=3, H=3 (K+1-honest-reviewer dynamic: H=vta=K+1, full closure)',
+      votes_to_accept: 3,
+      votes_to_reject: 3,
+      honest_pool_size: 3,
+      expected_attack_succeeded: false,
+      expected_stalled: false,
+    },
+  ];
+  it.each(voteThresholdSweepCells)('vote-threshold sweep: $name', async ({
+    votes_to_accept,
+    votes_to_reject,
+    honest_pool_size,
+    expected_attack_succeeded,
+    expected_stalled,
+  }) => {
+    const result = await runVoteThresholdScenario({
+      votes_to_accept,
+      votes_to_reject,
+      honest_pool_size,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.stalled).toBe(expected_stalled);
+  });
+
+  it('vote-threshold sweep cube: ASR + stall-rate aggregate by vto, vta, and H', () => {
+    // Aggregate per the two-metric template: ASR (capture rate) +
+    // stall_rate (staged-instead-of-converged rate). The cube has
+    // three axes (vto, vta, H) and reads how each contributes to
+    // the (capture, closure-quality) tradeoff.
+    interface VoteThresholdAsrCell {
+      key: number;
+      total: number;
+      attacks_succeeded: number;
+      stalled: number;
+    }
+    function group(keyOf: (cell: VoteThresholdSweepCell) => number): Map<number, VoteThresholdAsrCell> {
+      const m = new Map<number, VoteThresholdAsrCell>();
+      for (const cell of voteThresholdSweepCells) {
+        const k = keyOf(cell);
+        const g = m.get(k) ?? { key: k, total: 0, attacks_succeeded: 0, stalled: 0 };
+        g.total += 1;
+        if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+        if (cell.expected_stalled) g.stalled += 1;
+        m.set(k, g);
+      }
+      return m;
+    }
+    const groupedByVto = group((c) => c.votes_to_reject);
+    const groupedByVta = group((c) => c.votes_to_accept);
+    const groupedByH = group((c) => c.honest_pool_size);
+    const asrOf = (m: Map<number, VoteThresholdAsrCell>, k: number): number => {
+      const g = m.get(k);
+      if (!g) throw new Error(`missing key=${k}`);
+      return g.attacks_succeeded / g.total;
+    };
+    const stallOf = (m: Map<number, VoteThresholdAsrCell>, k: number): number => {
+      const g = m.get(k);
+      if (!g) throw new Error(`missing key=${k}`);
+      return g.stalled / g.total;
+    };
+
+    // vto axis (the coalition-capture knob). Tightening vto from K
+    // to K+1 closes the capture by arithmetic — the headline
+    // capture-resistance reading. The vto=3 row is structurally
+    // free of capture; closure quality depends on (vta, H).
+    expect(asrOf(groupedByVto, 2)).toBe(1); // K = vto: coalition wins all 4 cells.
+    expect(stallOf(groupedByVto, 2)).toBe(0);
+    expect(asrOf(groupedByVto, 3)).toBe(0); // K < vto: coalition can't capture any cell.
+    expect(stallOf(groupedByVto, 3)).toBeCloseTo(1 / 4); // 1/4 cells stalls — (vta=3, H=2).
+
+    // vta axis (the honest-convergence knob). At fixed vta, the
+    // ASR averages over (vto, H). Tightening vta lifts stall_rate
+    // because the honest pool needs more accepts.
+    expect(asrOf(groupedByVta, 2)).toBe(0.5); // 2/4 (vto=2 cells capture).
+    expect(stallOf(groupedByVta, 2)).toBe(0); // vta=2 always reachable at H ≥ 2.
+    expect(asrOf(groupedByVta, 3)).toBe(0.5);
+    expect(stallOf(groupedByVta, 3)).toBeCloseTo(1 / 4); // 1/4 cells stalls — (vto=3, H=2).
+
+    // H axis (the closure-quality axis from cube #11). At fixed H,
+    // ASR averages over (vto, vta). H=3 eliminates stalls because
+    // 3 honest reviewers can always reach vta ≤ 3.
+    expect(asrOf(groupedByH, 2)).toBe(0.5); // 2/4 (vto=2 cells capture).
+    expect(stallOf(groupedByH, 2)).toBeCloseTo(1 / 4); // 1/4 stalls — (vto=3, vta=3).
+    expect(asrOf(groupedByH, 3)).toBe(0.5);
+    expect(stallOf(groupedByH, 3)).toBe(0); // H=3 saturates at vta=3.
+
+    // Coverage invariants: every axis-key has 4 cells. A future
+    // cell expansion that breaks the symmetry trips the assertion
+    // and forces the aggregate to be re-keyed.
+    for (const m of [groupedByVto, groupedByVta, groupedByH]) {
+      for (const cell of m.values()) {
+        expect(cell.total).toBe(4);
+      }
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
