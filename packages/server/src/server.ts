@@ -3121,12 +3121,17 @@ export class Server {
   // mirrored from cast_review_vote). Used by the stratification-
   // degraded check to count reachable strata.
   //
-  // Doesn't filter on rep tier yet — v0 has no rep gate at the
-  // assignment surface; that lands when sufficient-rep eligibility
-  // does. Doesn't filter out identities who already voted, either —
-  // their vote already counted, and the diversity question is about
-  // whether the *pool* could have been diverse, not about who is
-  // still pullable right now.
+  // Doesn't filter on rep tier — the rep gates
+  // (`assignment_min_recent`, `assignment_min_demonstrated`) consume
+  // rep at `request_assignment`, not here. Stratification-degraded
+  // measures pool *diversity* across the cause-level review-capacity
+  // declarations: whether the pool could have been diverse, not who
+  // currently clears the rep gate. A contributor who would fail the
+  // rep gate today but later bootstraps past it still counts toward
+  // diversity. Doesn't filter out identities who already voted,
+  // either — their vote already counted, and the diversity question
+  // is about whether the *pool* could have been diverse, not about
+  // who is still pullable right now.
   private eligibleReviewerPool(proposal: Proposal): IdentityId[] {
     const route = this.locateProposalForReview(proposal);
     if (!route) return [];
