@@ -8090,6 +8090,339 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(result.false_positive_lockout).toBe(false);
   });
 
+  // Sixth parameter sweep cube: the testbed-side `AdversaryBudget`
+  // primitive (slice 5) joined with the binding-cost gate (slice 2)
+  // as the first sweep on the budget axis PRD §Identity names
+  // "coalition-affordable-identities-per-epoch." Eight cells over
+  // (budget B ∈ {2, 4}, attestation threshold T ∈ {1, 2}, issuance
+  // cap N ∈ {1, 2}) drive `it.each` through
+  // `runBudgetSybilSuppressionScenario` and read the contested-status
+  // outcome of a one-epoch sybil-suppression attack: the coalition
+  // tries to mint K* = 2 fresh sybils within budget, each casting a
+  // contributor-initiated reject vote on a contested excerpt before
+  // two honest accepts can land. K_eff = min(floor(B/T), N) caps the
+  // sybils the coalition can actually field — the binding-cost layer
+  // (T) sets the per-mint cost, the issuance-frequency cap (N) sets
+  // the per-epoch ceiling, and the budget (B) caps the total across
+  // all epochs. The attack lands iff K_eff ≥ K*; otherwise the honest
+  // accepts converge first.
+  //
+  // The headline PRD §Adversary testbed §Architecture commits is "ASR
+  // as a function of budget at each defense configuration." The
+  // budget axis enters via two distinct mechanisms: the binding-cost
+  // *cost* (higher T means each sybil costs more, reducing the K
+  // affordable at fixed B) and the issuance-cap *time-distribution*
+  // (higher N permits more mints in a single epoch, which a one-shot
+  // attack needs by construction). The cube reads both: at (T=2, N=2)
+  // the attack lands at B=4 but not B=2 — the cost-multiplier doubles
+  // the budget needed vs (T=1, N=2). At N=1 the attack closes
+  // uniformly at any (B, T) — the issuance cap is the *time*
+  // primitive on the cost-multiplier and a one-epoch attack cannot
+  // exceed N regardless of how much budget the operator commits.
+  // PRD §Identity bullet 2 names this directly: "an adversary
+  // affording K sybils still cannot mint them all in one epoch,
+  // which buys behavior-based defenses the accumulated history they
+  // need to fire" — the cube reads that closure on the suppression
+  // pattern, where the attack opportunity is one-shot and the time
+  // axis closes the attack outright.
+  //
+  // The cluster signal stays disabled in this runner (the per-sybil-
+  // acts-once attack has no shared history to cluster on, so the
+  // cluster signal is structurally inert here — disabling it isolates
+  // the budget arithmetic from the cluster-signal closure path that
+  // cubes #1/#3/#4 measure on coordinated-voting attacks). The
+  // assignment-time gates (recent, demonstrated, decline-rate) are
+  // also inert: the attack is contributor-initiated, which bypasses
+  // assignment-time gates by construction, scoping the cube to the
+  // identity layer. Cube #2 measured assignment-gate closure on the
+  // sybil-amplified-coalition pattern; cube #6 measures binding-cost
+  // and issuance-cap closure on a pure-budget pattern with no
+  // assignment-driven dependencies, so the two cubes are siblings
+  // covering complementary axes of the four-layer architecture.
+  async function runBudgetSybilSuppressionScenario(params: {
+    budget: number;
+    attestation_threshold: number;
+    issuance_cap_per_epoch: number;
+  }): Promise<{
+    attack_succeeded: boolean;
+    sybils_minted: number;
+    contested_status: string;
+  }> {
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('bgs'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        min_attestation_level: params.attestation_threshold,
+        // Cluster signal off — the cube measures the budget
+        // arithmetic through the binding-cost gate, not the cluster
+        // signal's closure path. The per-sybil-acts-once attack has
+        // no shared history to cluster on, so the cluster signal is
+        // inert here regardless of config; explicit disable keeps
+        // the runner's scope honest.
+        stratification_enabled: false,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({
+      display_name: 'alice',
+      attestation_level: params.attestation_threshold,
+    });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const anchorProp = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper 1',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    server.curator.acceptProposal(anchorProp.proposal_id);
+    const anchorNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchorNode) throw new Error('anchor not materialized');
+    const contestedExcerpt = await server.tools.proposeExcerpt(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorNode.id,
+        content: 'treatment X works for stage III',
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      },
+    );
+    const contestedId = contestedExcerpt.proposal_id;
+
+    // Adversary phase: tryMint up to K* = 2 fresh sybils within
+    // budget at epoch 0 (one-shot attack). Each affordable sybil
+    // casts contributor-initiated reject on the contested target.
+    // Sybils vote first so votes_to_reject = 2 can fire before honest
+    // accepts come in if K_eff reaches K*. Budget refusal mode
+    // ('budget' vs 'issuance_cap') is observable via
+    // `budget.budgetRemaining` post-loop but the attack outcome
+    // depends only on K_eff, so the runner returns sybils_minted as
+    // the harness-side observable.
+    const SUPPRESSION_THRESHOLD = 2;
+    const budget = new AdversaryBudget({
+      initial: params.budget,
+      attestation_cost: params.attestation_threshold,
+      issuance_cap_per_epoch: params.issuance_cap_per_epoch,
+    });
+    let sybilsMinted = 0;
+    for (let i = 0; i < SUPPRESSION_THRESHOLD; i++) {
+      const mintResult = budget.tryMint(0);
+      if (!mintResult.ok) break;
+      const sybil = server.bootstrap.mintIdentity({
+        display_name: `sybil${i}`,
+        attestation_level: params.attestation_threshold,
+      });
+      sybilsMinted += 1;
+      await server.tools.castReviewVote(
+        { identity_id: sybil.id },
+        {
+          proposal_id: contestedId,
+          decision: 'reject',
+          rationale: 'underpowered, methodological concerns',
+        },
+      );
+      const post = server.store.proposals.get(contestedId);
+      if (post?.status !== 'staged') break;
+    }
+
+    // Honest phase: 2 honest reviewers cast accept on the contested
+    // target. If the contested target already converged 'rejected'
+    // above, the loop short-circuits — voting on a non-staged
+    // proposal would error.
+    for (const name of ['erin', 'frank']) {
+      const post = server.store.proposals.get(contestedId);
+      if (post?.status !== 'staged') break;
+      const honest = server.bootstrap.mintIdentity({
+        display_name: name,
+        attestation_level: params.attestation_threshold,
+      });
+      await server.tools.castReviewVote(
+        { identity_id: honest.id },
+        {
+          proposal_id: contestedId,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+    }
+
+    const final = server.store.proposals.get(contestedId);
+    if (!final) throw new Error('contested proposal not found');
+    return {
+      attack_succeeded: final.status === 'rejected',
+      sybils_minted: sybilsMinted,
+      contested_status: final.status,
+    };
+  }
+
+  interface BudgetSweepCell {
+    name: string;
+    budget: number;
+    attestation_threshold: number;
+    issuance_cap_per_epoch: number;
+    expected_attack_succeeded: boolean;
+  }
+  const budgetSweepCells: BudgetSweepCell[] = [
+    // K_eff = min(floor(B/T), N); attack lands iff K_eff >= K* = 2.
+    {
+      name: 'B=2, T=1, N=1 (issuance cap caps K_eff=1)',
+      budget: 2,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 1,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'B=2, T=1, N=2 (K_eff=2 — gates inert at minimum-affording budget)',
+      budget: 2,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 2,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'B=2, T=2, N=1 (binding cost and issuance cap both close; both excessive at this budget)',
+      budget: 2,
+      attestation_threshold: 2,
+      issuance_cap_per_epoch: 1,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'B=2, T=2, N=2 (binding cost caps K_eff=1; cost-multiplier exhausts budget)',
+      budget: 2,
+      attestation_threshold: 2,
+      issuance_cap_per_epoch: 2,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'B=4, T=1, N=1 (issuance cap caps K_eff=1; budget abundance does not help against the time primitive)',
+      budget: 4,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 1,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'B=4, T=1, N=2 (K_eff=2 — attack lands; budget headroom unused)',
+      budget: 4,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 2,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'B=4, T=2, N=1 (issuance cap caps K_eff=1 even with cost-multiplier-affording budget)',
+      budget: 4,
+      attestation_threshold: 2,
+      issuance_cap_per_epoch: 1,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'B=4, T=2, N=2 (K_eff=2 — cost-multiplier doubled the budget needed vs T=1)',
+      budget: 4,
+      attestation_threshold: 2,
+      issuance_cap_per_epoch: 2,
+      expected_attack_succeeded: true,
+    },
+  ];
+  it.each(budgetSweepCells)('budget sweep: $name', async ({
+    budget,
+    attestation_threshold,
+    issuance_cap_per_epoch,
+    expected_attack_succeeded,
+  }) => {
+    const result = await runBudgetSybilSuppressionScenario({
+      budget,
+      attestation_threshold,
+      issuance_cap_per_epoch,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+  });
+
+  it('budget sweep cube: attack-success-rate aggregates by defense config and reads cost-multiplier directly', () => {
+    // Aggregate per the cube template (PRD §Adversary testbed,
+    // Architecture, "Parameter sweeps"): group cells by (T, N), read
+    // ASR per group across the budget axis. The sweep dimension PRD
+    // §Identity names — coalition-affordable-identities-per-epoch —
+    // enters as B/T (the affordable-K count under the binding-cost
+    // multiplier) capped by N (the issuance ceiling). The aggregate
+    // is computed off the static expected fields the per-cell tests
+    // already validated, so it stays a fast read over locked
+    // observations rather than a re-run of the cube.
+    interface BudgetAsrCell {
+      attestation_threshold: number;
+      issuance_cap_per_epoch: number;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const grouped = new Map<string, BudgetAsrCell>();
+    for (const cell of budgetSweepCells) {
+      const key = `${cell.attestation_threshold}|${cell.issuance_cap_per_epoch}`;
+      const g = grouped.get(key) ?? {
+        attestation_threshold: cell.attestation_threshold,
+        issuance_cap_per_epoch: cell.issuance_cap_per_epoch,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      grouped.set(key, g);
+    }
+    const asr = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // (T=1, N=1): ASR=0% — issuance cap closes the attack regardless
+    // of budget. The time primitive is the load-bearing closure here:
+    // a one-shot suppression attack that needs K*=2 fresh sybils in
+    // one epoch cannot exceed N=1 mints in that epoch, no matter how
+    // much budget the operator commits. The cube's headline reading
+    // for this defense config: ASR is identically 0 across the
+    // budget axis B ∈ {2, 4}.
+    expect(asr('1|1')).toBe(0);
+    // (T=1, N=2): ASR=100% — gates inert at the minimum-affording
+    // budget and above. K_eff=min(B/1, 2)=2 for both B=2 and B=4, so
+    // the attack lands at any budget ≥ K*α. This is the "no defense"
+    // reading the cube needs as the regression handle on the
+    // unaccompanied attack-success path.
+    expect(asr('1|2')).toBe(1);
+    // (T=2, N=1): ASR=0% — issuance cap closes regardless of cost-
+    // multiplier. The N=1 cap dominates: even at B=4 the operator
+    // can mint at most one sybil in epoch 0, and one reject does not
+    // reach K*=2.
+    expect(asr('2|1')).toBe(0);
+    // (T=2, N=2): ASR=50% — the cost-multiplier readout. The
+    // binding-cost threshold T=2 doubles the per-sybil cost vs T=1,
+    // which doubles the budget needed to land the same K* attack:
+    // B=2 fails (K_eff=floor(2/2)=1), B=4 lands (K_eff=floor(4/2)=2).
+    // PRD §Identity's K × α arithmetic shows up as a 50% ASR read
+    // off two budget cells where the threshold-budget for attack
+    // feasibility is exactly 2× the gate-inert (T=1) baseline.
+    expect(asr('2|2')).toBe(0.5);
+
+    // Coverage invariant: every defense config in the cube has both
+    // budget cells. A future cell expansion that breaks this
+    // symmetry trips the assertion and forces the aggregate to be
+    // re-keyed rather than silently averaging over uneven groups.
+    for (const cell of grouped.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
