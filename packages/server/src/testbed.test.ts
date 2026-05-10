@@ -6656,10 +6656,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // The defense knob in this cube is `stratum_include_declines`. The
   // cluster-signal stack stays at the same strength the multi-round
   // closure pins (anti-correlation 1.0, agreement 1.0, contention-
-  // weighted off — the contention-weighting interaction is its own
-  // follow-up, see ROADMAP §Status). The headline is *additive*, not
-  // orthogonal: declines extend the encounter domain on top of votes,
-  // and the cube reads the lift the extension provides.
+  // weighted off — the contention-weighting × paired-decline-floor
+  // interaction is wired as cube #4 below). The headline is
+  // *additive*, not orthogonal: declines extend the encounter domain
+  // on top of votes, and the cube reads the lift the extension
+  // provides.
   //
   // Expected ASR shape — vote-only: 50% (co-voting closed, paired-
   // decline open); decline-aware: 0% (both closed). The widening
