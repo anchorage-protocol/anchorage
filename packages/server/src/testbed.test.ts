@@ -9848,6 +9848,389 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // Tenth parameter sweep cube: the calibration-density × calibration-
+  // aware-convergence composition cube. ROADMAP §Status records the
+  // identity-cost design pass (cubes #6-#9) as closed at the cube
+  // level; this cube opens the *calibration-density* design pass on a
+  // non-identity axis the prior cubes left unswept. PRD §What's
+  // deliberately not specified names "numeric calibration ratios (what
+  // fraction of a reviewer's batch is calibration items)" as a knob
+  // explicitly deferred to the testbed; the existing strategic-
+  // coalition scenarios pin the rep-ledger and convergence-half
+  // closures at a single density (every_n=2) without surveying the
+  // axis. Cube #10 is the first cube to read the density axis
+  // directly.
+  //
+  // Attack pattern: strategic-coalition (PRD §Adversary taxonomy,
+  // Strategic adversary + Coalition). 2-of-3 biased reviewers
+  // (Carol+Dave, naiveBiasedDecider — accept payloads containing
+  // "works", reject otherwise) versus one honest reviewer (Erin,
+  // accept-all on well-grounded excerpts), against two well-grounded
+  // excerpts staged by Bob (one bias-aligned, one bias-misaligned).
+  // The bias-misaligned excerpt (the "no effect" finding) is the
+  // suppression target; attack_succeeded reads true iff it converges
+  // 'rejected' (the coalition's two rejects beat Erin's lone accept
+  // at votes_to_reject=2).
+  //
+  // Defense layers in scope:
+  //   - calibration_inject_every_n (the swept density axis): every Nth
+  //     review-task offer is replaced with a calibration draw from the
+  //     accepted-from-history corpus (the two anchors Alice proposes,
+  //     "paper 1" / "paper 2"). The naive bias predicate misfires on
+  //     anchor content (neither contains "works") so Carol+Dave fail
+  //     calibration on every item they see; Erin's accept-all passes.
+  //     0 disables (frontier-only path); higher N is *lower* density.
+  //   - calibration_aware_convergence (the toggled convergence-path
+  //     defense): when on, vote weights at convergence are weighted by
+  //     the reviewer's per-(cause, sub-topic) calibration record
+  //     (`max(0, 1 + passes - fails)`), so a coalition member whose
+  //     calibration record went sour contributes 0 to the weighted
+  //     sum even when contributing 1 to the distinct count. Convergence
+  //     requires both ≥N distinct reviewers AND ≥N weighted sum.
+  //
+  // The composition reads:
+  //   aware=false: calibration injection moves the rep ledger but
+  //     leaves convergence uncalibrated. The bias suppression converges
+  //     'rejected' regardless of density — calibration alone is
+  //     insufficient against the convergence half. ASR=100% across
+  //     every_n.
+  //   aware=true at every_n=0: the gate is on but the calibration
+  //     corpus is never sampled, so every reviewer's calibration record
+  //     stays at (0,0) and weights collapse to 1. Identical behavior
+  //     to the count-only mode. ASR=100%.
+  //   aware=true at every_n=4: the small-scale runner exhausts the
+  //     two-excerpt frontier within ~3 review-task offers per
+  //     reviewer; at every_n=4 the reviewer never reaches the 4th
+  //     offer, so calibration items never materialize in the
+  //     convergence window. The defense is *silent* — the calibration
+  //     record stays empty and the gate behaves like every_n=0.
+  //     ASR=100%. This is the density-floor reading: calibration-aware
+  //     convergence has a structural minimum density below which the
+  //     defense has no signal to operate on.
+  //   aware=true at every_n=2: each coalition member sees ≥2
+  //     calibration items during their review loop, fails them all
+  //     (naive bias misfires on anchor content), and their weighted
+  //     vote drops to 0 at convergence. The bias-misaligned excerpt's
+  //     1 accept (Erin, weight ≥1) + 2 rejects (Carol+Dave, weight 0)
+  //     fails the weighted-reject threshold despite meeting the count
+  //     threshold. The proposal stays staged — neither accepted (only
+  //     1 distinct accept) nor rejected (weighted sum 0 < 2). ASR=0%.
+  //
+  // Six cells over (every_n ∈ {0, 4, 2}, aware ∈ {false, true}) drive
+  // `it.each`. The aggregate groups by (every_n, aware) and reads ASR
+  // per group: aware=false at 100% across all every_n (calibration-
+  // density-invariant on the convergence path); aware=true at 100%
+  // for every_n ∈ {0, 4} and 0% at every_n=2. The headline reading is
+  // the *density floor on the calibration-aware closure*: the defense
+  // bites only when the calibration cadence is fast enough that the
+  // calibration record moves before the contested target's
+  // convergence window closes, and at fixed reviewer-pool size that
+  // floor is a function of every_n alone. PRD §Calibration batches
+  // commits "a coalition that misfires on calibration items pays
+  // once on the rep ledger and once at convergence"; cube #10 is the
+  // first cube to read the *and-once-at-convergence* half's
+  // density-dependence directly, complementing the rep-ledger
+  // inversion the standalone calibration-injection scenario already
+  // pins (which is density-monotonic and not the load-bearing axis
+  // here).
+  //
+  // The runner reuses the existing strategic-coalition setup (two
+  // anchors, two excerpts, three reviewers) byte-identical to the
+  // standalone scenarios above so the cube reads against the same
+  // attack pattern those scenarios pin. The standalone scenarios
+  // stay as-is for their additional observations (rep-ledger
+  // inversion, materialization, etc.); the cube measures the
+  // convergence-half ASR axis only.
+  async function runStrategicCoalitionScenario(params: {
+    calibration_inject_every_n: number;
+    calibration_aware_convergence: boolean;
+  }): Promise<{
+    attack_succeeded: boolean;
+    suppressed_status: string;
+  }> {
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('cd'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        calibration_inject_every_n: params.calibration_inject_every_n,
+        calibration_aware_convergence: params.calibration_aware_convergence,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    // The two anchors are the calibration corpus — accepted-from-
+    // history proposals the calibration-draw selects from. Naive bias
+    // predicate rejects both ("paper N" doesn't include "works"), so
+    // every coalition-member calibration draw is a fail; Erin's
+    // accept-all passes them all.
+    for (let i = 1; i <= 2; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+    }
+
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobClient = await wireArchetype(server, bob.id);
+    const provider: ContentProvider = {
+      forAnchor: (anchorId) =>
+        anchorId.endsWith('1') || anchorId.endsWith('a')
+          ? {
+              content: 'treatment X works for stage III',
+              quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+            }
+          : {
+              content: 'treatment X has no effect for stage IV',
+              quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
+            },
+    };
+    await runHonestStrong(bobClient, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt'],
+      content: provider,
+    });
+
+    // Erin (honest, accept-all) runs first. She votes accept on both
+    // excerpts; neither converges yet (1 accept each, threshold 2).
+    // At every_n=2 she also sees ~2 calibration items and passes them
+    // all (record (2, 0)); at every_n=4 she exits before reaching any.
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: acceptAllDecider,
+    });
+
+    // Coalition: Carol+Dave share the naive bias predicate (accept
+    // payloads containing "works"; reject otherwise). Both run
+    // sequentially; the second's reject on the bias-misaligned
+    // excerpt converges it 'rejected' at votes_to_reject=2 unless
+    // calibration-aware convergence has dropped their weights below
+    // the weighted-sum threshold.
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: naiveBiasedDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 5,
+      decide: naiveBiasedDecider,
+    });
+
+    const excerpts = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    const noEffect = excerpts.find(
+      (p) => p.payload.kind === 'excerpt' && p.payload.content.includes('no effect'),
+    );
+    if (!noEffect) throw new Error('bias-misaligned excerpt not materialized');
+    return {
+      attack_succeeded: noEffect.status === 'rejected',
+      suppressed_status: noEffect.status,
+    };
+  }
+
+  interface CalibrationDensitySweepCell {
+    name: string;
+    calibration_inject_every_n: number;
+    calibration_aware_convergence: boolean;
+    expected_attack_succeeded: boolean;
+    expected_suppressed_status: 'rejected' | 'staged';
+  }
+  const calibrationDensitySweepCells: CalibrationDensitySweepCell[] = [
+    // every_n=0 row: calibration injection disabled. Both aware
+    // values land at the baseline ASR=100% — without calibration
+    // data, the aware gate has nothing to weight votes by and behaves
+    // like the count-only mode.
+    {
+      name: 'every_n=0, aware=false (baseline; no calibration, count-only convergence)',
+      calibration_inject_every_n: 0,
+      calibration_aware_convergence: false,
+      expected_attack_succeeded: true,
+      expected_suppressed_status: 'rejected',
+    },
+    {
+      name: 'every_n=0, aware=true (gate inert without calibration data; weights collapse to 1)',
+      calibration_inject_every_n: 0,
+      calibration_aware_convergence: true,
+      expected_attack_succeeded: true,
+      expected_suppressed_status: 'rejected',
+    },
+    // every_n=4 row: density floor. The two-excerpt runner exhausts
+    // the frontier within ~3 review-task offers per reviewer; at
+    // every_n=4 the reviewer exits before reaching the 4th offer, so
+    // calibration items never materialize in the convergence window
+    // and the calibration record stays empty for every reviewer.
+    // Both aware values land at ASR=100% — the aware gate is silent
+    // by construction at this density.
+    {
+      name: 'every_n=4, aware=false (below density floor; no calibration items reach reviewers)',
+      calibration_inject_every_n: 4,
+      calibration_aware_convergence: false,
+      expected_attack_succeeded: true,
+      expected_suppressed_status: 'rejected',
+    },
+    {
+      name: 'every_n=4, aware=true (below density floor; aware gate silent — empty calibration record)',
+      calibration_inject_every_n: 4,
+      calibration_aware_convergence: true,
+      expected_attack_succeeded: true,
+      expected_suppressed_status: 'rejected',
+    },
+    // every_n=2 row: calibration fires within the convergence window.
+    // Each coalition member sees ≥2 calibration items during their
+    // review loop, fails them all (naive bias misfires on anchor
+    // content), and their weighted vote drops to 0. aware=false still
+    // leaks (rep ledger moves but convergence is uncalibrated);
+    // aware=true closes the convergence half — the bias-misaligned
+    // excerpt's weighted reject sum fails the threshold and the
+    // proposal stays 'staged' rather than converging 'rejected'.
+    {
+      name: 'every_n=2, aware=false (calibration moves rep ledger; convergence uncalibrated, attack lands)',
+      calibration_inject_every_n: 2,
+      calibration_aware_convergence: false,
+      expected_attack_succeeded: true,
+      expected_suppressed_status: 'rejected',
+    },
+    {
+      name: 'every_n=2, aware=true (calibration record drops coalition weights to 0; convergence half closes)',
+      calibration_inject_every_n: 2,
+      calibration_aware_convergence: true,
+      expected_attack_succeeded: false,
+      expected_suppressed_status: 'staged',
+    },
+  ];
+  it.each(calibrationDensitySweepCells)('calibration density × aware sweep: $name', async ({
+    calibration_inject_every_n,
+    calibration_aware_convergence,
+    expected_attack_succeeded,
+    expected_suppressed_status,
+  }) => {
+    const result = await runStrategicCoalitionScenario({
+      calibration_inject_every_n,
+      calibration_aware_convergence,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.suppressed_status).toBe(expected_suppressed_status);
+  });
+
+  it('calibration density × aware sweep cube: ASR aggregates by aware and reads the density floor', () => {
+    // Aggregate per the cube template: group cells by aware (the
+    // convergence-path defense knob) and read ASR per group across
+    // the density axis. The headline is the *density floor on the
+    // calibration-aware closure* — aware=false reads ASR=100% across
+    // all every_n (calibration alone never closes the convergence
+    // half, regardless of density), and aware=true reads ASR=100% at
+    // every_n ∈ {0, 4} (gate silent — no calibration data) and 0% at
+    // every_n=2 (gate fires, weights drop, convergence half closes).
+    interface CalibrationAsrCell {
+      aware: boolean;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const groupedByAware = new Map<boolean, CalibrationAsrCell>();
+    for (const cell of calibrationDensitySweepCells) {
+      const g = groupedByAware.get(cell.calibration_aware_convergence) ?? {
+        aware: cell.calibration_aware_convergence,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      groupedByAware.set(cell.calibration_aware_convergence, g);
+    }
+    const asrByAware = (aware: boolean): number => {
+      const g = groupedByAware.get(aware);
+      if (!g) throw new Error(`missing aware=${aware}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // aware=false: ASR=100% across all 3 density cells. Calibration
+    // injection moves the rep ledger but leaves convergence
+    // uncalibrated; the bias-suppression vector lands regardless of
+    // density. This row is the regression handle on PRD §Calibration
+    // batches' "calibration alone does not close the convergence
+    // layer" framing — without aware=true, more calibration is not
+    // more closure.
+    expect(asrByAware(false)).toBe(1);
+    // aware=true: ASR=67% — the gate fires only at every_n=2 (1/3
+    // cells closes); at every_n ∈ {0, 4} the calibration record
+    // stays empty and the gate is silent (2/3 cells leak). The
+    // density-floor reading: above the floor (every_n=2) the
+    // composition closes; below it (every_n ∈ {0, 4}) the defense
+    // has no signal to operate on.
+    expect(asrByAware(true)).toBeCloseTo(2 / 3);
+
+    // Aggregate by every_n reads the density axis directly: at
+    // every_n=0 ASR=100% (both aware values leak — no calibration
+    // data); at every_n=4 ASR=100% (both leak — calibration items
+    // never materialize); at every_n=2 ASR=50% (aware=true closes,
+    // aware=false leaks). The lift from every_n=4 to every_n=2 at
+    // aware=true is the load-bearing observation: doubling
+    // calibration density in this two-excerpt runner crosses the
+    // density floor, and the closure goes from silent to active.
+    interface CalibrationAsrByDensityCell {
+      every_n: number;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const groupedByDensity = new Map<number, CalibrationAsrByDensityCell>();
+    for (const cell of calibrationDensitySweepCells) {
+      const g = groupedByDensity.get(cell.calibration_inject_every_n) ?? {
+        every_n: cell.calibration_inject_every_n,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      groupedByDensity.set(cell.calibration_inject_every_n, g);
+    }
+    const asrByDensity = (every_n: number): number => {
+      const g = groupedByDensity.get(every_n);
+      if (!g) throw new Error(`missing every_n=${every_n}`);
+      return g.attacks_succeeded / g.total;
+    };
+    expect(asrByDensity(0)).toBe(1);
+    expect(asrByDensity(4)).toBe(1);
+    expect(asrByDensity(2)).toBe(0.5);
+
+    // Coverage invariants: every aware cell has 3 density cells,
+    // every density cell has 2 aware cells. A future cell expansion
+    // that breaks the symmetry trips the assertion and forces the
+    // aggregate to be re-keyed rather than silently averaging over
+    // uneven groups (the same invariant cubes #6-#9 carry).
+    for (const cell of groupedByAware.values()) {
+      expect(cell.total).toBe(3);
+    }
+    for (const cell of groupedByDensity.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
