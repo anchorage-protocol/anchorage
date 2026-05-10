@@ -11668,6 +11668,605 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // Fourteenth parameter sweep cube: the (stratification × threshold)
+  // composition cube on the K=2 coalition with priming, joining cube
+  // #11's stratification axis with cube #12's vote-to-reject axis on
+  // a single attack pattern. PRD §What's deliberately not specified
+  // names "Vote-aggregation thresholds" as a knob deferred to the
+  // testbed; PRD §Reviewer assignment commits stratification as the
+  // structural closure for the small-pool-eligible regime. Cubes #11
+  // and #12 measured each axis against the same K=2 coalition at
+  // coalition-first ordering but with disjoint runners (cube #11
+  // primes so the cluster signal can fire; cube #12 omits priming so
+  // threshold arithmetic reads cleanly). Cube #14 unifies the two
+  // axes on a single primed runner and reads the *orthogonality* of
+  // the two closure mechanisms — the load-bearing question is whether
+  // tightening vto on top of stratification buys any additional
+  // closure, or whether the two defenses are independently sufficient
+  // at the same K=2 attack.
+  //
+  // Attack pattern: K=2 coalition (Carol+Dave with naiveBiasedDecider)
+  // on a single contested excerpt, with three bias-aligned priming
+  // proposals on which Carol and Dave both vote accept (so the
+  // cluster signal has shared history to fire on when strat=on). The
+  // coalition runs first — Carol requests assignment and votes reject
+  // on the contested target, then Dave requests assignment. With
+  // strat=on, Dave is gated by the cross-stratum draw rule (Carol-
+  // already-routed + Carol-Dave co-stratum from priming) and the
+  // request fails with `not_found`; with strat=off, Dave is routed
+  // and votes reject. The honest pool then runs sequentially.
+  // Calibration channels off (vta=2 fixed) so the cube isolates
+  // (strat × vto × H) from the calibration axes cubes #5/#10/#13
+  // measure.
+  //
+  // Defense layers in scope:
+  //   - stratification_enabled ∈ {off, on}: cube #11's axis. With
+  //     priming and strat=on, the cluster signal closes Dave at
+  //     request_assignment; the coalition's effective leverage drops
+  //     to Carol's lone reject.
+  //   - votes_to_reject ∈ {2, 3}: cube #12's vto axis. At vto=2 the
+  //     coalition can capture by arithmetic (K=vto, both rejects
+  //     converge); at vto=3 the coalition cannot reach the threshold
+  //     by arithmetic (K<vto), regardless of whether Dave is gated.
+  //   - honest pool size H ∈ {1, 2}: cube #11's closure-quality axis
+  //     (vta=2 fixed). At H=1 the honest pool reaches 1 accept (below
+  //     vta=2) and the proposal stalls; at H=2 it reaches vta and
+  //     converges accepted.
+  //
+  // The composition reads:
+  //   (strat=off, vto=2): K=vto, coalition captures by arithmetic
+  //     before honest pool votes. ASR=100% across both H — H buys
+  //     nothing at coalition-first ordering with K=vto. The regression
+  //     handle on default-threshold capture, identical to cube #12's
+  //     vto=2 row.
+  //   (strat=off, vto=3): K<vto, capture closed *by threshold alone*.
+  //     Dave votes (no cluster signal closure) but the coalition's
+  //     two rejects don't reach vto=3. Honest pool drives convergence
+  //     at H=2 (full closure) or stalls at H=1 (1 accept < vta=2).
+  //     This is cube #12's vto=3 row at a smaller H axis.
+  //   (strat=on, vto=2): K=vto, but Dave is cluster-gated. Carol's
+  //     lone reject is below vto=2, so capture is closed *by
+  //     stratification alone* — the load-bearing path the cube
+  //     measures: vto is at the K-affording threshold where cube #12
+  //     reads ASR=100%, but the cluster signal closes the same attack
+  //     anyway. Honest pool drives convergence at H=2; stalls at
+  //     H=1.
+  //   (strat=on, vto=3): both defenses fire. Capture is *over-
+  //     determined* — closed by stratification (Dave gated) AND by
+  //     threshold (K<vto). Closure quality matches the (strat=on,
+  //     vto=2) row: H=2 closes accepted, H=1 stalls. The over-
+  //     determined cell reads "the second defense buys no additional
+  //     capture-resistance once the first has fired" — the two
+  //     defenses are not multiplicative on capture, they are
+  //     redundantly sufficient.
+  //
+  // Eight cells over (strat ∈ {off, on}) × (vto ∈ {2, 3}) × (H ∈
+  // {1, 2}) drive `it.each`. The aggregate groups by (strat, vto)
+  // and reads (ASR + stall_rate) per pair across the H axis: (off,
+  // 2) at (ASR=100%, stall=0%) — coalition captures regardless of
+  // H; (off, 3) at (ASR=0%, stall=50%) — closure-by-threshold,
+  // closure quality depends on H; (on, 2) at (ASR=0%, stall=50%) —
+  // closure-by-stratification, closure quality depends on H; (on, 3)
+  // at (ASR=0%, stall=50%) — closure-by-both, no different from
+  // either alone on either metric.
+  //
+  // The complementary aggregates by single axis read:
+  //   - by strat: off at (ASR=50%, stall=25%) — vto=2 captures both
+  //     H, vto=3 stalls at H=1; on at (ASR=0%, stall=50%) — capture
+  //     closed at every cell, both H=1 cells stall.
+  //   - by vto: 2 at (ASR=50%, stall=25%) — strat=off captures both
+  //     H, strat=on stalls at H=1; 3 at (ASR=0%, stall=50%) —
+  //     capture closed at every cell, both H=1 cells stall.
+  //   - by H: 1 at (ASR=25%, stall=75%) — only (off, 2) captures at
+  //     H=1, three cells stall (everywhere capture is closed); 2 at
+  //     (ASR=25%, stall=0%) — only (off, 2) captures, every closure
+  //     cell reaches vta.
+  //
+  // The headline is the *redundant-sufficiency* reading: the two
+  // closure mechanisms close capture by *different* paths (cluster
+  // signal closes Dave at request_assignment via the cross-stratum
+  // gate; vto raises the arithmetic floor below K) but at the K=2
+  // coalition each is independently sufficient. The (strat=on, vto=
+  // 2) pair specifically reads "closure-by-stratification-not-by-
+  // threshold" — the cell where vto is at the K-affording value
+  // (cube #12 reads 100% ASR at vto=2 without stratification) but
+  // capture is still closed because stratification fires first. The
+  // (strat=on, vto=3) overdetermined pair reads no extra closure
+  // beyond either alone — *redundant*, not *multiplicative*.
+  //
+  // The two-metric template (ASR, stall_rate) generalizes here as a
+  // *closure-quality independence reading*: stall_rate is invariant
+  // across the (strat, vto) pairs that close capture — at H=1 the
+  // honest pool is below vta regardless of which defense fired, and
+  // at H=2 the honest pool reaches vta regardless. The closure-
+  // quality axis (H) is independent of which capture-defense fires;
+  // both stratification and vto-tightening pay the same closure-
+  // quality cost (1 stall at H=1) when capture is closed. PRD
+  // §Reviewer assignment commits "slower to close but not capturable
+  // by the pool-fits-the-coalition dynamic"; cube #14 reads this as
+  // a property that survives the (strat × vto) composition rather
+  // than being tied to a specific closure mechanism.
+  //
+  // The dave_voted invariant on each cell (true at strat=off, false
+  // at strat=on; vto-independent) is the regression handle on the
+  // cluster-signal closure path itself, surfacing a wiring regression
+  // that disabled or weakened the cluster signal before downstream
+  // ASR drift, the same shape cube #11 carries.
+  async function runStratificationThresholdScenario(params: {
+    stratification_enabled: boolean;
+    votes_to_reject: number;
+    honest_pool_size: number;
+  }): Promise<{
+    attack_succeeded: boolean;
+    stalled: boolean;
+    contested_status: string;
+    dave_voted: boolean;
+  }> {
+    if (params.honest_pool_size < 1 || params.honest_pool_size > 2) {
+      throw new Error(
+        `runStratificationThresholdScenario: H=${params.honest_pool_size} out of range [1,2]`,
+      );
+    }
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('st14'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: params.votes_to_reject,
+        // Calibration channels off — the cube isolates (strat × vto)
+        // from the calibration axes cubes #5/#10/#13 measure.
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        stratification_enabled: params.stratification_enabled,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    // Reviewers. K=2 coalition (Carol+Dave) plus H honest reviewers
+    // (Erin always, Frank at H=2).
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const honestIdentities: Array<{ id: typeof erin.id; name: string }> = [
+      { id: erin.id, name: 'erin' },
+    ];
+    if (params.honest_pool_size >= 2) {
+      const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+      honestIdentities.push({ id: frank.id, name: 'frank' });
+    }
+    for (const id of [carol.id, dave.id, ...honestIdentities.map((h) => h.id)]) {
+      await server.tools.setCapacity(
+        { identity_id: id },
+        { cause_id: cause.id, rate: 5, kinds: ['review'] },
+      );
+    }
+
+    // PRIMING: three bias-aligned excerpts. Carol and Dave both vote
+    // accept on each via direct cast_review_vote — the same priming
+    // pattern cube #11 uses. The first auto-converges on Carol+Dave's
+    // unanimous accept; the second and third stay staged after the
+    // cluster forms and are curator-accepted to clear the frontier.
+    // The priming is a no-op for the cluster signal at strat=off
+    // (signal not computed) and load-bearing at strat=on (Carol+Dave
+    // co-stratum after 3 shared accepts ≥ stratum_min_shared_proposals
+    // = 2, agreement = 1.0 ≥ stratum_agreement_threshold).
+    for (let i = 0; i < 3; i++) {
+      const primer = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        {
+          proposal_id: primer.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: dave.id },
+        {
+          proposal_id: primer.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      const after = server.store.proposals.get(primer.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(primer.proposal_id);
+      }
+    }
+
+    // CONTESTED: bias-misaligned excerpt under paper 2.
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+    const contestedId = contested.proposal_id;
+
+    // ADVERSARY PHASE. Carol requests assignment first, gets routed,
+    // votes reject. Dave requests next: gated at strat=on, routed and
+    // votes reject at strat=off.
+    const carolAssignment = await server.tools.requestAssignment(
+      { identity_id: carol.id },
+      { cause_id: cause.id },
+    );
+    if (carolAssignment.task.kind !== 'review') {
+      throw new Error('expected carol routed to review task');
+    }
+    if (carolAssignment.task.proposal_id !== contestedId) {
+      throw new Error(
+        `expected carol routed to contested ${contestedId}, got ${carolAssignment.task.proposal_id}`,
+      );
+    }
+    await server.tools.castReviewVote(
+      { identity_id: carol.id },
+      {
+        proposal_id: contestedId,
+        decision: 'reject',
+        rationale: 'underpowered, methodological concerns',
+        assignment_id: carolAssignment.assignment_id,
+      },
+    );
+
+    let daveVoted = false;
+    const postCarol = server.store.proposals.get(contestedId);
+    if (postCarol?.status === 'staged') {
+      try {
+        const daveAssignment = await server.tools.requestAssignment(
+          { identity_id: dave.id },
+          { cause_id: cause.id },
+        );
+        if (
+          daveAssignment.task.kind === 'review' &&
+          daveAssignment.task.proposal_id === contestedId
+        ) {
+          await server.tools.castReviewVote(
+            { identity_id: dave.id },
+            {
+              proposal_id: contestedId,
+              decision: 'reject',
+              rationale: 'underpowered, methodological concerns',
+              assignment_id: daveAssignment.assignment_id,
+            },
+          );
+          daveVoted = true;
+        }
+      } catch (err) {
+        if (err instanceof ServerError && err.code === 'not_found') {
+          // Dave gated by the cross-stratum draw rule. Expected at
+          // strat=on.
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    // HONEST PHASE. Honest reviewers vote accept sequentially. Loop
+    // short-circuits if contested already converged.
+    for (const honest of honestIdentities) {
+      const post = server.store.proposals.get(contestedId);
+      if (post?.status !== 'staged') break;
+      try {
+        const honestAssignment = await server.tools.requestAssignment(
+          { identity_id: honest.id },
+          { cause_id: cause.id },
+        );
+        if (
+          honestAssignment.task.kind !== 'review' ||
+          honestAssignment.task.proposal_id !== contestedId
+        ) {
+          continue;
+        }
+        await server.tools.castReviewVote(
+          { identity_id: honest.id },
+          {
+            proposal_id: contestedId,
+            decision: 'accept',
+            rationale: 'consistent with prevailing evidence',
+            assignment_id: honestAssignment.assignment_id,
+          },
+        );
+      } catch (err) {
+        if (err instanceof ServerError && err.code === 'not_found') {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    const final = server.store.proposals.get(contestedId);
+    if (!final) throw new Error('contested proposal not found');
+    return {
+      attack_succeeded: final.status === 'rejected',
+      stalled: final.status === 'staged',
+      contested_status: final.status,
+      dave_voted: daveVoted,
+    };
+  }
+
+  interface StratThresholdSweepCell {
+    name: string;
+    stratification_enabled: boolean;
+    votes_to_reject: number;
+    honest_pool_size: number;
+    expected_attack_succeeded: boolean;
+    expected_stalled: boolean;
+    expected_dave_voted: boolean;
+  }
+  const stratThresholdSweepCells: StratThresholdSweepCell[] = [
+    // (strat=off, vto=2): K=vto, coalition-first capture. ASR=100%
+    // across both H — the regression handle on default-threshold
+    // capture (cube #12's vto=2 row, replayed under priming).
+    {
+      name: 'strat=off, vto=2, H=1 (K=vto, coalition captures by arithmetic; H irrelevant)',
+      stratification_enabled: false,
+      votes_to_reject: 2,
+      honest_pool_size: 1,
+      expected_attack_succeeded: true,
+      expected_stalled: false,
+      expected_dave_voted: true,
+    },
+    {
+      name: 'strat=off, vto=2, H=2 (K=vto, coalition captures; H=2 honest pool comes too late)',
+      stratification_enabled: false,
+      votes_to_reject: 2,
+      honest_pool_size: 2,
+      expected_attack_succeeded: true,
+      expected_stalled: false,
+      expected_dave_voted: true,
+    },
+    // (strat=off, vto=3): K<vto, capture closed by threshold alone.
+    // Dave votes (cluster signal off), but coalition can't reach
+    // vto=3. Closure quality on H: H=1 stalls (1 accept < vta=2);
+    // H=2 closes accepted.
+    {
+      name: 'strat=off, vto=3, H=1 (closure-by-threshold; H<vta stalls)',
+      stratification_enabled: false,
+      votes_to_reject: 3,
+      honest_pool_size: 1,
+      expected_attack_succeeded: false,
+      expected_stalled: true,
+      expected_dave_voted: true,
+    },
+    {
+      name: 'strat=off, vto=3, H=2 (closure-by-threshold; H=vta full closure)',
+      stratification_enabled: false,
+      votes_to_reject: 3,
+      honest_pool_size: 2,
+      expected_attack_succeeded: false,
+      expected_stalled: false,
+      expected_dave_voted: true,
+    },
+    // (strat=on, vto=2): K=vto, but Dave is cluster-gated. Carol's
+    // lone reject below vto. Capture closed *by stratification alone*
+    // — the load-bearing closure-by-stratification-not-by-threshold
+    // path. Closure quality on H: H=1 stalls (1 reject + 1 accept,
+    // neither threshold hit); H=2 closes accepted.
+    {
+      name: 'strat=on, vto=2, H=1 (closure-by-stratification at K=vto; H<vta stalls)',
+      stratification_enabled: true,
+      votes_to_reject: 2,
+      honest_pool_size: 1,
+      expected_attack_succeeded: false,
+      expected_stalled: true,
+      expected_dave_voted: false,
+    },
+    {
+      name: 'strat=on, vto=2, H=2 (closure-by-stratification at K=vto; H=vta full closure — load-bearing)',
+      stratification_enabled: true,
+      votes_to_reject: 2,
+      honest_pool_size: 2,
+      expected_attack_succeeded: false,
+      expected_stalled: false,
+      expected_dave_voted: false,
+    },
+    // (strat=on, vto=3): both defenses fire. Capture overdetermined
+    // — closed by stratification AND by threshold. Closure quality
+    // matches the (strat=on, vto=2) row: same H-dependent stalls.
+    {
+      name: 'strat=on, vto=3, H=1 (overdetermined closure; H<vta stalls)',
+      stratification_enabled: true,
+      votes_to_reject: 3,
+      honest_pool_size: 1,
+      expected_attack_succeeded: false,
+      expected_stalled: true,
+      expected_dave_voted: false,
+    },
+    {
+      name: 'strat=on, vto=3, H=2 (overdetermined closure; H=vta full closure)',
+      stratification_enabled: true,
+      votes_to_reject: 3,
+      honest_pool_size: 2,
+      expected_attack_succeeded: false,
+      expected_stalled: false,
+      expected_dave_voted: false,
+    },
+  ];
+  it.each(stratThresholdSweepCells)(
+    'stratification × threshold sweep: $name',
+    async ({
+      stratification_enabled,
+      votes_to_reject,
+      honest_pool_size,
+      expected_attack_succeeded,
+      expected_stalled,
+      expected_dave_voted,
+    }) => {
+      const result = await runStratificationThresholdScenario({
+        stratification_enabled,
+        votes_to_reject,
+        honest_pool_size,
+      });
+      expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+      expect(result.stalled).toBe(expected_stalled);
+      expect(result.dave_voted).toBe(expected_dave_voted);
+    },
+  );
+
+  it('stratification × threshold sweep cube: ASR + stall-rate aggregate by (strat, vto), strat, vto, and H', () => {
+    // Aggregate per the two-metric template cube #5 introduced and
+    // cubes #11/#12 carried forward: ASR (capture rate) + stall_rate
+    // (staged-instead-of-converged rate). The cube's three axes
+    // (strat, vto, H) read how each contributes to the (capture,
+    // closure-quality) tradeoff, and the (strat × vto) joint
+    // aggregate reads the orthogonality of the two capture-closure
+    // mechanisms.
+    interface StratThresholdAsrCell<K> {
+      key: K;
+      total: number;
+      attacks_succeeded: number;
+      stalled: number;
+    }
+    function group<K>(
+      keyOf: (cell: StratThresholdSweepCell) => K,
+    ): Map<string, StratThresholdAsrCell<K>> {
+      const m = new Map<string, StratThresholdAsrCell<K>>();
+      for (const cell of stratThresholdSweepCells) {
+        const k = keyOf(cell);
+        const ks = JSON.stringify(k);
+        const g = m.get(ks) ?? { key: k, total: 0, attacks_succeeded: 0, stalled: 0 };
+        g.total += 1;
+        if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+        if (cell.expected_stalled) g.stalled += 1;
+        m.set(ks, g);
+      }
+      return m;
+    }
+    const groupedByStratVto = group((c) => [c.stratification_enabled, c.votes_to_reject]);
+    const groupedByStrat = group((c) => c.stratification_enabled);
+    const groupedByVto = group((c) => c.votes_to_reject);
+    const groupedByH = group((c) => c.honest_pool_size);
+    const asrOf = <K>(m: Map<string, StratThresholdAsrCell<K>>, k: K): number => {
+      const g = m.get(JSON.stringify(k));
+      if (!g) throw new Error(`missing key=${JSON.stringify(k)}`);
+      return g.attacks_succeeded / g.total;
+    };
+    const stallOf = <K>(m: Map<string, StratThresholdAsrCell<K>>, k: K): number => {
+      const g = m.get(JSON.stringify(k));
+      if (!g) throw new Error(`missing key=${JSON.stringify(k)}`);
+      return g.stalled / g.total;
+    };
+
+    // (strat × vto) joint aggregate — the headline orthogonality
+    // reading. Each pair averages over H ∈ {1, 2}.
+    //   (off, 2): K=vto, coalition captures both H. ASR=100%, stall=
+    //     0%. The default-threshold capture baseline.
+    expect(asrOf(groupedByStratVto, [false, 2])).toBe(1);
+    expect(stallOf(groupedByStratVto, [false, 2])).toBe(0);
+    //   (off, 3): closure-by-threshold; H=1 stalls. ASR=0%, stall=
+    //     50%.
+    expect(asrOf(groupedByStratVto, [false, 3])).toBe(0);
+    expect(stallOf(groupedByStratVto, [false, 3])).toBe(0.5);
+    //   (on, 2): closure-by-stratification at K=vto — the load-
+    //     bearing closure-by-stratification-not-by-threshold cell.
+    //     Cube #12 reads ASR=100% at (strat=off, vto=2); cube #11
+    //     reads ASR=0% at (strat=on, vto=2 default); cube #14 here
+    //     reads the latter directly under the same (strat × vto)
+    //     coordinates. Stall_rate=50% (H=1 stalls).
+    expect(asrOf(groupedByStratVto, [true, 2])).toBe(0);
+    expect(stallOf(groupedByStratVto, [true, 2])).toBe(0.5);
+    //   (on, 3): overdetermined closure — both defenses fire, no
+    //     extra capture-resistance beyond either alone. ASR=0%,
+    //     stall=50%, identical (on metric) to (on, 2) and (off, 3).
+    //     The redundant-sufficiency reading.
+    expect(asrOf(groupedByStratVto, [true, 3])).toBe(0);
+    expect(stallOf(groupedByStratVto, [true, 3])).toBe(0.5);
+
+    // strat axis: off captures at vto=2 (2/4 cells), stalls at
+    // (vto=3, H=1) (1/4); on closes capture at every cell (4/4),
+    // stalls at H=1 across both vto (2/4).
+    expect(asrOf(groupedByStrat, false)).toBe(0.5);
+    expect(stallOf(groupedByStrat, false)).toBe(0.25);
+    expect(asrOf(groupedByStrat, true)).toBe(0);
+    expect(stallOf(groupedByStrat, true)).toBe(0.5);
+
+    // vto axis: 2 captures at strat=off (2/4 cells), stalls at
+    // (strat=on, H=1) (1/4); 3 closes capture at every cell (4/4),
+    // stalls at H=1 across both strat (2/4). Numerically identical
+    // to the strat axis — the two defenses pay symmetric capture and
+    // closure-quality readings under the (strat × vto × H) symmetry.
+    expect(asrOf(groupedByVto, 2)).toBe(0.5);
+    expect(stallOf(groupedByVto, 2)).toBe(0.25);
+    expect(asrOf(groupedByVto, 3)).toBe(0);
+    expect(stallOf(groupedByVto, 3)).toBe(0.5);
+
+    // H axis: the closure-quality independence reading. At H=1 only
+    // (off, 2) captures (1/4); the three closure cells stall (3/4
+    // stall_rate). At H=2 only (off, 2) captures (1/4); every
+    // closure cell reaches vta and stall_rate=0%. The H axis
+    // cleanly separates capture from closure-quality regardless of
+    // which defense fired — the property cube #11 named (graceful
+    // degradation on the closure-quality axis) survives the (strat
+    // × vto) composition.
+    expect(asrOf(groupedByH, 1)).toBe(0.25);
+    expect(stallOf(groupedByH, 1)).toBe(0.75);
+    expect(asrOf(groupedByH, 2)).toBe(0.25);
+    expect(stallOf(groupedByH, 2)).toBe(0);
+
+    // Coverage invariants: every (strat, vto) pair has 2 H cells,
+    // every single-axis aggregate has 4 cells. Same shape cubes
+    // #6-#13 carry; a future cell expansion that breaks the symmetry
+    // trips the assertion and forces the aggregate to be re-keyed.
+    for (const cell of groupedByStratVto.values()) {
+      expect(cell.total).toBe(2);
+    }
+    for (const m of [groupedByStrat, groupedByVto, groupedByH]) {
+      for (const cell of m.values()) {
+        expect(cell.total).toBe(4);
+      }
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
