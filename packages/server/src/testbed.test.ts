@@ -996,9 +996,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // predicate). This is the calibration-aware adversary case PRD
     // §Adversary taxonomy (Strategic adversary) names ("hidden-
     // objective model — instructed to bias the graph toward outcome
-    // X while passing calibration"); patient/sweep variants are
-    // testbed work that
-    // builds on this seam, not regressions of it.
+    // X while passing calibration"); wired explicitly below as the
+    // calibration-aware-coalition scenario (bias zone narrow enough
+    // to pass the calibration corpus by construction), with
+    // structural closures (pool-size scaling at K+1 honest reviewers;
+    // stratified-by-history assignment for the small-pool case)
+    // landing in the two scenarios after.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
