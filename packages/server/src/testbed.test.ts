@@ -3072,11 +3072,13 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // PRD §Adversary testbed names "decline-pattern abuse" as a
     // distinct vector: declining everything outside the adversary's
     // preferred sub-topic to approximate selectivity even though
-    // capacity is cause-level. The defense PRD commits to is
-    // "decline-tracking + curator escalation": the system records
-    // decline reasons (already wired at the assignment surface) and
-    // the curator surface projects per-(cause, reviewer) decline
-    // rates so a curator can investigate when a pattern surfaces.
+    // capacity is cause-level. PRD §Capacity and assignment commits
+    // two surfaces on the same per-(cause, reviewer) cumulative-rate
+    // signal: a curator-side projection (`declinePatterns`) for
+    // visibility, and an assignment-time gate
+    // (`assignment_max_decline_rate`) for enforcement. This scenario
+    // wires the projection end-to-end; the assignment-time gate has
+    // its own scenario downstream.
     //
     // This test wires the projection end-to-end. Dave declines any
     // excerpt about "no effect" (a one-line stand-in for "outside
