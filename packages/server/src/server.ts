@@ -364,13 +364,15 @@ export interface ReviewConfig {
   // leaves the gate inert and preserves existing-scenario behavior.
   assignment_min_demonstrated: number;
   // Maximum cumulative decline rate (declines / offers in this cause)
-  // allowed at request_assignment. PRD §Capacity and assignment names
-  // decline-pattern as an abuse signal "handled at the curator layer";
-  // this is the testbed-visible knob that turns the existing
-  // curator-side `declinePatterns` projection into an assignment-time
-  // enforcement primitive. The signal is cumulative and matches what
-  // the projection computes — same numerator and denominator, same
-  // per-cause scope. The first defense knob for the multi-proposal
+  // allowed at request_assignment. PRD §Capacity and assignment commits
+  // two surfaces on the same per-(cause, reviewer) cumulative-rate
+  // signal: a curator-side projection (`declinePatterns`) for
+  // visibility, and an assignment-time gate
+  // (`assignment_max_decline_rate`, `assignment_decline_min_offers`)
+  // for enforcement. This knob is the gate. The signal it consumes
+  // matches what the projection computes — same numerator and
+  // denominator, same per-cause scope — so the two surfaces operate
+  // on a single signal. The first defense knob for the multi-proposal
   // coalition seam (a coalition that avoids co-voting on any
   // contentious item by using paired-decline as the routing primitive):
   // the gate makes "decline as routing primitive" expensive without
