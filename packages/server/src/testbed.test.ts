@@ -1890,16 +1890,22 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // limit accounting, cross-cause identity-clustering) composing
     // multiplicatively against an adversary budget per the
     // §Adversary testbed adversary-budget model. The binding-cost
-    // gate (`min_attestation_level`) and per-identity rate-limit
-    // accounting (`rate_limit_actions_per_epoch`) are now wired;
-    // this scenario keeps both inert (defaults 0 / Infinity) and
-    // mints all identities at attestation 0 to preserve its role
-    // as the regression handle for the seam — each gate's
-    // standalone refusal scenario pins the closure under non-
-    // default settings. The remaining two layers (issuance-
-    // frequency cap, cross-cause identity-clustering) land in
-    // subsequent slices (see ROADMAP §Status for the slice
-    // sequence).
+    // gate (`min_attestation_level`), per-identity rate-limit
+    // accounting (`rate_limit_actions_per_epoch`), and cross-cause
+    // identity-clustering (`server.curator.identityClusters`) are
+    // all wired; this scenario keeps the two enforcement gates
+    // inert (defaults 0 / Infinity) and mints all identities at
+    // attestation 0 to preserve its role as the regression handle
+    // for the seam — each gate's standalone refusal scenario pins
+    // the closure under non-default settings. Cross-cause
+    // identity-clustering is a curator-side surveillance projection
+    // (no enforcement gate fires from it directly), so its presence
+    // is invisible to the scenario's outcome unless the curator
+    // explicitly invokes the projection. The remaining layer
+    // (issuance-frequency cap) lives below the MCP layer and is
+    // the testbed-side adversary-budget model's responsibility,
+    // landing in the final slice (see ROADMAP §Status for the
+    // slice sequence).
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
@@ -2298,6 +2304,141 @@ describe('testbed: synthetic populations against the wired surface', () => {
       (p) => p.payload.kind === 'anchor' && p.proposer_id === eve.id,
     );
     expect(anchors).toHaveLength(3);
+  });
+
+  it('cross-cause identity-clustering: pairs voting together across causes surface; single-cause pairs do not (PRD §Identity bullet 4)', async () => {
+    // PRD §Identity bullet 4 (cross-cause identity-clustering) —
+    // the fourth of the four sybil-resistance layers. Curator-side
+    // projection parallel to `declinePatterns` but on a different
+    // signal: per-(reviewer pair) count of distinct causes where
+    // both reviewers cast votes on the same proposal. Honest
+    // reviewers typically work in one cause (per-cause reputation);
+    // a pair appearing on shared proposals across multiple causes
+    // is the cross-cause behavioral fingerprint a sybil farm
+    // working multiple causes lights up and a single-cause
+    // coalition does not. Two metrics: `cross_cause_count` (the
+    // headline signal, default `min_signal=2`) and
+    // `shared_proposal_count` (visibility tiebreaker the curator
+    // weighs).
+    //
+    // The scenario pins the projection's contract: a sybil pair
+    // (Alice+Bob) coordinates across two causes (CRC and AMR), an
+    // honest pair (Carol+Dave) coordinates within one cause only;
+    // identityClusters() with default `min_signal=2` returns the
+    // sybil pair only — Carol+Dave's `cross_cause_count=1` is
+    // below threshold, even though they share one proposal each.
+    // Filtering by `min_signal=1` returns both pairs, confirming
+    // the threshold mechanic.
+    const sources = new Map([
+      ['1', 'crc paper 1'],
+      ['2', 'crc paper 2'],
+      ['3', 'amr paper 1'],
+      ['4', 'amr paper 2'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('cl'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+    });
+    // Two causes, each with one sub-topic.
+    const crc = server.bootstrap.createCause({ name: 'CRC', description: 'colorectal' });
+    const amr = server.bootstrap.createCause({ name: 'AMR', description: 'antibiotic' });
+    const crcSt = server.bootstrap.seedSubTopic({
+      cause_id: crc.id,
+      name: 'crc-st',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const amrSt = server.bootstrap.seedSubTopic({
+      cause_id: amr.id,
+      name: 'amr-st',
+      description: 'y',
+      scope_query: 'y',
+    });
+    // alice seeds proposals; bob is the proposer for the second
+    // sybil-pair-shared proposal (mixing proposers ensures the
+    // cluster signal isn't an artifact of a single proposer).
+    const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
+    const proposalCrc1 = await server.tools.proposeAnchor(
+      { identity_id: seeder.id },
+      {
+        cause_id: crc.id,
+        home_sub_topic_id: crcSt.id,
+        content: 'crc 1',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    const proposalAmr1 = await server.tools.proposeAnchor(
+      { identity_id: seeder.id },
+      {
+        cause_id: amr.id,
+        home_sub_topic_id: amrSt.id,
+        content: 'amr 1',
+        external_ref: { kind: 'pmid', value: '3' },
+      },
+    );
+    // Alice + Bob: the sybil pair. Both vote on both proposals
+    // (one CRC, one AMR) → cross_cause_count = 2,
+    // shared_proposal_count = 2.
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    for (const id of [alice.id, bob.id]) {
+      await server.tools.castReviewVote(
+        { identity_id: id },
+        { proposal_id: proposalCrc1.proposal_id, decision: 'accept', rationale: 'r' },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: id },
+        { proposal_id: proposalAmr1.proposal_id, decision: 'accept', rationale: 'r' },
+      );
+    }
+    // Carol + Dave: the honest pair. Both vote on a CRC proposal
+    // only → cross_cause_count = 1, shared_proposal_count = 1.
+    const proposalCrc2 = await server.tools.proposeAnchor(
+      { identity_id: seeder.id },
+      {
+        cause_id: crc.id,
+        home_sub_topic_id: crcSt.id,
+        content: 'crc 2',
+        external_ref: { kind: 'pmid', value: '2' },
+      },
+    );
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    for (const id of [carol.id, dave.id]) {
+      await server.tools.castReviewVote(
+        { identity_id: id },
+        { proposal_id: proposalCrc2.proposal_id, decision: 'accept', rationale: 'r' },
+      );
+    }
+
+    // Default `min_signal=2` returns Alice+Bob only — the sybil
+    // pair is the headline signal, the honest single-cause pair is
+    // filtered out by construction.
+    const defaultClusters = server.curator.identityClusters();
+    expect(defaultClusters).toHaveLength(1);
+    const sybilOnly = defaultClusters[0];
+    if (!sybilOnly) throw new Error('expected sybil cluster');
+    expect(sybilOnly).toMatchObject({
+      cross_cause_count: 2,
+      shared_proposal_count: 2,
+    });
+    // Pair canonicalization: identity_a < identity_b.
+    expect(sybilOnly.identity_a < sybilOnly.identity_b).toBe(true);
+    expect([sybilOnly.identity_a, sybilOnly.identity_b].sort()).toEqual([alice.id, bob.id].sort());
+
+    // Lowering `min_signal=1` brings Carol+Dave in too. Sybil pair
+    // sorts first by `cross_cause_count desc`.
+    const allClusters = server.curator.identityClusters({ min_signal: 1 });
+    expect(allClusters).toHaveLength(2);
+    const sybilCluster = allClusters[0];
+    const honestCluster = allClusters[1];
+    if (!sybilCluster || !honestCluster) throw new Error('expected two clusters');
+    expect(sybilCluster.cross_cause_count).toBe(2);
+    expect(honestCluster.cross_cause_count).toBe(1);
+    expect([honestCluster.identity_a, honestCluster.identity_b].sort()).toEqual(
+      [carol.id, dave.id].sort(),
+    );
   });
 
   it('vote-decorrelating coalition stays in distinct strata and bypasses v0 stratification', async () => {

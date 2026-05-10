@@ -2616,6 +2616,139 @@ export class Server {
       return result;
     },
 
+    // Cross-cause identity-clustering projection (PRD §Identity
+    // bullet 4) — the fourth of the four sybil-resistance layers.
+    // Surfaces identity pairs whose behavioral fingerprint *across
+    // causes* suggests coordination, parallel to `declinePatterns`
+    // but on a different signal: per-(reviewer pair) count of
+    // distinct causes where both reviewers cast votes on the same
+    // proposal. Honest reviewers typically work in one cause
+    // (per-cause reputation; PRD §Reputation), so a pair appearing
+    // on shared proposals across multiple causes is a behavioral
+    // fingerprint a sybil farm working multiple causes lights up
+    // and a single-cause coalition does not. The signal is *global
+    // per identity* (the asymmetry to per-cause reputation that
+    // PRD §Identity names by intent) — clustering computation walks
+    // every cause's votes uniformly.
+    //
+    // Two metrics surface per pair so the curator has visibility
+    // into what's driving the score:
+    //   - cross_cause_count: distinct causes both reviewers voted
+    //     in on shared proposals. The headline signal.
+    //   - shared_proposal_count: total proposals both voted on. A
+    //     pair with high cross_cause_count and low shared_proposal_
+    //     count (one shared proposal per cause) reads differently
+    //     from one with high shared_proposal_count concentrated in
+    //     a few causes — both shapes are interesting, the curator
+    //     decides what's a coalition vs coincidence.
+    //
+    // `min_signal` defaults to 2 (cross-cause coordination requires
+    // at least 2 causes to be a cross-cause signal); `window_seconds`
+    // is the rolling window over vote `created_at`, undefined or
+    // Infinity means all-time. Specific signals and thresholds
+    // remain operationally private at the production instance per
+    // PRD §Identity bullet 4 ("operationally private"), the same
+    // posture as `declinePatterns`'s small-sample floor: methodology
+    // is public, tuning is not.
+    //
+    // Currently surveys vote co-occurrence; declines are first-class
+    // encounters in the cluster-stratification primitive
+    // (PRD §Reviewer assignment, `stratum_include_declines`) and
+    // adding them here is a follow-up refinement that broadens the
+    // co-engagement notion without changing the surface shape.
+    identityClusters: (options?: {
+      window_seconds?: number;
+      min_signal?: number;
+    }): Array<{
+      identity_a: IdentityId;
+      identity_b: IdentityId;
+      cross_cause_count: number;
+      shared_proposal_count: number;
+    }> => {
+      const minSignal = options?.min_signal ?? 2;
+      const windowSeconds = options?.window_seconds;
+      const cutoffMs =
+        windowSeconds !== undefined && Number.isFinite(windowSeconds)
+          ? new Date(this.clock.now()).getTime() - windowSeconds * 1000
+          : Number.NEGATIVE_INFINITY;
+      // Per-proposal: which reviewers voted, and the proposal's cause.
+      const perProposal = new Map<ProposalId, { reviewers: IdentityId[]; cause_id: CauseId }>();
+      for (const v of this.store.reviewVotes.values()) {
+        if (new Date(v.created_at).getTime() < cutoffMs) continue;
+        const p = this.store.proposals.get(v.proposal_id);
+        if (!p) continue;
+        const located = this.locateProposalForReview(p);
+        if (!located) continue;
+        let entry = perProposal.get(p.id);
+        if (!entry) {
+          entry = { reviewers: [], cause_id: located.cause_id };
+          perProposal.set(p.id, entry);
+        }
+        if (!entry.reviewers.includes(v.reviewer_id)) {
+          entry.reviewers.push(v.reviewer_id);
+        }
+      }
+      // Per-pair accumulator. Pair key is sorted-id tuple so (a,b)
+      // and (b,a) collapse.
+      const perPair = new Map<
+        string,
+        {
+          a: IdentityId;
+          b: IdentityId;
+          causes: Set<CauseId>;
+          proposals: Set<ProposalId>;
+        }
+      >();
+      for (const [proposalId, { reviewers, cause_id }] of perProposal) {
+        if (reviewers.length < 2) continue;
+        const sorted = [...reviewers].sort();
+        for (let i = 0; i < sorted.length; i++) {
+          const a = sorted[i];
+          if (a === undefined) continue;
+          for (let j = i + 1; j < sorted.length; j++) {
+            const b = sorted[j];
+            if (b === undefined) continue;
+            const key = `${a}|${b}`;
+            const existing = perPair.get(key);
+            const entry = existing ?? { a, b, causes: new Set(), proposals: new Set() };
+            if (!existing) perPair.set(key, entry);
+            entry.causes.add(cause_id);
+            entry.proposals.add(proposalId);
+          }
+        }
+      }
+      const result: Array<{
+        identity_a: IdentityId;
+        identity_b: IdentityId;
+        cross_cause_count: number;
+        shared_proposal_count: number;
+      }> = [];
+      for (const { a, b, causes, proposals } of perPair.values()) {
+        if (causes.size < minSignal) continue;
+        result.push({
+          identity_a: a,
+          identity_b: b,
+          cross_cause_count: causes.size,
+          shared_proposal_count: proposals.size,
+        });
+      }
+      // Stable sort: cross_cause_count desc, then shared_proposal_count
+      // desc, then identity_a asc, then identity_b asc as tiebreakers.
+      result.sort((x, y) => {
+        if (y.cross_cause_count !== x.cross_cause_count) {
+          return y.cross_cause_count - x.cross_cause_count;
+        }
+        if (y.shared_proposal_count !== x.shared_proposal_count) {
+          return y.shared_proposal_count - x.shared_proposal_count;
+        }
+        if (x.identity_a !== y.identity_a) {
+          return x.identity_a < y.identity_a ? -1 : 1;
+        }
+        return x.identity_b < y.identity_b ? -1 : x.identity_b > y.identity_b ? 1 : 0;
+      });
+      return result;
+    },
+
     // Divergence-closure sweep (PRD §Reviewer assignment: "divergences
     // without further evidence within a tunable window are archived
     // (status `unresolved-archived`) rather than perpetually re-
