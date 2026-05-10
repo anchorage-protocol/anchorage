@@ -8794,6 +8794,476 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // Eighth parameter sweep cube: the action-axis sibling of cube #7.
+  // Cubes #6 and #7 measure the K-axis of the four-layer sybil-
+  // resistance architecture — cube #6 reads K_eff = floor(B/T) capped
+  // at N (the binding-cost gate's cost-multiplier on a one-shot
+  // suppression attack), cube #7 reads K_eff = N × E (the issuance
+  // cap as time primitive on multi-epoch suppression). Both cubes
+  // pin K=2 fresh sybils each acting *once* (one reject vote per
+  // sybil); the per-(identity, epoch) rate-limit T (slice 3, server-
+  // side `rate_limit_actions_per_epoch`) is structurally inert under
+  // that pattern by construction — one action per identity per
+  // epoch is below any T >= 1. The cap binds when one identity
+  // *acts on many targets*, not when many identities each act once.
+  // ROADMAP §Status names this directly: "exercising the per-
+  // (identity, epoch) rate-limit T at the action axis (the cap
+  // binds when one identity does many things, not the K-fresh-
+  // sybils-each-acting-once pattern cubes #6 and #7 measure)."
+  //
+  // Cube #8's attack pattern is multi-target suppression: K=2 sybils
+  // (no priming history; cluster signal disabled by construction
+  // matching cubes #6/#7) try to suppress M contested targets.
+  // votes_to_reject=2 so each suppressed target needs *both* sybils
+  // to cast reject on it. Per sybil, the action throughput is capped
+  // at T per epoch (server-side `rate_limit_actions_per_epoch`); the
+  // adversary spreads votes across E epochs (clock advances past the
+  // 60-second epoch boundary between rounds, resetting the per-
+  // identity counter). The arithmetic: per_sybil_actions_landed =
+  // T × E; suppressed_targets = min(per_sybil_actions_landed, M);
+  // attack succeeds iff suppressed_targets == M (full suppression).
+  // K × T × E is the coalition's total reject-vote budget across
+  // epochs, and each suppressed target consumes 2 reject votes (one
+  // per sybil), so the suppression capacity reduces to T × E
+  // targets — the K=2 dimension cancels out because every suppressed
+  // target needs every sybil to vote on it.
+  //
+  // Eight cells over (M ∈ {2, 4}, T ∈ {1, 2}, E ∈ {1, 2}) drive
+  // `it.each`. The aggregate groups by (T, E) and reads ASR per
+  // group across the M axis (the attack-scope axis):
+  //
+  //   (T=1, E=1) at 0% — minimum-cap defense config; T × E = 1
+  //     suppresses 1 target at any M >= 1, never reaches M=2.
+  //   (T=1, E=2) at 50% — the time-primitive lift on the rate cap:
+  //     T × E = 2 suppresses M=2 fully but stops short of M=4. The
+  //     issuance cap analog from cube #7 is exactly this — the cap
+  //     delays but does not prevent multi-epoch suppression at small
+  //     attack scope.
+  //   (T=2, E=1) at 50% — the per-epoch-cap lift symmetric to the
+  //     time-primitive lift: T × E = 2 same as (T=1, E=2). Reading
+  //     T and E as interchangeable axes of the K × T × E
+  //     coalition-throughput arithmetic, cube #8 confirms what the
+  //     slice-3 "K × T = coalition's per-epoch budget" framing
+  //     committed: the throughput axis is symmetric in T and E
+  //     across the attack window.
+  //   (T=2, E=2) at 100% — the saturating composition: T × E = 4
+  //     covers any M <= 4; the cap is non-binding. The maximum-
+  //     attack-scope cell M=4 is the threshold where the (T=2, E=2)
+  //     defense config saturates; widening M to 6 would re-open the
+  //     cell with same T × E = 4 < 6 closure.
+  //
+  // Cube #8 is the action-axis sibling of cube #7's K-axis: cube #7
+  // reads K_eff = N × E (issuance cap × epochs); cube #8 reads
+  // suppression_capacity_eff = T × E (rate-limit cap × epochs).
+  // Same arithmetic shape on different axes — identical aggregate
+  // numbers ((1, 1) at 0%, (1, 2)/(2, 1) at 50%, (2, 2) at 100%
+  // when ASR-grouped by (cap, epoch)) reading two different
+  // primitives on the four-layer architecture: cube #7 the
+  // issuance-frequency cap (slice 2), cube #8 the per-(identity,
+  // epoch) rate-limit (slice 3). Together they pin the K × N × T × E
+  // coalition-budget arithmetic the four-layer architecture
+  // composes against.
+  //
+  // The runner does *not* respect T harness-side — it tries every
+  // (sybil, target) pair every epoch and lets the server's
+  // `accountWriteAction` cap fire `rate_limited` errors directly.
+  // This exercises the slice-3 server-side primitive end-to-end (the
+  // adversary-budget-model's `tryAct` is the testbed-side mirror of
+  // exactly this server-side enforcement; cube #8 reads the server
+  // side directly so the wiring is what's measured, not the harness
+  // arithmetic). Caught `rate_limited` errors signal "this sybil
+  // exhausted this epoch" and the loop moves to the next sybil; the
+  // next epoch advances the clock past the 60-second boundary so
+  // the per-identity counter resets.
+  async function runMultiTargetActionAxisSuppressionScenario(params: {
+    targets_count: number;
+    attestation_threshold: number;
+    action_cap_per_epoch: number;
+    epochs: number;
+  }): Promise<{
+    fully_suppressed: boolean;
+    rejected_count: number;
+    total_targets: number;
+  }> {
+    const sources = new Map<string, string>();
+    for (let i = 1; i <= params.targets_count; i++) {
+      sources.set(String(i), `arm ${i}: treatment X${i} works in stage III patients`);
+    }
+    const EPOCH_SECONDS = 60;
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 1000);
+    const server = new Server({
+      clock,
+      idGen: new SeededIdGen('mata'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        min_attestation_level: params.attestation_threshold,
+        // Cluster signal off — the cube measures the rate-limit
+        // arithmetic. The 2-sybil coalition has no priming history
+        // here, so the cluster signal would be inert anyway; explicit
+        // disable keeps the runner's scope honest.
+        stratification_enabled: false,
+        rate_limit_actions_per_epoch: params.action_cap_per_epoch,
+        rate_limit_epoch_seconds: EPOCH_SECONDS,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({
+      display_name: 'alice',
+      attestation_level: params.attestation_threshold,
+    });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+
+    // alice will exhaust her own rate-limit while seeding M anchors
+    // and M excerpts in epoch 0; cycle her clock past the epoch
+    // boundary as needed during seeding so the adversary-phase
+    // assertions are not contaminated by alice's residual counter
+    // state. Simpler: seed in setup *before* the rate-limit gate
+    // matters by configuring the cap loose enough — but the cap is
+    // exactly what we're measuring, so instead, seed alice with
+    // distinct epochs by advancing the clock between seeding rounds.
+    // The cleanest path is to advance the clock once before the
+    // adversary phase begins, after all seeding is done, so all
+    // adversary-phase epochs are after seeding.
+    const targetIds: ProposalId[] = [];
+    for (let i = 0; i < params.targets_count; i++) {
+      const pmid = String(i + 1);
+      const anchorProp = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: `paper ${i + 1}`,
+          external_ref: { kind: 'pmid', value: pmid },
+        },
+      );
+      server.curator.acceptProposal(anchorProp.proposal_id);
+      const anchorNode = [...server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === `paper ${i + 1}`,
+      );
+      if (!anchorNode) throw new Error(`anchor ${i + 1} not materialized`);
+      // Advance clock between alice's actions so her per-epoch
+      // counter doesn't fire during seeding (alice has 2 actions per
+      // target — propose_anchor + propose_excerpt; with cap T=1 that
+      // would block her at the second target's anchor without an
+      // epoch advance).
+      clock.advance(EPOCH_SECONDS * 1000 + 1);
+      const contestedExcerpt = await server.tools.proposeExcerpt(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          parent_anchor_id: anchorNode.id,
+          content: `treatment X${i + 1} works for stage III`,
+          quoted_span: { text: 'treatment X', offset: 0 },
+        },
+      );
+      targetIds.push(contestedExcerpt.proposal_id);
+      clock.advance(EPOCH_SECONDS * 1000 + 1);
+    }
+
+    // K=2 sybils minted at attestation threshold (binding cost gate
+    // passes by construction; cube #8's scope is the action axis,
+    // not the binding-cost axis cube #6 measured).
+    const sybils = ['s0', 's1'].map((name) =>
+      server.bootstrap.mintIdentity({
+        display_name: name,
+        attestation_level: params.attestation_threshold,
+      }),
+    );
+
+    // Adversary phase: across E epochs, each sybil iterates targets
+    // in order and tries to cast reject. Server enforces T per
+    // (identity, epoch); the runner catches `rate_limited` and moves
+    // to the next sybil (this sybil exhausted this epoch). Between
+    // epochs, advance the clock past the 60-second boundary so the
+    // per-identity counter resets. Targets that have already
+    // converged 'rejected' (both sybils landed reject) are skipped
+    // by the proposal-status guard.
+    for (let e = 0; e < params.epochs; e++) {
+      if (e > 0) {
+        // Advance the clock past the 60-second boundary. The
+        // per-identity counter resets lazily on the next gate fire.
+        clock.advance(EPOCH_SECONDS * 1000 + 1);
+      }
+      for (const sybil of sybils) {
+        let exhausted = false;
+        for (const targetId of targetIds) {
+          if (exhausted) break;
+          const post = server.store.proposals.get(targetId);
+          if (post?.status !== 'staged') continue;
+          // Skip if this sybil already voted on this target (cross-
+          // epoch invariant: one vote per (reviewer, proposal)).
+          const alreadyVoted = [...server.store.reviewVotes.values()].some(
+            (v) => v.proposal_id === targetId && v.reviewer_id === sybil.id,
+          );
+          if (alreadyVoted) continue;
+          try {
+            await server.tools.castReviewVote(
+              { identity_id: sybil.id },
+              {
+                proposal_id: targetId,
+                decision: 'reject',
+                rationale: 'underpowered, methodological concerns',
+              },
+            );
+          } catch (err) {
+            if (err instanceof ServerError && err.code === 'rate_limited') {
+              // This sybil exhausted this epoch's cap. Stop iterating
+              // targets for this sybil; the next epoch's cap reset
+              // will let it pick up where it left off.
+              exhausted = true;
+            } else {
+              throw err;
+            }
+          }
+        }
+      }
+    }
+
+    // Honest phase: 2 honest reviewers cast accept on each target
+    // that is still 'staged'. votes_to_accept=2, so the second
+    // accept converges the target. Honest reviewers each act on
+    // multiple targets but get fresh per-epoch budgets per identity
+    // (and we advance the clock between them to be safe). Honest
+    // reviewers should not be rate-limited: a tight T might bind
+    // them too, but the cube's defense scope is the cap *against
+    // adversaries*; a separate observation (the test below the
+    // aggregate) pins that the runner's honest phase advances the
+    // clock between honest reviewers so each gets a fresh epoch.
+    for (const name of ['erin', 'frank']) {
+      clock.advance(EPOCH_SECONDS * 1000 + 1);
+      const honest = server.bootstrap.mintIdentity({
+        display_name: name,
+        attestation_level: params.attestation_threshold,
+      });
+      for (const targetId of targetIds) {
+        const post = server.store.proposals.get(targetId);
+        if (post?.status !== 'staged') continue;
+        try {
+          await server.tools.castReviewVote(
+            { identity_id: honest.id },
+            {
+              proposal_id: targetId,
+              decision: 'accept',
+              rationale: 'consistent with prevailing evidence',
+            },
+          );
+        } catch (err) {
+          // Honest reviewers should not be rate-limited within a
+          // single epoch given the cube's parameter range (T >= 1,
+          // M <= 4, advance-between-honest-reviewers); if this fires
+          // the runner's parameter assumptions need re-checking.
+          if (err instanceof ServerError && err.code === 'rate_limited') {
+            clock.advance(EPOCH_SECONDS * 1000 + 1);
+            // Retry once after epoch advance.
+            await server.tools.castReviewVote(
+              { identity_id: honest.id },
+              {
+                proposal_id: targetId,
+                decision: 'accept',
+                rationale: 'consistent with prevailing evidence',
+              },
+            );
+          } else {
+            throw err;
+          }
+        }
+      }
+    }
+
+    let rejectedCount = 0;
+    for (const targetId of targetIds) {
+      const final = server.store.proposals.get(targetId);
+      if (final?.status === 'rejected') rejectedCount += 1;
+    }
+    return {
+      fully_suppressed: rejectedCount === params.targets_count,
+      rejected_count: rejectedCount,
+      total_targets: params.targets_count,
+    };
+  }
+
+  interface ActionAxisSweepCell {
+    name: string;
+    targets_count: number;
+    attestation_threshold: number;
+    action_cap_per_epoch: number;
+    epochs: number;
+    expected_fully_suppressed: boolean;
+    expected_rejected_count: number;
+  }
+  const actionAxisSweepCells: ActionAxisSweepCell[] = [
+    // K=2 fixed; suppression_capacity = T × E targets; full
+    // suppression iff T × E >= M.
+    {
+      name: 'M=2, T=1, E=1 (cap closes — T × E = 1 < M = 2)',
+      targets_count: 2,
+      attestation_threshold: 1,
+      action_cap_per_epoch: 1,
+      epochs: 1,
+      expected_fully_suppressed: false,
+      expected_rejected_count: 1,
+    },
+    {
+      name: 'M=2, T=1, E=2 (multi-epoch lift on rate cap — T × E = 2 = M)',
+      targets_count: 2,
+      attestation_threshold: 1,
+      action_cap_per_epoch: 1,
+      epochs: 2,
+      expected_fully_suppressed: true,
+      expected_rejected_count: 2,
+    },
+    {
+      name: 'M=2, T=2, E=1 (per-epoch lift on rate cap — T × E = 2 = M)',
+      targets_count: 2,
+      attestation_threshold: 1,
+      action_cap_per_epoch: 2,
+      epochs: 1,
+      expected_fully_suppressed: true,
+      expected_rejected_count: 2,
+    },
+    {
+      name: 'M=2, T=2, E=2 (cap saturates — T × E = 4 > M = 2)',
+      targets_count: 2,
+      attestation_threshold: 1,
+      action_cap_per_epoch: 2,
+      epochs: 2,
+      expected_fully_suppressed: true,
+      expected_rejected_count: 2,
+    },
+    {
+      name: 'M=4, T=1, E=1 (cap closes — T × E = 1 < M = 4)',
+      targets_count: 4,
+      attestation_threshold: 1,
+      action_cap_per_epoch: 1,
+      epochs: 1,
+      expected_fully_suppressed: false,
+      expected_rejected_count: 1,
+    },
+    {
+      name: 'M=4, T=1, E=2 (cap closes at large attack scope — T × E = 2 < M = 4)',
+      targets_count: 4,
+      attestation_threshold: 1,
+      action_cap_per_epoch: 1,
+      epochs: 2,
+      expected_fully_suppressed: false,
+      expected_rejected_count: 2,
+    },
+    {
+      name: 'M=4, T=2, E=1 (cap closes at large attack scope — T × E = 2 < M = 4)',
+      targets_count: 4,
+      attestation_threshold: 1,
+      action_cap_per_epoch: 2,
+      epochs: 1,
+      expected_fully_suppressed: false,
+      expected_rejected_count: 2,
+    },
+    {
+      name: 'M=4, T=2, E=2 (composition saturates — T × E = 4 = M)',
+      targets_count: 4,
+      attestation_threshold: 1,
+      action_cap_per_epoch: 2,
+      epochs: 2,
+      expected_fully_suppressed: true,
+      expected_rejected_count: 4,
+    },
+  ];
+  it.each(actionAxisSweepCells)('action-axis sweep: $name', async ({
+    targets_count,
+    attestation_threshold,
+    action_cap_per_epoch,
+    epochs,
+    expected_fully_suppressed,
+    expected_rejected_count,
+  }) => {
+    const result = await runMultiTargetActionAxisSuppressionScenario({
+      targets_count,
+      attestation_threshold,
+      action_cap_per_epoch,
+      epochs,
+    });
+    expect(result.fully_suppressed).toBe(expected_fully_suppressed);
+    expect(result.rejected_count).toBe(expected_rejected_count);
+  });
+
+  it('action-axis sweep cube: ASR aggregates by (T, E) and reads the rate-limit cap as throughput primitive', () => {
+    // Aggregate per the cube template: group cells by (T, E), read
+    // ASR per group across the M (attack-scope) axis. The headline
+    // is the symmetry cube #7's reading anticipated — at fixed K=2
+    // sybils, the suppression-capacity arithmetic reduces to T × E
+    // (per-sybil throughput across the attack window) because every
+    // suppressed target consumes one reject vote per sybil. Cube #8
+    // and cube #7's aggregates are numerically identical (0%, 50%,
+    // 50%, 100% across (cap=1,E=1)/(cap=1,E=2)/(cap=2,E=1)/(cap=2,
+    // E=2)) reading two different primitives — the issuance cap and
+    // the rate-limit — on the four-layer architecture.
+    interface ActionAxisAsrCell {
+      action_cap_per_epoch: number;
+      epochs: number;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const grouped = new Map<string, ActionAxisAsrCell>();
+    for (const cell of actionAxisSweepCells) {
+      const key = `${cell.action_cap_per_epoch}|${cell.epochs}`;
+      const g = grouped.get(key) ?? {
+        action_cap_per_epoch: cell.action_cap_per_epoch,
+        epochs: cell.epochs,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_fully_suppressed) g.attacks_succeeded += 1;
+      grouped.set(key, g);
+    }
+    const asr = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // (T=1, E=1): ASR=0% — minimum-cap defense config; T × E = 1
+    // suppresses 1 target only, falls short of M=2 and M=4 alike.
+    // The rate-limit closes any multi-target suppression in a single
+    // epoch at the minimum cap.
+    expect(asr('1|1')).toBe(0);
+    // (T=1, E=2): ASR=50% — multi-epoch lift on the rate cap.
+    // T × E = 2 fully suppresses M=2 (1 target per epoch), stops
+    // short of M=4. The cap *delays* but does not *prevent*
+    // suppression at small attack scope across epochs, exactly the
+    // shape cube #7 read on the issuance-cap axis.
+    expect(asr('1|2')).toBe(0.5);
+    // (T=2, E=1): ASR=50% — per-epoch lift on the rate cap,
+    // symmetric to the time-primitive lift. T × E = 2 same as
+    // (T=1, E=2). The throughput axis is symmetric in T and E across
+    // the attack window — the slice-3 "K × T = coalition's per-epoch
+    // budget" framing extends to K × T × E across multi-epoch
+    // attacks, with T and E interchangeable in the product.
+    expect(asr('2|1')).toBe(0.5);
+    // (T=2, E=2): ASR=100% — composition saturates at the maximum
+    // attack scope cube #8 measures. T × E = 4 covers M=4 (the
+    // saturating cell) and M=2 (where the cap is non-binding).
+    // Widening M to 6 would re-open this cell with the same
+    // T × E = 4 < 6 closure, sliding the composition's saturation
+    // point with the attack scope.
+    expect(asr('2|2')).toBe(1);
+
+    // Coverage invariant: every (T, E) defense config in the cube
+    // has both M cells. A future cell expansion that breaks this
+    // symmetry trips the assertion and forces the aggregate to be
+    // re-keyed rather than silently averaging over uneven groups.
+    for (const cell of grouped.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
