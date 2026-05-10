@@ -77,6 +77,115 @@ const calAwareBiasedDecider = payloadBiasedDecider({
   rationaleReject: 'underpowered, methodological concerns',
 });
 
+// Adversary-budget model — PRD §Adversary testbed §Architecture: the
+// harness-side fiction the testbed needs because issuance is a layer
+// below MCP (the server sees only the issued identity record, not the
+// cost paid for it, and has no surface for the issuance-frequency
+// cap). The primitive holds the adversary's numeric budget B and
+// operationalizes the three deductions PRD §Identity composes
+// multiplicatively against an adversary: minting an identity at
+// attestation level α costs α (binding-cost layer; mirrors the
+// server-side `min_attestation_level` gate, which fires on the same
+// α as a refusal at the write surface); the harness rejects mints
+// that would exceed `issuance_cap_per_epoch` for the current epoch
+// (issuance-frequency-cap layer; testbed-only, no server surface);
+// per-(identity, epoch) action counts are tracked at
+// `action_cap_per_epoch` (T) so the testbed can frame the per-sybil-
+// throughput axis as a sweep dimension on top of the server's
+// `rate_limit_actions_per_epoch` enforcement.
+//
+// Epochs are indices passed in by the caller rather than derived from
+// a clock — the testbed knows what epoch each action sits in by
+// construction (issuance is a deliberate harness-side decision; per-
+// action accounting is paired with a known wall-clock advance), and
+// keeping the primitive arithmetic-only avoids coupling it to the
+// server's `clock.now()` tick semantics. The same epoch space is
+// reused for both issuance and per-action accounting; in practice the
+// production cap shapes can differ (PRD §Identity scopes the issuance
+// cap to "per-(IdP, IP, ASN, …) per-epoch") but for the testbed
+// fiction a single epoch axis is the simplest readable expression.
+//
+// Specific cap shapes remain operationally private at the IdP per PRD
+// §Identity bullet 2; the testbed exposes them as tunable knobs so
+// parameter sweeps measure ASR as a function of `coalition-affordable-
+// identities-per-epoch` directly. The clustering projection (slice 4)
+// costs the adversary nothing in this primitive — that layer surfaces
+// at the curator surface as visibility, not as budget consumption.
+class AdversaryBudget {
+  private remaining: number;
+  private mintedByEpoch = new Map<number, number>();
+  private actionsByIdentityEpoch = new Map<string, Map<number, number>>();
+
+  constructor(
+    private readonly opts: {
+      initial: number;
+      attestation_cost: number;
+      issuance_cap_per_epoch: number;
+      action_cap_per_epoch?: number;
+    },
+  ) {
+    if (opts.initial < 0) throw new Error(`AdversaryBudget: negative initial (${opts.initial})`);
+    if (opts.attestation_cost < 0) {
+      throw new Error(`AdversaryBudget: negative attestation_cost (${opts.attestation_cost})`);
+    }
+    if (opts.issuance_cap_per_epoch < 0) {
+      throw new Error(
+        `AdversaryBudget: negative issuance_cap_per_epoch (${opts.issuance_cap_per_epoch})`,
+      );
+    }
+    this.remaining = opts.initial;
+  }
+
+  get budgetRemaining(): number {
+    return this.remaining;
+  }
+
+  mintedInEpoch(epoch: number): number {
+    return this.mintedByEpoch.get(epoch) ?? 0;
+  }
+
+  // Try to mint a sybil at α=attestation_cost in the given epoch. Two
+  // failure modes spec'd in PRD §Architecture's adversary budget
+  // model: 'budget' (B < α — adversary cannot afford the binding cost
+  // for another identity) and 'issuance_cap' (already minted N in
+  // this epoch — IdP-level rate the server does not see). On
+  // 'issuance_cap' the budget is *not* deducted; the cap is a refusal
+  // upstream of any cost being charged, matching how a real IdP
+  // refuses the mint request before the operator pays anything.
+  tryMint(epoch: number): { ok: true } | { ok: false; reason: 'budget' | 'issuance_cap' } {
+    if (this.remaining < this.opts.attestation_cost) {
+      return { ok: false, reason: 'budget' };
+    }
+    const minted = this.mintedByEpoch.get(epoch) ?? 0;
+    if (minted >= this.opts.issuance_cap_per_epoch) {
+      return { ok: false, reason: 'issuance_cap' };
+    }
+    this.remaining -= this.opts.attestation_cost;
+    this.mintedByEpoch.set(epoch, minted + 1);
+    return { ok: true };
+  }
+
+  // Account a per-(identity, epoch) write action against T. Returns
+  // false when the cap is reached. Mirrors the server-side
+  // `accountWriteAction` arithmetic (slice 3) on the testbed side so
+  // the harness can read coalition-throughput directly without
+  // observing every server refusal — useful when a sweep dimension
+  // operates on coalition-affordable-actions-per-epoch as the headline
+  // metric. The action cap is per-identity (the cost-multiplier reads
+  // K × T at the coalition level); with K identities each capped at
+  // T, the coalition's per-epoch budget is K × T.
+  tryAct(identityId: string, epoch: number): boolean {
+    const cap = this.opts.action_cap_per_epoch ?? Number.POSITIVE_INFINITY;
+    if (!Number.isFinite(cap)) return true;
+    const perEpoch = this.actionsByIdentityEpoch.get(identityId) ?? new Map<number, number>();
+    const current = perEpoch.get(epoch) ?? 0;
+    if (current + 1 > cap) return false;
+    perEpoch.set(epoch, current + 1);
+    this.actionsByIdentityEpoch.set(identityId, perEpoch);
+    return true;
+  }
+}
+
 describe('testbed: synthetic populations against the wired surface', () => {
   it('drains the orphan-anchor frontier by submitting excerpts', async () => {
     const server = new Server({
@@ -1901,11 +2010,17 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // identity-clustering is a curator-side surveillance projection
     // (no enforcement gate fires from it directly), so its presence
     // is invisible to the scenario's outcome unless the curator
-    // explicitly invokes the projection. The remaining layer
+    // explicitly invokes the projection. The fourth layer
     // (issuance-frequency cap) lives below the MCP layer and is
-    // the testbed-side adversary-budget model's responsibility,
-    // landing in the final slice (see ROADMAP §Status for the
-    // slice sequence).
+    // wired on the testbed side as the `AdversaryBudget` primitive
+    // (see slice 5 scenario downstream); the harness fiction
+    // operationalizes the per-epoch issuance cap as a refusal mode
+    // distinct from binding-cost-budget exhaustion, but no server
+    // gate fires from it (the cap is enforced upstream of the MCP
+    // surface in production). This scenario keeps every identity-
+    // layer knob inert (defaults) so it stays the regression handle
+    // for the seam those layers close — each layer's standalone
+    // refusal scenario pins the closure under non-default settings.
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
@@ -2439,6 +2554,110 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect([honestCluster.identity_a, honestCluster.identity_b].sort()).toEqual(
       [carol.id, dave.id].sort(),
     );
+  });
+
+  it('adversary-budget model: K identities cost K × α; issuance cap caps mints per epoch; per-identity throughput cap caps actions per epoch (PRD §Adversary testbed: adversary budget model)', () => {
+    // Slice 5 of the identity-cost design pass — the testbed-side
+    // budget arithmetic that closes the loop on the four-layer sybil-
+    // resistance architecture PRD §Identity composes multiplicatively.
+    // Slices 2/3/4 wired the MCP-side primitives: binding-cost gate
+    // (`min_attestation_level`, refusing with `unauthorized`), per-
+    // identity rate-limit accounting (`rate_limit_actions_per_epoch`,
+    // refusing with `rate_limited`), and the cross-cause clustering
+    // projection (`server.curator.identityClusters`, surfacing
+    // coordination at the curator surface). The fourth layer
+    // (issuance-frequency cap) lives below the MCP layer — the server
+    // does not mint identities and has no surface to enforce it
+    // directly — so it lands as a testbed-side fiction in the
+    // `AdversaryBudget` primitive declared at module scope.
+    //
+    // This regression pins the three deductions arithmetic-only,
+    // matching the cube template's per-cell-shape practice (assert
+    // the named pathology directly; don't rely on downstream
+    // composition to read out the primitive's behavior). Composing
+    // the budget axis as a sweep dimension on top of the existing
+    // parameter-sweep cubes — the sweep dimension PRD §Identity
+    // names "coalition-affordable-identities-per-epoch" — is the
+    // follow-up that lands once the primitive is in place.
+    const budget = new AdversaryBudget({
+      initial: 3,
+      attestation_cost: 1,
+      issuance_cap_per_epoch: 1,
+      action_cap_per_epoch: 2,
+    });
+
+    // Binding-cost layer: minting deducts α=1 from B=3.
+    expect(budget.tryMint(0)).toEqual({ ok: true });
+    expect(budget.budgetRemaining).toBe(2);
+    expect(budget.mintedInEpoch(0)).toBe(1);
+
+    // Issuance-frequency cap: second mint in the *same* epoch refuses
+    // with `issuance_cap`. Budget is unchanged because the IdP
+    // refuses upstream of any cost being charged.
+    expect(budget.tryMint(0)).toEqual({ ok: false, reason: 'issuance_cap' });
+    expect(budget.budgetRemaining).toBe(2);
+    expect(budget.mintedInEpoch(0)).toBe(1);
+
+    // Advancing to epoch 1 — the same mint succeeds. The cap is the
+    // *time* primitive on the cost-multiplier: the adversary cannot
+    // mint K sybils all in one epoch even if budget would allow it,
+    // which buys behavior-based defenses (cluster signal, calibration
+    // record, reputation gates) the per-identity history they need.
+    expect(budget.tryMint(1)).toEqual({ ok: true });
+    expect(budget.budgetRemaining).toBe(1);
+
+    // Epoch 2: third mint succeeds and drains the budget to zero.
+    expect(budget.tryMint(2)).toEqual({ ok: true });
+    expect(budget.budgetRemaining).toBe(0);
+
+    // Epoch 3: budget exhausted before issuance cap is consulted —
+    // refusal mode is `budget`, not `issuance_cap`. The two failure
+    // modes are distinct: `budget` is "the operator cannot afford
+    // another sybil at any rate," `issuance_cap` is "the operator
+    // could afford it but the IdP refuses to mint another in this
+    // epoch." The distinction matters when sweeps measure ASR as a
+    // function of coalition-affordable-identities-per-epoch — the
+    // budget axis caps the total K, the issuance cap shapes its
+    // distribution across epochs.
+    expect(budget.tryMint(3)).toEqual({ ok: false, reason: 'budget' });
+
+    // Per-(identity, epoch) throughput cap (T=2). Identity 'a' acts
+    // twice in epoch 0 — both succeed; the third action refuses
+    // (cap reached). Mirrors the server-side `accountWriteAction`
+    // arithmetic on the testbed side so the harness reads coalition
+    // throughput as K × T directly without observing every server
+    // refusal.
+    expect(budget.tryAct('a', 0)).toBe(true);
+    expect(budget.tryAct('a', 0)).toBe(true);
+    expect(budget.tryAct('a', 0)).toBe(false);
+
+    // Identity 'b' is independent — each identity has its own
+    // per-epoch counter, so the K × T composition holds (one
+    // identity's exhaustion does not consume another's budget).
+    expect(budget.tryAct('b', 0)).toBe(true);
+    expect(budget.tryAct('b', 0)).toBe(true);
+    expect(budget.tryAct('b', 0)).toBe(false);
+
+    // Epoch boundary resets the per-identity counter, matching the
+    // server-side rate-limiter's wall-clock-window semantics: the
+    // cap is per-(identity, epoch), so a fresh epoch is a fresh
+    // counter.
+    expect(budget.tryAct('a', 1)).toBe(true);
+    expect(budget.tryAct('a', 1)).toBe(true);
+    expect(budget.tryAct('a', 1)).toBe(false);
+
+    // Default action cap is Infinity (gate inert) — a budget
+    // configured without an action cap models "binding cost +
+    // issuance frequency only," for sweeps that hold throughput
+    // unbounded and isolate the identity-creation axis.
+    const inertActionCap = new AdversaryBudget({
+      initial: 1,
+      attestation_cost: 1,
+      issuance_cap_per_epoch: 1,
+    });
+    expect(inertActionCap.tryAct('x', 0)).toBe(true);
+    expect(inertActionCap.tryAct('x', 0)).toBe(true);
+    expect(inertActionCap.tryAct('x', 0)).toBe(true);
   });
 
   it('vote-decorrelating coalition stays in distinct strata and bypasses v0 stratification', async () => {
