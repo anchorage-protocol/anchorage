@@ -479,6 +479,33 @@ export interface ReviewConfig {
   // epochs) opt the gate in. The harness's `FakeClock.advance(ms)`
   // is what scenarios use to cross epoch boundaries deliberately.
   rate_limit_epoch_seconds: number;
+  // Minimum distinct-reviewer count required for an accepted proposal
+  // to be eligible as a calibration item — applied at both
+  // `fetchCalibrationBatch` (the public read-path) and
+  // `drawCalibrationTask` (the assignment-injection seam). PRD
+  // §Calibration batches commits the calibration corpus as
+  // accepted-from-history proposals with recency-biased draw; the
+  // corpus-contamination dynamic surfaces when bias-aligned excerpts
+  // converge accepted mid-run and join the corpus before independent
+  // confirmation has accumulated, lifting a coalition member's
+  // calibration weight off the floor on subsequent reviewers' draws
+  // (the corpus-contamination scenario pins the dynamic). The floor
+  // is the corpus-composition closure: a proposal must have
+  // distinct-reviewer count ≥ floor over the vote store to be
+  // eligible — accumulating more reviewers than the convergence
+  // threshold required (post-convergence confirmation). At v0
+  // votes_to_accept=2, floor=3 requires at least one independent
+  // confirmation past the original convergence pair before the item
+  // enters the corpus, closing the within-first-review-session
+  // bypass the contamination scenario reads. Anchors are exempt by
+  // kind (`payload.kind === 'anchor'`) — they are the ground-truth
+  // substrate, not synthesis-from-review, and the "first review
+  // session" framing doesn't apply; counting their accumulated
+  // calibration-vote reviewers against the floor would otherwise
+  // mis-trip the gate against the substrate itself. Default 0 leaves
+  // the filter inert and preserves existing-scenario behavior;
+  // finite values opt in for the testbed's corpus-composition sweeps.
+  corpus_confirmation_depth_floor: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -512,6 +539,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   min_attestation_level: 0,
   rate_limit_actions_per_epoch: Number.POSITIVE_INFINITY,
   rate_limit_epoch_seconds: Number.POSITIVE_INFINITY,
+  corpus_confirmation_depth_floor: 0,
 };
 
 export interface ServerDeps {
@@ -1081,6 +1109,52 @@ export class Server {
     }
   }
 
+  // Per-proposal distinct-reviewer count for the corpus-confirmation
+  // depth-floor filter (PRD §Calibration batches, corpus-composition
+  // closure rule). Walks the vote store once and returns a Map; the
+  // `corpus_confirmation_depth_floor` config is the threshold both
+  // calibration-draw paths (`drawCalibrationTask`,
+  // `fetchCalibrationBatch`) consult against. Default 0 makes the
+  // count irrelevant (the per-candidate eligibility check short-
+  // circuits before consulting the map), so the helper is only
+  // computed when the gate is opted in.
+  private corpusReviewerCounts(): Map<ProposalId, number> {
+    const reviewersByProposal = new Map<ProposalId, Set<IdentityId>>();
+    for (const v of this.store.reviewVotes.values()) {
+      let set = reviewersByProposal.get(v.proposal_id);
+      if (!set) {
+        set = new Set();
+        reviewersByProposal.set(v.proposal_id, set);
+      }
+      set.add(v.reviewer_id);
+    }
+    const counts = new Map<ProposalId, number>();
+    for (const [pid, set] of reviewersByProposal.entries()) {
+      counts.set(pid, set.size);
+    }
+    return counts;
+  }
+
+  // Corpus-confirmation depth-floor filter (PRD §Calibration batches,
+  // corpus-composition closure rule). Anchors are structurally exempt
+  // (`payload.kind === 'anchor'`) — they are the ground-truth
+  // substrate, not synthesis-from-review, so the "first review
+  // session" framing doesn't apply, and once they enter the corpus
+  // they accumulate calibration-vote reviewers that would otherwise
+  // mis-trip a count-only floor against the substrate itself. Every
+  // other accepted-from-history kind is subject to the floor: the
+  // distinct-reviewer count over the vote store must meet the floor
+  // before the item is eligible as a calibration draw, requiring
+  // accumulated independent confirmation past the convergence pair
+  // before the item enters the corpus.
+  private passesCorpusDepthFloor(proposal: Proposal, counts: Map<ProposalId, number>): boolean {
+    const floor = this.review.corpus_confirmation_depth_floor;
+    if (floor <= 0) return true;
+    if (proposal.payload.kind === 'anchor') return true;
+    const count = counts.get(proposal.id) ?? 0;
+    return count >= floor;
+  }
+
   // Pick a calibration target for a reviewer in this cause. Calibration
   // items are accepted-from-history proposals (PRD §Calibration batches:
   // "drawn from the graph's own validated history — proposals that
@@ -1098,12 +1172,20 @@ export class Server {
     callerId: IdentityId,
     callerAssignments: readonly Assignment[],
   ): AssignmentTask | null {
+    const reviewerCounts =
+      this.review.corpus_confirmation_depth_floor > 0 ? this.corpusReviewerCounts() : null;
     const candidates: Proposal[] = [];
     for (const p of this.store.proposals.values()) {
       if (p.status !== 'accepted') continue;
       if (p.proposer_id === callerId) continue;
       const located = this.locateProposalForReview(p);
       if (!located || located.cause_id !== causeId) continue;
+      // Corpus-confirmation depth floor — same filter
+      // `fetchCalibrationBatch` applies on the public read-path. Both
+      // calibration-draw seams must consult it, since the
+      // assignment-injection path is what the testbed's calibration-
+      // density scenarios drive against.
+      if (reviewerCounts && !this.passesCorpusDepthFloor(p, reviewerCounts)) continue;
       let voted = false;
       for (const v of this.store.reviewVotes.values()) {
         if (v.proposal_id === p.id && v.reviewer_id === callerId) {
@@ -2485,11 +2567,14 @@ export class Server {
       if (!target) {
         throw new ServerError('not_found', `sub-topic not found: ${parsed.sub_topic_id}`);
       }
+      const reviewerCounts =
+        this.review.corpus_confirmation_depth_floor > 0 ? this.corpusReviewerCounts() : null;
       const candidates: Proposal[] = [];
       for (const p of this.store.proposals.values()) {
         if (p.status !== 'accepted') continue;
         const located = this.locateProposalForReview(p);
         if (!located || located.sub_topic_id !== parsed.sub_topic_id) continue;
+        if (reviewerCounts && !this.passesCorpusDepthFloor(p, reviewerCounts)) continue;
         candidates.push(p);
       }
       // Recency-biased: sort by created_at descending. Tiebreak by id

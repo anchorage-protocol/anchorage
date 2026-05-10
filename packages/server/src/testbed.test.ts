@@ -11283,7 +11283,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // is wired downstream as `runCorpusContaminationScenario`, where
   // 2 of 4 excerpts are bias-aligned and Dave's reject on the second
   // bias-misaligned target lands at contaminated weight=2 to
-  // converge rejected. ASR reads true iff any excerpt converges 'rejected';
+  // converge rejected. The structural closure on that bypass is now
+  // wired as `corpus_confirmation_depth_floor` (PRD §Calibration
+  // batches) and CI-checked at cube #16 — the contamination runner
+  // extended with the floor knob, six cells over (floor ∈ {0, 2, 3})
+  // × (contaminate ∈ {off, on}), the closure crossing exactly at
+  // floor > votes_to_accept. ASR reads true iff any excerpt converges 'rejected';
   // no_effect_rejected_count reads 0/4 (full closure), 4/4 (full
   // capture), or any partial in between.
   //
@@ -11763,15 +11768,25 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // member can recover their weight as soon as one bias-aligned excerpt
   // converges into the corpus mid-run. The mitigation is not a
   // calibration-knob change (cube #13 already shows the density floor
-  // is well below the runner's offer count); it would have to come from
-  // a corpus-composition rule that excludes recently-converged items
-  // from calibration draws until they have accumulated independent
-  // confirmations beyond the immediate review pool. That rule is a
-  // testbed-territory follow-up, not a wired primitive — the scenario
-  // here pins the dynamic the rule would have to defeat, and stays as
-  // the regression handle for any future change to the corpus-draw
-  // policy.
-  async function runCorpusContaminationScenario(params: { contaminate: boolean }): Promise<{
+  // is well below the runner's offer count); the structural mitigation
+  // is the corpus-composition rule wired as
+  // `corpus_confirmation_depth_floor` — a depth-floor filter on
+  // `fetchCalibrationBatch` that excludes accepted-from-history items
+  // whose distinct-reviewer count sits below the floor (anchors and
+  // other curator-accepted items have reviewer count 0 and bypass —
+  // they are the ground-truth substrate, not synthesis-from-review,
+  // so the "first review session" framing doesn't apply). At v0
+  // votes_to_accept=2, floor=3 requires at least one independent
+  // confirmation past the original convergence pair before the item
+  // enters the corpus. The scenario stays as the regression handle for
+  // both halves: the contamination dynamic at floor=0 (default,
+  // inert), and the closure restored at floor > votes_to_accept; cube
+  // #16 sweeps the floor axis directly to read the boundary.
+  async function runCorpusContaminationScenario(params: {
+    contaminate: boolean;
+    corpus_confirmation_depth_floor?: number;
+  }): Promise<{
+    attack_succeeded: boolean;
     bias_misaligned_statuses: string[];
     bias_misaligned_rejected_count: number;
   }> {
@@ -11794,9 +11809,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
             ['2', 'study D: treatment X has no effect for stage IV patients across the cohort'],
           ],
     );
+    const floor = params.corpus_confirmation_depth_floor ?? 0;
+    const seedSuffix = floor === 0 ? '' : `-f${floor}`;
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
-      idGen: new SeededIdGen(params.contaminate ? 'cc-on' : 'cc-off'),
+      idGen: new SeededIdGen(`${params.contaminate ? 'cc-on' : 'cc-off'}${seedSuffix}`),
       verifier: new FakeVerifier(new Set(), new Map(), sources),
       review: {
         // Above cube #13's density floor for the runner's offer count
@@ -11805,6 +11822,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
         // about corpus composition at fixed density.
         calibration_inject_every_n: 2,
         calibration_aware_convergence: true,
+        corpus_confirmation_depth_floor: floor,
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
@@ -11920,6 +11938,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
       if (status === 'rejected') rejectedCount += 1;
     }
     return {
+      // ASR semantics for cube #16: any bias-misaligned target
+      // converged 'rejected' is a coalition win on the contamination
+      // axis. The baseline (anchor-only corpus) leaves both targets
+      // staged; the contaminated corpus reopens at least one target
+      // unless the depth-floor closes it.
+      attack_succeeded: rejectedCount > 0,
       bias_misaligned_statuses: statuses,
       bias_misaligned_rejected_count: rejectedCount,
     };
@@ -11962,6 +11986,244 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // function of corpus composition over the run, not a static
     // property of the (every_n × aware) configuration.
     expect(on.bias_misaligned_rejected_count).toBeGreaterThan(off.bias_misaligned_rejected_count);
+  });
+
+  // Sixteenth parameter sweep cube: the corpus-composition cube on
+  // the corpus-contamination scenario, joining the new
+  // `corpus_confirmation_depth_floor` knob (PRD §Calibration batches,
+  // corpus-composition closure rule) with the contaminate-axis the
+  // standalone scenario above already pins. Cube #13's resolution-
+  // refinement of cube #10 closed the *density-floor* axis on the
+  // calibration-aware closure and named the corpus-contamination
+  // dynamic as the next seam — bias-aligned excerpts converging
+  // accepted mid-run join the calibration corpus before independent
+  // confirmation has accumulated, so a coalition member's recency-
+  // biased calibration draw on subsequent reviewers' loops pulls
+  // contaminated items, passes calibration on bias, and lifts their
+  // weighted-vote back above the aware threshold. Cube #13's wide
+  // runner avoided the dynamic by construction (anchor-only corpus);
+  // the corpus-contamination scenario above pins the dynamic and is
+  // the regression handle the depth-floor closes against.
+  //
+  // The depth-floor primitive is structural: a proposal with review
+  // history (reviewer count > 0) is eligible as a calibration item
+  // only when its distinct-reviewer count meets the floor. At v0
+  // votes_to_accept=2, a freshly-converged proposal carries exactly 2
+  // distinct reviewers (the convergence pair), so the floor's
+  // closure boundary sits at floor > votes_to_accept — floor=3
+  // requires at least one *post-convergence* confirmation before the
+  // item enters the corpus. Anchors and other curator-accepted items
+  // have reviewer count 0 and bypass the floor by construction (the
+  // "first review session" framing doesn't apply to the ground-truth
+  // substrate). Default 0 leaves the filter inert — the (default,
+  // contaminate=on) cell is the regression handle on the dynamic.
+  //
+  // Six cells over (contaminate ∈ {off, on}) × (depth_floor ∈ {0, 2,
+  // 3}) drive `it.each` through the same `runCorpusContaminationScenario`
+  // helper the standalone scenario uses, with the floor knob plumbed
+  // through to the server's `corpus_confirmation_depth_floor` config
+  // and `attack_succeeded` reading any bias-misaligned target
+  // converged 'rejected' on the contaminated runner. The runner's
+  // bias-aligned excerpts converge with exactly 2 distinct reviewers
+  // (Erin's accept primes them at 1; Carol's bias-aligned accept
+  // converges at 2), so the floor's effect on the contamination axis
+  // reads as a binary closure exactly at the votes_to_accept boundary.
+  //
+  // The aggregate by depth_floor reads:
+  //   floor=0: ASR=50% — the (off=baseline, on=regression) split, the
+  //     filter inert by default and the contamination dynamic active.
+  //   floor=2: ASR=50% — floor admits items at exactly the convergence
+  //     threshold, the contamination dynamic still active. The cell
+  //     pins the *boundary*: the floor must exceed votes_to_accept,
+  //     not equal it; setting floor = votes_to_accept reads as
+  //     intuitively-protective but is structurally equivalent to
+  //     floor=0 on this dynamic, since the bias-aligned excerpts
+  //     converge with exactly the threshold count.
+  //   floor=3: ASR=0% — the closure restored. Bias-aligned excerpts
+  //     have 2 reviewers, fail the floor (2 < 3), are excluded from
+  //     calibration draws; Dave's recency-biased draws on the
+  //     contaminated corpus pull only anchors (which bypass the floor
+  //     at reviewer count 0), bias misfires on every draw, calibration
+  //     record stays (0, fails), weight stays at 0 — both bias-
+  //     misaligned targets stay staged exactly as in the anchor-only
+  //     baseline. The closure restored under the same defense stack
+  //     cube #13 read as full at the every_n=2 cell, now also under
+  //     contaminate=on rather than only the anchor-only corpus.
+  //
+  // The aggregate by contaminate reads:
+  //   off: ASR=0% across all 3 floors — the baseline-not-locked-out
+  //     invariant. The depth-floor must not lock out the legitimate
+  //     anchor-only corpus at any floor value, since anchors bypass
+  //     the floor at reviewer count 0; the off rows pin this
+  //     structurally rather than by inspection.
+  //   on: ASR=67% — 2 of 3 floors leak (floor=0 default and floor=2
+  //     boundary cell), 1 closes (floor=3 above the boundary).
+  //
+  // The headline reading is the *closure boundary at floor >
+  // votes_to_accept*: cube #16 pins the depth-floor's structural role
+  // as a corpus-composition rule that closes the contamination
+  // dynamic exactly when items must accumulate post-convergence
+  // confirmation before entering the corpus. Cube #13 + the
+  // contamination scenario read the calibration-aware closure's
+  // dependence on corpus composition over the run; cube #16 reads
+  // the depth-floor as the corpus-side closure of that dependence.
+  // Together cubes #10, #13, and #16 close the calibration-density
+  // design pass at three layers: cube #10 the density-floor axis at
+  // 2 excerpts, cube #13 the density-floor scaling law at 4 excerpts,
+  // cube #16 the corpus-composition closure on the contamination
+  // bypass that density alone cannot reach.
+  interface CorpusDepthFloorSweepCell {
+    name: string;
+    contaminate: boolean;
+    corpus_confirmation_depth_floor: number;
+    expected_attack_succeeded: boolean;
+    expected_bias_misaligned_statuses: string[];
+  }
+  const corpusDepthFloorSweepCells: CorpusDepthFloorSweepCell[] = [
+    // floor=0 row (default, filter inert): the off cell is the
+    // anchor-only baseline (both targets staged); the on cell is the
+    // regression handle on the contamination dynamic the standalone
+    // scenario above pins (one target converges rejected).
+    {
+      name: 'contaminate=off, floor=0 (default; anchor-only baseline)',
+      contaminate: false,
+      corpus_confirmation_depth_floor: 0,
+      expected_attack_succeeded: false,
+      expected_bias_misaligned_statuses: ['staged', 'staged'],
+    },
+    {
+      name: 'contaminate=on, floor=0 (filter inert; contamination dynamic active)',
+      contaminate: true,
+      corpus_confirmation_depth_floor: 0,
+      expected_attack_succeeded: true,
+      expected_bias_misaligned_statuses: ['staged', 'rejected'],
+    },
+    // floor=2 row (boundary cell): floor admits items at exactly
+    // votes_to_accept=2. The off cell still reads the baseline (no
+    // items would be filtered anyway); the on cell still leaks
+    // because bias-aligned excerpts pass the floor at reviewer
+    // count 2.
+    {
+      name: 'contaminate=off, floor=2 (boundary; baseline unaffected — anchors bypass)',
+      contaminate: false,
+      corpus_confirmation_depth_floor: 2,
+      expected_attack_succeeded: false,
+      expected_bias_misaligned_statuses: ['staged', 'staged'],
+    },
+    {
+      name: 'contaminate=on, floor=2 (boundary; floor admits at convergence threshold, dynamic still active)',
+      contaminate: true,
+      corpus_confirmation_depth_floor: 2,
+      expected_attack_succeeded: true,
+      expected_bias_misaligned_statuses: ['staged', 'rejected'],
+    },
+    // floor=3 row (above the boundary): the off cell pins the
+    // baseline-not-locked-out invariant (anchors bypass the floor
+    // at reviewer count 0, baseline closure unchanged); the on cell
+    // is the closure — bias-aligned excerpts at reviewer count 2
+    // are excluded, Dave's calibration draws pull only anchors,
+    // bias misfires on all of them, calibration weight stays 0,
+    // both bias-misaligned targets stay staged.
+    {
+      name: 'contaminate=off, floor=3 (above boundary; anchor bypass preserves baseline)',
+      contaminate: false,
+      corpus_confirmation_depth_floor: 3,
+      expected_attack_succeeded: false,
+      expected_bias_misaligned_statuses: ['staged', 'staged'],
+    },
+    {
+      name: 'contaminate=on, floor=3 (above boundary; bias-aligned items excluded, closure restored)',
+      contaminate: true,
+      corpus_confirmation_depth_floor: 3,
+      expected_attack_succeeded: false,
+      expected_bias_misaligned_statuses: ['staged', 'staged'],
+    },
+  ];
+  it.each(corpusDepthFloorSweepCells)('corpus depth-floor × contaminate sweep: $name', async ({
+    contaminate,
+    corpus_confirmation_depth_floor,
+    expected_attack_succeeded,
+    expected_bias_misaligned_statuses,
+  }) => {
+    const result = await runCorpusContaminationScenario({
+      contaminate,
+      corpus_confirmation_depth_floor,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.bias_misaligned_statuses).toEqual(expected_bias_misaligned_statuses);
+  });
+
+  it('corpus depth-floor × contaminate sweep cube: ASR aggregates by floor and by contaminate, reads closure boundary at floor > votes_to_accept', () => {
+    interface CorpusAsrCell {
+      total: number;
+      attacks_succeeded: number;
+    }
+    function group(keyOf: (c: CorpusDepthFloorSweepCell) => number | string) {
+      const m = new Map<number | string, CorpusAsrCell>();
+      for (const cell of corpusDepthFloorSweepCells) {
+        const k = keyOf(cell);
+        const g = m.get(k) ?? { total: 0, attacks_succeeded: 0 };
+        g.total += 1;
+        if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+        m.set(k, g);
+      }
+      return m;
+    }
+
+    // Aggregate by depth_floor reads the closure boundary directly:
+    // floor=0 (default, filter inert) at 50% — the (off=baseline,
+    // on=regression) split, the contamination dynamic active by
+    // default; floor=2 (boundary) at 50% — floor admits items at
+    // exactly votes_to_accept and the dynamic stays active, the
+    // boundary-pin cell that names floor > votes_to_accept (not
+    // floor >= votes_to_accept) as the structural requirement;
+    // floor=3 (above boundary) at 0% — closure restored, bias-aligned
+    // items excluded, calibration weight stays at 0, both targets
+    // stay staged. The crossing between floor=2 and floor=3 reads the
+    // *closure boundary at floor > votes_to_accept* — the headline
+    // observation cube #16 pins.
+    const byFloor = group((c) => c.corpus_confirmation_depth_floor);
+    const asrByFloor = (floor: number): number => {
+      const g = byFloor.get(floor);
+      if (!g) throw new Error(`missing floor=${floor}`);
+      return g.attacks_succeeded / g.total;
+    };
+    expect(asrByFloor(0)).toBe(0.5);
+    expect(asrByFloor(2)).toBe(0.5);
+    expect(asrByFloor(3)).toBe(0);
+
+    // Aggregate by contaminate reads the baseline-not-locked-out
+    // invariant on the off side and the closure-coverage on the on
+    // side: off at 0% across all 3 floors (anchors bypass the floor
+    // at reviewer count 0; the depth-floor must never lock out the
+    // legitimate anchor-only corpus, regardless of floor value); on
+    // at 67% (2 of 3 floors leak — floor=0 default and floor=2
+    // boundary; floor=3 above the boundary closes).
+    const byContaminate = group((c) => (c.contaminate ? 'on' : 'off'));
+    const asrByContaminate = (key: 'on' | 'off'): number => {
+      const g = byContaminate.get(key);
+      if (!g) throw new Error(`missing contaminate=${key}`);
+      return g.attacks_succeeded / g.total;
+    };
+    expect(asrByContaminate('off')).toBe(0);
+    expect(asrByContaminate('on')).toBeCloseTo(2 / 3);
+
+    // Coverage invariant: every (contaminate × floor) pair appears
+    // exactly once. Catches uneven cell counts per group that would
+    // make the per-config aggregates above silently misleading (the
+    // pattern cube #1's coverage invariant introduced).
+    const expectedPairs = new Set<string>();
+    for (const contaminate of [false, true]) {
+      for (const floor of [0, 2, 3]) {
+        expectedPairs.add(`${contaminate}|${floor}`);
+      }
+    }
+    const actualPairs = new Set<string>();
+    for (const cell of corpusDepthFloorSweepCells) {
+      actualPairs.add(`${cell.contaminate}|${cell.corpus_confirmation_depth_floor}`);
+    }
+    expect(actualPairs).toEqual(expectedPairs);
+    expect(corpusDepthFloorSweepCells.length).toBe(expectedPairs.size);
   });
 
   // Fourteenth parameter sweep cube: the (stratification × threshold)
