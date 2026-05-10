@@ -20,6 +20,7 @@ describe('bootstrap.mintIdentity', () => {
       display_name: 'alice',
       status: 'active',
       created_at: '2026-01-01T00:00:00.000Z',
+      attestation_level: 0,
     });
     expect(server.store.identities.get(ident.id)).toEqual(ident);
   });

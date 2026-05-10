@@ -77,7 +77,17 @@ import { StructuralVerifier, type Verifier } from './verifier.js';
 // `@anchorage/contracts/tools.ts` — see PRD §MCP tool surface
 // (admin-surface paragraph: "A separate admin surface — not exposed
 // as MCP tools — covers the curator-only operations").
-const MintIdentityInput = z.object({ display_name: z.string().min(1).max(100) }).strict();
+const MintIdentityInput = z
+  .object({
+    display_name: z.string().min(1).max(100),
+    // PRD §Identity bullet 1: the IdP records `attestation_level` at
+    // mint, opaque to the server (the server gates on threshold; it
+    // does not interpret the level's units). Optional in the admin
+    // input — testbed scenarios that don't exercise the gate mint at
+    // 0 by default and inherit the inert-gate behavior.
+    attestation_level: z.number().nonnegative().optional(),
+  })
+  .strict();
 type MintIdentityInput = z.infer<typeof MintIdentityInput>;
 
 const BindAgentCredentialInput = z
@@ -414,6 +424,26 @@ export interface ReviewConfig {
   // outcome carries its own weight independent of how much
   // disagreement the reviewers had on the way there.
   review_credit_contention_alpha: number;
+  // Minimum attestation level required to call any write tool. PRD
+  // §Identity bullet 1 (binding cost): the IdP records
+  // `attestation_level` on the identity at mint, opaque to the
+  // server (the server gates on threshold; it does not interpret
+  // what the level *means*). The gate fires at every tool that
+  // resolves a caller for write — `set_capacity`,
+  // `request_assignment`, `accept_assignment`, `decline_assignment`,
+  // `submit_assigned_proposal`, all `propose_*` tools, and
+  // `cast_review_vote` — refusing with `unauthorized` mode rather
+  // than the rep gates' `not_found` opacity, because the
+  // binding-cost mismatch is identity-level (a stable property of
+  // the IdP-issued credential) and there's no opaque-refusal value
+  // to protect: the adversary already knows their own attestation
+  // level. The first of the four sybil-resistance layers PRD
+  // §Identity specs; the cost-multiplier on the population axis
+  // the testbed harness's adversary-budget model reads against.
+  // Default 0 leaves the gate inert and preserves existing-scenario
+  // behavior (which mints all synthetic identities at
+  // attestation_level 0 by default).
+  min_attestation_level: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -444,6 +474,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   assignment_max_decline_rate: 1.0,
   assignment_decline_min_offers: 1,
   review_credit_contention_alpha: 1,
+  min_attestation_level: 0,
 };
 
 export interface ServerDeps {
@@ -740,6 +771,25 @@ export class Server {
       return frontierTiebreakerKey(a).localeCompare(frontierTiebreakerKey(b));
     });
     return filtered;
+  }
+
+  // PRD §Identity bullet 1 (binding cost) — the binding-cost gate
+  // that fires at every write tool. The server doesn't mint
+  // identities (that's the IdP's job, below the MCP layer); it
+  // gates writes on the `attestation_level` recorded on the
+  // identity at mint against the testbed-tunable
+  // `min_attestation_level` threshold. Refusal mode is
+  // `unauthorized` rather than the rep gates' `not_found` opacity
+  // because the binding-cost mismatch is identity-level (a stable
+  // property of the IdP-issued credential) and there's no opaque-
+  // refusal value to protect. Inert when threshold = 0 (default).
+  private requireMinAttestation(identity: Identity): void {
+    if (this.review.min_attestation_level <= 0) return;
+    if (identity.attestation_level >= this.review.min_attestation_level) return;
+    throw new ServerError(
+      'unauthorized',
+      `attestation level ${identity.attestation_level} below minimum ${this.review.min_attestation_level} for ${identity.id}`,
+    );
   }
 
   // Resolve an assignment that belongs to the given identity and is
@@ -1079,6 +1129,7 @@ export class Server {
         display_name: parsed.display_name,
         status: 'active',
         created_at: this.clock.now(),
+        attestation_level: parsed.attestation_level ?? 0,
       };
       this.store.identities.set(identity.id, identity);
       return identity;
@@ -1162,6 +1213,7 @@ export class Server {
     setCapacity: async (caller: Caller, input: SetCapacityInput): Promise<SetCapacityOutput> => {
       const parsed = SetCapacityInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
       this.requireActiveCause(parsed.cause_id);
       // De-duplicate kinds at the boundary: the schema has min(1) but
       // doesn't enforce uniqueness. A contributor declaring `[review,
@@ -1225,6 +1277,7 @@ export class Server {
     ): Promise<RequestAssignmentOutput> => {
       const parsed = RequestAssignmentInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
       this.requireActiveCause(parsed.cause_id);
 
       const capacity = this.store.capacities.get(`${identity.id}|${parsed.cause_id}`);
@@ -1518,6 +1571,7 @@ export class Server {
     ): Promise<AcceptAssignmentOutput> => {
       const parsed = AcceptAssignmentInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
       const a = this.requireOwnedOfferedAssignment(parsed.assignment_id, identity.id);
       const now = this.clock.now();
       this.store.assignments.set(a.id, { ...a, status: 'accepted', updated_at: now });
@@ -1542,6 +1596,7 @@ export class Server {
     ): Promise<DeclineAssignmentOutput> => {
       const parsed = DeclineAssignmentInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
       const a = this.requireOwnedOfferedAssignment(parsed.assignment_id, identity.id);
       const now = this.clock.now();
       this.store.assignments.set(a.id, {
@@ -1578,6 +1633,7 @@ export class Server {
     ): Promise<SubmitAssignedProposalOutput> => {
       const parsed = SubmitAssignedProposalInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
 
       const a = this.store.assignments.get(parsed.assignment_id);
       if (!a) {
@@ -1650,6 +1706,7 @@ export class Server {
     ): Promise<ProposeAnchorOutput> => {
       const parsed = ProposeAnchorInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
 
       const cause = this.requireActiveCause(parsed.cause_id);
       this.requireActiveSubTopicInCause(parsed.home_sub_topic_id, cause.id, 'home');
@@ -1695,6 +1752,7 @@ export class Server {
     ): Promise<ProposeExcerptOutput> => {
       const parsed = ProposeExcerptInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
 
       const cause = this.requireActiveCause(parsed.cause_id);
       this.requireActiveSubTopicInCause(parsed.home_sub_topic_id, cause.id, 'home');
@@ -1743,6 +1801,7 @@ export class Server {
     ): Promise<ProposeSynthesisOutput> => {
       const parsed = ProposeSynthesisInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
 
       const cause = this.requireActiveCause(parsed.cause_id);
       this.requireActiveSubTopicInCause(parsed.home_sub_topic_id, cause.id, 'home');
@@ -1801,6 +1860,7 @@ export class Server {
     ): Promise<ProposeSupersedesOutput> => {
       const parsed = ProposeSupersedesInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
 
       if (parsed.from_node_id === parsed.to_node_id) {
         throw new ServerError('invalid_input', 'from_node_id and to_node_id must differ');
@@ -1869,6 +1929,7 @@ export class Server {
     ): Promise<ProposeMembershipOutput> => {
       const parsed = ProposeMembershipInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
 
       const node = this.store.nodes.get(parsed.node_id);
       if (!node) {
@@ -1935,6 +1996,7 @@ export class Server {
     ): Promise<ProposeChangeOfHomeOutput> => {
       const parsed = ProposeChangeOfHomeInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
 
       const node = this.store.nodes.get(parsed.node_id);
       if (!node) {
@@ -1984,6 +2046,7 @@ export class Server {
     ): Promise<ProposeSubTopicOutput> => {
       const parsed = ProposeSubTopicInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
 
       const cause = this.requireActiveCause(parsed.cause_id);
 
@@ -2133,6 +2196,7 @@ export class Server {
     ): Promise<CastReviewVoteOutput> => {
       const parsed = CastReviewVoteInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
+      this.requireMinAttestation(identity);
 
       const proposal = this.store.proposals.get(parsed.proposal_id);
       if (!proposal) {

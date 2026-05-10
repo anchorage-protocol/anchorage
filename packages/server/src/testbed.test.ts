@@ -1884,16 +1884,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // accept lands. The composition didn't fail — it performed
     // exactly as designed against the coalition the system has
     // observed (Carol+Dave). The seam is that adding identities to
-    // the coalition costs the operator nothing in v0 — PRD
-    // §Identity now specs four sybil-resistance layers (binding
+    // the coalition costs the operator nothing at attestation 0 —
+    // PRD §Identity specs four sybil-resistance layers (binding
     // cost, issuance-frequency cap, per-identity rate-limit
     // accounting, cross-cause identity-clustering) composing
     // multiplicatively against an adversary budget per the
-    // §Adversary testbed adversary-budget model, and none of those
-    // are wired in v0; this scenario is the regression handle that
-    // says behavior-dependent defenses cannot close the seam alone
-    // and the four identity layers are what closes it (see ROADMAP
-    // §Status for the slice sequence).
+    // §Adversary testbed adversary-budget model. The binding-cost
+    // gate is now wired (`min_attestation_level`); this scenario
+    // keeps it inert (default 0) and mints all identities at
+    // attestation 0 to preserve its role as the regression handle
+    // for the seam — the binding-cost gate's standalone refusal
+    // test below pins the closure under min > 0. The remaining
+    // three layers land in subsequent slices (see ROADMAP §Status
+    // for the slice sequence).
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
@@ -2062,6 +2065,133 @@ describe('testbed: synthetic populations against the wired surface', () => {
     );
     const daveVotedOnContested = contestedVotes.some((v) => v.reviewer_id === dave.id);
     expect(daveVotedOnContested).toBe(false);
+  });
+
+  it('binding-cost gate: identities below min_attestation_level refuse with `unauthorized` at every write seam (PRD §Identity bullet 1)', async () => {
+    // PRD §Identity bullet 1 (binding cost) — the first of the four
+    // sybil-resistance layers PRD §Identity specs. The IdP records
+    // `attestation_level` on the identity at mint, opaque to the
+    // server; the server gates all 13 write tools on the
+    // `min_attestation_level` threshold and refuses with
+    // `unauthorized` rather than the rep gates' `not_found` opacity
+    // (binding cost is identity-level, not work-availability-opaque,
+    // so the refusal accurately names the mismatch instead of
+    // masking it as "no work available"). Read-path tools are not
+    // gated. The scenario pins the contract on a representative
+    // cross-section of write seams: capacity declaration,
+    // assignment pull, contributor-initiated propose, contributor-
+    // initiated review. Each seam shares the same
+    // `requireMinAttestation` helper, so a refusal here is the gate
+    // firing before any tool-specific logic runs.
+    //
+    // The seam this scenario closes is the one the sybil-amplified-
+    // coalition scenario above is the regression handle for: a fresh
+    // recruit walks past behavior-based defenses by construction
+    // because cluster signal, calibration record, and reputation
+    // gates all need accumulated per-identity history. The
+    // binding-cost gate fires before any history accrues, so a
+    // fresh sybil minted at attestation 0 cannot start the
+    // accumulation that would let those layers engage. Cost lives
+    // at the IdP (not in the testbed); the harness's adversary-
+    // budget model expresses it (PRD §Adversary testbed: adversary
+    // budget model).
+    const sources = new Map([['1', 'arm A: stage III treatment X works in the cohort']]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('att'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: { min_attestation_level: 1 },
+    });
+    const alice = server.bootstrap.mintIdentity({
+      display_name: 'alice',
+      attestation_level: 1,
+    });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const sub = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'st',
+      description: 'x',
+      scope_query: 'x',
+    });
+    // alice (attestation 1) seeds a staged proposal so
+    // cast_review_vote has a real proposal_id to target. The gate
+    // fires before the proposal is even resolved regardless.
+    const seedR = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: sub.id,
+        content: 'paper 1',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+
+    // Eve mints at attestation 0 — below threshold.
+    const eve = server.bootstrap.mintIdentity({
+      display_name: 'eve',
+      attestation_level: 0,
+    });
+    const cEve = { identity_id: eve.id };
+
+    // Each write seam refuses with `unauthorized`. The error code
+    // (not just the throw) is what's load-bearing: a future
+    // refactor that conflates this gate's refusal with another
+    // mode (e.g. `not_found`) would silently drop the
+    // architecturally-load-bearing distinction between
+    // identity-layer mismatch and work-availability opacity.
+    await expect(
+      server.tools.setCapacity(cEve, {
+        cause_id: cause.id,
+        rate: 1,
+        kinds: ['excerpt'],
+      }),
+    ).rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(
+      server.tools.requestAssignment(cEve, { cause_id: cause.id }),
+    ).rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(
+      server.tools.proposeAnchor(cEve, {
+        cause_id: cause.id,
+        home_sub_topic_id: sub.id,
+        content: 'paper 2',
+        external_ref: { kind: 'pmid', value: '2' },
+      }),
+    ).rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(
+      server.tools.castReviewVote(cEve, {
+        proposal_id: seedR.proposal_id,
+        decision: 'accept',
+        rationale: 'fine',
+      }),
+    ).rejects.toMatchObject({ code: 'unauthorized' });
+
+    // Erin mints at threshold and the same seams pass — both
+    // set_capacity and a contributor-initiated propose_anchor
+    // succeed without throwing, confirming that for an above-
+    // threshold identity the gate doesn't fire and each tool's own
+    // logic runs to completion. The successful set_capacity is
+    // load-bearing: the gate fires before set_capacity's body, so
+    // a return without throw is direct evidence the gate was
+    // inert. The successful propose_anchor exercises a different
+    // write seam (contributor-initiated propose) for the same
+    // shape of evidence.
+    const erin = server.bootstrap.mintIdentity({
+      display_name: 'erin',
+      attestation_level: 1,
+    });
+    const cErin = { identity_id: erin.id };
+    await server.tools.setCapacity(cErin, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['excerpt', 'review'],
+    });
+    const erinR = await server.tools.proposeAnchor(cErin, {
+      cause_id: cause.id,
+      home_sub_topic_id: sub.id,
+      content: 'paper 3',
+      external_ref: { kind: 'pmid', value: '3' },
+    });
+    expect(erinR.proposal_id).toBeDefined();
   });
 
   it('vote-decorrelating coalition stays in distinct strata and bypasses v0 stratification', async () => {
