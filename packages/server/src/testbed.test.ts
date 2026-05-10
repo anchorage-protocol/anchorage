@@ -11668,6 +11668,289 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // Corpus-contamination scenario — the dynamic cube #13's wide runner
+  // avoided by construction (all four excerpts kept bias-misaligned so
+  // the calibration corpus stays anchor-only throughout the run). PRD
+  // §Calibration batches commits the corpus as "validated history" —
+  // accepted-from-history proposals routed to the requested sub-topic,
+  // recency-biased; PRD §Adversary taxonomy commits the strategic-
+  // adversary "passing calibration" bypass. The seam this scenario
+  // closes is the *intra-run* version of that bypass: a strategic
+  // adversary whose bias predicate aligns with what the corpus turns
+  // *into* during the run — bias-aligned excerpts that converge accepted
+  // mid-run join the corpus, and downstream coalition members who draw
+  // those contaminated items as calibration vote with their bias and
+  // pass, keeping their calibration record clean and lifting their
+  // convergence weight back above the aware-gate threshold. The aware-
+  // closure cube #13 reads holds when the corpus is anchor-only by
+  // construction; this scenario reads what happens when it isn't.
+  //
+  // Setup mirrors cube #13's wide runner (4 anchors as the calibration
+  // corpus, every_n=2 well above the density floor, aware=true,
+  // naiveBiasedDecider on the coalition) with one change: 2 of the 4
+  // staged excerpts are bias-aligned ("treatment X works for stage I/II"
+  // — content the naive bias predicate accepts) and 2 are bias-
+  // misaligned ("treatment X has no effect for stage III/IV" — the
+  // suppression target). Run order is Erin (acceptAllDecider, primer)
+  // → Carol → Dave. Erin votes accept on all 4 excerpts (1 accept each,
+  // none converge yet). Carol votes accept on the 2 bias-aligned (each
+  // reaches 2 accepts, weighted_accept = Erin(weight ≥ 2 after her cal
+  // priming) + Carol(0 after she fails anchor calibration), converges
+  // accepted — bias-aligned excerpts now in the corpus). Carol votes
+  // reject on the 2 bias-misaligned (count=1 reject each, stays
+  // staged). Then Dave runs against a corpus that contains 4 anchors +
+  // 2 bias-aligned excerpts.
+  //
+  // Dave's call sequence is what makes the closure break visible. With
+  // every_n=2 the first call is always real review (priorReviewOffers
+  // starts at 0); Dave's first reject on bias-mis #1 lands at weight=1
+  // (empty calibration record), the weighted_reject = Carol(0) +
+  // Dave(1) = 1 < 2 falls below the aware threshold, and bias-mis #1
+  // stalls. Dave's call 2 is calibration; recency-biased draw pulls
+  // bias-aligned #2 (later created_at than the anchors and Dave hasn't
+  // voted on it), Dave's bias accepts "works", matches the accepted-
+  // from-history ground truth, calibration record (1, 0) → weight=2.
+  // Dave's call 3 is real review on bias-mis #2: his reject lands at
+  // weight=2, weighted_reject = Carol(0) + Dave(2) = 2 ≥ 2, converges
+  // rejected. The aware closure breaks on the second target.
+  //
+  // The headline is *partial closure breakage*, not full bypass: the
+  // first target Dave touches still holds (his weight hasn't been
+  // contaminated yet); the second target falls (his weight has). The
+  // closure-quality reading is *order-dependent* — once the corpus
+  // contains items the bias passes, every reject Dave casts after
+  // touching one of them counts at full weight. A coalition that timed
+  // its rejections to follow a calibration draw on each could suppress
+  // every target after the first; the runner doesn't model that
+  // optimization (the assignment loop drives the order, not the
+  // adversary), but the dynamic is visible at the proposer-observable
+  // outcome (rejected vs staged) on the second target.
+  //
+  // Baseline comparison: the same runner with `contaminate=false`
+  // stages 0 bias-aligned + 2 bias-misaligned excerpts (matching cube
+  // #13's wide runner shape on a 2-target reduction). The corpus stays
+  // anchor-only throughout the run; Dave's calibration draws all hit
+  // anchors and his bias rejects them, calibration record (0, fails),
+  // weight=0. His reject on bias-mis #2 lands at weight=0, weighted_
+  // reject = 0 < 2, stays staged. 0 of 2 suppressed — full closure,
+  // matching cube #13's aware=true reading at every_n=2.
+  //
+  // The lift from 0/2 (baseline) to 1/2 (contaminated) at the same
+  // defense config is the load-bearing observation: the aware closure's
+  // strength is a function of corpus composition over the run, not a
+  // static property of the (every_n × aware) configuration. PRD
+  // §Calibration batches' "biased toward fresh-but-validated history"
+  // is what makes this dynamic structurally inevitable rather than a
+  // tuning quirk: recency-bias guarantees that recently-converged
+  // excerpts dominate calibration draws, so a bias-aligned coalition
+  // member can recover their weight as soon as one bias-aligned excerpt
+  // converges into the corpus mid-run. The mitigation is not a
+  // calibration-knob change (cube #13 already shows the density floor
+  // is well below the runner's offer count); it would have to come from
+  // a corpus-composition rule that excludes recently-converged items
+  // from calibration draws until they have accumulated independent
+  // confirmations beyond the immediate review pool. That rule is a
+  // testbed-territory follow-up, not a wired primitive — the scenario
+  // here pins the dynamic the rule would have to defeat, and stays as
+  // the regression handle for any future change to the corpus-draw
+  // policy.
+  async function runCorpusContaminationScenario(params: {
+    contaminate: boolean;
+  }): Promise<{
+    bias_misaligned_statuses: string[];
+    bias_misaligned_rejected_count: number;
+  }> {
+    // Anchors are bias-misaligned ("paper N" content — naive bias
+    // predicate rejects them, so coalition calibration draws on
+    // anchors fail). Excerpt mix is what the contaminate knob controls:
+    // 2 bias-aligned ("works") + 2 bias-misaligned ("no effect") when
+    // on, 2 bias-misaligned only when off. Sources for span verification
+    // mirror the excerpt content per anchor.
+    const sources = new Map<string, string>(
+      params.contaminate
+        ? [
+            ['1', 'study A: treatment X works for stage I patients across the cohort'],
+            ['2', 'study B: treatment X works for stage II patients across the cohort'],
+            ['3', 'study C: treatment X has no effect for stage III patients across the cohort'],
+            ['4', 'study D: treatment X has no effect for stage IV patients across the cohort'],
+          ]
+        : [
+            ['1', 'study C: treatment X has no effect for stage III patients across the cohort'],
+            ['2', 'study D: treatment X has no effect for stage IV patients across the cohort'],
+          ],
+    );
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen(params.contaminate ? 'cc-on' : 'cc-off'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        // Above cube #13's density floor for the runner's offer count
+        // (4 anchors + N excerpts), so the aware gate fires; the cube
+        // already pins density-floor behavior, and this scenario is
+        // about corpus composition at fixed density.
+        calibration_inject_every_n: 2,
+        calibration_aware_convergence: true,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    // Anchor count matches the source count so every staged excerpt
+    // routes to a real anchor for span verification.
+    const anchorCount = sources.size;
+    const anchorNodeIds: string[] = [];
+    for (let i = 1; i <= anchorCount; i++) {
+      const a = await server.tools.proposeAnchor(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: `paper ${i}`,
+        external_ref: { kind: 'pmid', value: String(i) },
+      });
+      server.curator.acceptProposal(a.proposal_id);
+      const anchorNode = [...server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
+      );
+      if (!anchorNode) throw new Error(`paper ${i} anchor not materialized`);
+      anchorNodeIds.push(anchorNode.id);
+    }
+
+    // Excerpt staging order matters: bias-aligned excerpts proposed
+    // before bias-misaligned ones get lower id-tiebreak ranks but later
+    // reach the corpus (they converge during Carol's loop, picking up
+    // their accepted timestamp). The recency-biased calibration draw
+    // sorts by created_at, not proposal id, so the staging order is
+    // load-bearing for the dynamic only via convergence timing —
+    // lowest-id excerpts are reviewed first by the frontier and (for
+    // bias-aligned) converge first. Pinning bias-aligned at the front
+    // ensures the corpus contamination happens as early as possible.
+    interface ExcerptSpec {
+      kind: 'bias_aligned' | 'bias_misaligned';
+      stage: string;
+      anchor_index: number;
+    }
+    const excerptSpecs: ExcerptSpec[] = params.contaminate
+      ? [
+          { kind: 'bias_aligned', stage: 'I', anchor_index: 0 },
+          { kind: 'bias_aligned', stage: 'II', anchor_index: 1 },
+          { kind: 'bias_misaligned', stage: 'III', anchor_index: 2 },
+          { kind: 'bias_misaligned', stage: 'IV', anchor_index: 3 },
+        ]
+      : [
+          { kind: 'bias_misaligned', stage: 'III', anchor_index: 0 },
+          { kind: 'bias_misaligned', stage: 'IV', anchor_index: 1 },
+        ];
+    const biasMisalignedIds: ProposalId[] = [];
+    for (const spec of excerptSpecs) {
+      const verb = spec.kind === 'bias_aligned' ? 'works for' : 'has no effect for';
+      const spanVerb = spec.kind === 'bias_aligned' ? 'works for' : 'has no effect for';
+      const result = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorNodeIds[spec.anchor_index]! as never,
+        content: `treatment X ${verb} stage ${spec.stage}`,
+        quoted_span: {
+          text: `treatment X ${spanVerb} stage ${spec.stage} patients`,
+          offset: 0,
+        },
+      });
+      if (spec.kind === 'bias_misaligned') biasMisalignedIds.push(result.proposal_id);
+    }
+
+    // Erin runs first as the honest primer — accept-all gives every
+    // staged excerpt its first accept and accumulates passes on the
+    // anchor calibration corpus, lifting her weight enough that Carol's
+    // bias-aligned accept can converge through the aware threshold.
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const erinClient = await wireArchetype(server, erin.id);
+    await runHonestReviewer(erinClient, {
+      cause_id: cause.id,
+      rate: 10,
+      decide: acceptAllDecider,
+    });
+
+    // Coalition: Carol+Dave with naive bias. Carol runs second so her
+    // accept on bias-aligned excerpts contributes the second vote that
+    // converges them into the corpus before Dave's loop. Dave runs
+    // third — his calibration draws then pull from the contaminated
+    // corpus, lifting his weight off the floor between consecutive
+    // reject votes on bias-misaligned targets.
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const carolClient = await wireArchetype(server, carol.id);
+    const daveClient = await wireArchetype(server, dave.id);
+    await runHonestReviewer(carolClient, {
+      cause_id: cause.id,
+      rate: 10,
+      decide: naiveBiasedDecider,
+    });
+    await runHonestReviewer(daveClient, {
+      cause_id: cause.id,
+      rate: 10,
+      decide: naiveBiasedDecider,
+    });
+
+    const statuses: string[] = [];
+    let rejectedCount = 0;
+    for (const id of biasMisalignedIds) {
+      const p = server.store.proposals.get(id);
+      const status = p?.status ?? 'missing';
+      statuses.push(status);
+      if (status === 'rejected') rejectedCount += 1;
+    }
+    return {
+      bias_misaligned_statuses: statuses,
+      bias_misaligned_rejected_count: rejectedCount,
+    };
+  }
+
+  it('corpus-contamination breaks the aware closure on the second target: bias-aligned excerpts converging mid-run lift the coalition weight (PRD §Calibration batches, "fresh-but-validated history" recency bias)', async () => {
+    // Baseline: corpus stays anchor-only (no bias-aligned excerpts to
+    // contaminate it). Coalition fails calibration on every anchor
+    // draw, weight collapses to 0, both bias-misaligned targets stay
+    // staged — full closure, matching cube #13's aware=true reading at
+    // every_n=2.
+    const off = await runCorpusContaminationScenario({ contaminate: false });
+    expect(off.bias_misaligned_rejected_count).toBe(0);
+    expect(off.bias_misaligned_statuses).toEqual(['staged', 'staged']);
+
+    // Contaminated: 2 bias-aligned excerpts converge accepted during
+    // Carol's loop and join the corpus. Dave's first reject on bias-
+    // misaligned #1 lands at empty-calibration weight=1 (the call-1-is-
+    // always-real-review constraint at every_n=2), so weighted_reject
+    // falls below the aware threshold and that target stalls. Dave's
+    // call 2 is calibration; recency-biased draw pulls bias-aligned
+    // #2 (he hasn't voted on it), bias accepts "works", calibration
+    // record (1, 0) → weight=2. Dave's call 3 reject on bias-
+    // misaligned #2 lands at weight=2, weighted_reject = 2 ≥ 2,
+    // converges rejected. The closure breaks on the second target.
+    const on = await runCorpusContaminationScenario({ contaminate: true });
+    expect(on.bias_misaligned_rejected_count).toBeGreaterThan(0);
+    // The first bias-misaligned target stalls (Dave's empty-weight
+    // reject); the second converges rejected (Dave's contaminated-
+    // weight reject). The (staged, rejected) shape pins the order-
+    // dependent dynamic — order-flipping the bias-misaligned ids
+    // would shift which target falls but not whether one falls.
+    expect(on.bias_misaligned_statuses).toEqual(['staged', 'rejected']);
+
+    // The headline lift: at the same (every_n=2, aware=true) defense
+    // configuration cube #13 reads as full closure on the anchor-only
+    // corpus (ASR=0% in the wide runner's aware=true row), corpus
+    // contamination by mid-run convergences re-opens the closure on a
+    // fraction of the targets. The aware closure's strength is a
+    // function of corpus composition over the run, not a static
+    // property of the (every_n × aware) configuration.
+    expect(on.bias_misaligned_rejected_count).toBeGreaterThan(
+      off.bias_misaligned_rejected_count,
+    );
+  });
+
   // Fourteenth parameter sweep cube: the (stratification × threshold)
   // composition cube on the K=2 coalition with priming, joining cube
   // #11's stratification axis with cube #12's vote-to-reject axis on
