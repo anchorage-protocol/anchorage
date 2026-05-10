@@ -2556,6 +2556,232 @@ describe('testbed: synthetic populations against the wired surface', () => {
     );
   });
 
+  it('cross-cause reputation independence: rep accrued in cause A does not surface in cause B; demo gate in cause B fires against a cause-A-only identity by null-policy (PRD §Reputation, per-(cause, sub-topic) keying)', async () => {
+    // PRD §Reputation commits per-(cause, sub-topic)-keyed reputation
+    // accrued from work landed in that cause. The architectural
+    // claim is *no transfer*: an identity who has built rep through
+    // contributor-initiated work in cause A starts at zero in cause B
+    // and must bootstrap there independently. The storage model
+    // (`reputations` keyed by `${IdentityId}|${CauseId}|${SubTopicId}`)
+    // makes this structural-by-construction, but a CI-checked
+    // regression catches a future cross-cause fold or transfer
+    // mechanism that would silently break the per-cause defense the
+    // demo gate's null-policy depends on.
+    //
+    // The scenario pins both halves of the contract: Carol builds
+    // contributor-initiated demo in cause A through two convergences
+    // (Carol+Erin pairs on accept-all targets, demonstrated +=
+    // contributor_initiated_factor per accurate review per the
+    // alpha=1 default). She then queries her rep in cause B
+    // (separate cause, separate sub-topic) and gets an empty
+    // result. With `assignment_min_demonstrated`=1.5 active in
+    // cause B, her `request_assignment` in cause B refuses with
+    // `not_found` — the demo gate's null-policy fires (no rep entries
+    // in the requested cause → fail when threshold > 0), exactly the
+    // closure that protects against a sybil farm rep-laundering
+    // through a low-defense cause to leverage in a high-defense one.
+    const sources = new Map([
+      ['1', 'cause A paper 1: treatment X works for stage III patients'],
+      ['2', 'cause A paper 2: treatment X works for stage IV patients'],
+      ['3', 'cause B paper 1: antibiotic Y resistance pattern observed'],
+      ['4', 'cause A paper 3: treatment X works for stage III patients in confirmation'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('xc'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        // Demo gate active at cube #2's calibrated value. The gate
+        // is per-cause by construction (it queries the caller's rep
+        // entries in the requested cause); the regression here is
+        // that a fresh-in-cause-B identity fails the gate even when
+        // they have a stockpile in cause A.
+        assignment_min_demonstrated: 1.5,
+      },
+    });
+    const causeA = server.bootstrap.createCause({ name: 'CRC', description: 'cause A' });
+    const causeB = server.bootstrap.createCause({ name: 'AMR', description: 'cause B' });
+    const subTopicA = server.bootstrap.seedSubTopic({
+      cause_id: causeA.id,
+      name: 'a-topic',
+      description: 'a',
+      scope_query: 'a',
+    });
+    const subTopicB = server.bootstrap.seedSubTopic({
+      cause_id: causeB.id,
+      name: 'b-topic',
+      description: 'b',
+      scope_query: 'b',
+    });
+    const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+
+    // Cause A bootstrap: two contributor-initiated convergences via
+    // Carol+Erin accept votes on accept-all targets in cause A.
+    // After two convergences, Carol's demonstrated in cause A clears
+    // 1.5 (each convergence gives reviewer_accurate_gain *
+    // contributor_initiated_factor = 1 * 0.5 = 0.5; two of them
+    // give demonstrated = 1.0, plus the proposer's accept moves
+    // both reviewers' rep on convergence path). The exact value
+    // doesn't matter — what matters is that Carol has rep in cause
+    // A but not cause B.
+    for (let i = 1; i <= 2; i++) {
+      const a = await server.tools.proposeAnchor(
+        { identity_id: seeder.id },
+        {
+          cause_id: causeA.id,
+          home_sub_topic_id: subTopicA.id,
+          content: `cause A paper ${i}`,
+          external_ref: { kind: 'pmid', value: String(i) },
+        },
+      );
+      server.curator.acceptProposal(a.proposal_id);
+      const anchorNode = [...server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === `cause A paper ${i}`,
+      );
+      if (!anchorNode) throw new Error(`cause A paper ${i} anchor not materialized`);
+      const e = await server.tools.proposeExcerpt(
+        { identity_id: seeder.id },
+        {
+          cause_id: causeA.id,
+          home_sub_topic_id: subTopicA.id,
+          parent_anchor_id: anchorNode.id,
+          content: `cause A excerpt ${i}`,
+          quoted_span: {
+            text: `treatment X works for stage ${i === 1 ? 'III' : 'IV'} patients`,
+            offset: 0,
+          },
+        },
+      );
+      for (const voterId of [carol.id, erin.id]) {
+        await server.tools.castReviewVote(
+          { identity_id: voterId },
+          {
+            proposal_id: e.proposal_id,
+            decision: 'accept',
+            rationale: 'consistent with prevailing evidence',
+          },
+        );
+      }
+    }
+
+    // Carol's rep in cause A: at least one entry, demonstrated > 0.
+    const carolRepA = await server.tools.queryReputation(
+      { identity_id: carol.id },
+      { cause_id: causeA.id },
+    );
+    expect(carolRepA.entries.length).toBeGreaterThan(0);
+    const carolDemoA = carolRepA.entries.reduce(
+      (max, entry) => Math.max(max, entry.demonstrated),
+      0,
+    );
+    expect(carolDemoA).toBeGreaterThan(0);
+
+    // Carol's rep in cause B: empty by construction. The
+    // `reputations` map is keyed by (identity, cause, sub_topic);
+    // no work in cause B → no entries. This is the structural
+    // claim the regression pins as a CI-checked invariant.
+    const carolRepB = await server.tools.queryReputation(
+      { identity_id: carol.id },
+      { cause_id: causeB.id },
+    );
+    expect(carolRepB.entries).toEqual([]);
+
+    // Cause B has work available: a fresh excerpt staged for review.
+    // Without this, request_assignment would refuse for "no work
+    // available" rather than "demo gate fires" — the test would
+    // pass for the wrong reason.
+    const anchorB = await server.tools.proposeAnchor(
+      { identity_id: seeder.id },
+      {
+        cause_id: causeB.id,
+        home_sub_topic_id: subTopicB.id,
+        content: 'cause B paper 1',
+        external_ref: { kind: 'pmid', value: '3' },
+      },
+    );
+    server.curator.acceptProposal(anchorB.proposal_id);
+    const anchorBNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'cause B paper 1',
+    );
+    if (!anchorBNode) throw new Error('cause B anchor not materialized');
+    await server.tools.proposeExcerpt(
+      { identity_id: seeder.id },
+      {
+        cause_id: causeB.id,
+        home_sub_topic_id: subTopicB.id,
+        parent_anchor_id: anchorBNode.id,
+        content: 'cause B excerpt 1',
+        quoted_span: { text: 'antibiotic Y resistance pattern', offset: 0 },
+      },
+    );
+
+    // Carol declares capacity in cause B (the gate is consulted at
+    // request_assignment, not at set_capacity).
+    await server.tools.setCapacity(
+      { identity_id: carol.id },
+      { cause_id: causeB.id, rate: 1, kinds: ['review'] },
+    );
+
+    // Carol's request_assignment in cause B refuses with `not_found`
+    // — the demo gate's null-policy fires (no rep entries in cause
+    // B → fail when threshold > 0). Her cause-A demonstrated does
+    // *not* transfer; the storage's per-cause keying makes the
+    // gate's per-cause defense structural-by-construction. The same
+    // closure protects against a sybil farm building rep in a low-
+    // defense cause to leverage in a high-defense one.
+    await expect(
+      server.tools.requestAssignment(
+        { identity_id: carol.id },
+        { cause_id: causeB.id, kind: 'review' },
+      ),
+    ).rejects.toMatchObject({ code: 'not_found' });
+
+    // Symmetric counter-check: Carol's request_assignment in cause
+    // A succeeds (her cause-A demo clears 1.5). The contrast pins
+    // that the cause-B refusal is *because* of the per-cause null-
+    // policy, not because of an unrelated configuration error that
+    // would also affect cause A. Stage a fresh cause-A excerpt
+    // Carol hasn't voted on so the assignment loop has eligible
+    // work — the bootstrap excerpts are conflict-of-interest-
+    // filtered (already voted on) and would otherwise produce the
+    // wrong refusal mode (no-work-available rather than gate-passes).
+    const freshAnchorA = await server.tools.proposeAnchor(
+      { identity_id: seeder.id },
+      {
+        cause_id: causeA.id,
+        home_sub_topic_id: subTopicA.id,
+        content: 'cause A paper 3',
+        external_ref: { kind: 'pmid', value: '4' },
+      },
+    );
+    server.curator.acceptProposal(freshAnchorA.proposal_id);
+    const freshAnchorANode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'cause A paper 3',
+    );
+    if (!freshAnchorANode) throw new Error('cause A paper 3 anchor not materialized');
+    await server.tools.proposeExcerpt(
+      { identity_id: seeder.id },
+      {
+        cause_id: causeA.id,
+        home_sub_topic_id: subTopicA.id,
+        parent_anchor_id: freshAnchorANode.id,
+        content: 'cause A excerpt 3',
+        quoted_span: { text: 'treatment X works for stage III patients', offset: 0 },
+      },
+    );
+    await server.tools.setCapacity(
+      { identity_id: carol.id },
+      { cause_id: causeA.id, rate: 1, kinds: ['review'] },
+    );
+    const causeAAssignment = await server.tools.requestAssignment(
+      { identity_id: carol.id },
+      { cause_id: causeA.id, kind: 'review' },
+    );
+    expect(causeAAssignment.task.kind).toBe('review');
+  });
+
   it('adversary-budget model: K identities cost K × α; issuance cap caps mints per epoch; per-identity throughput cap caps actions per epoch (PRD §Adversary testbed: adversary budget model)', () => {
     // Slice 5 of the identity-cost design pass — the testbed-side
     // budget arithmetic that closes the loop on the four-layer sybil-

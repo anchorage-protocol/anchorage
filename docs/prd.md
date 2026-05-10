@@ -365,7 +365,6 @@ These are intentionally open until the testbed surfaces them:
 - **Reputation formula constants** (gain weights for proposing, reviewing, surviving supersedes; decay rates).
 - **Reviewer pool sizes** (N for a given proposal class).
 - **Vote-aggregation thresholds** (what counts as convergent vs divergent).
-- **Cross-cause reputation transfer** (does reviewer credibility on cause A transfer to cause B? Probably not in v0; testbed will check.)
 - **Federation contracts** (Phase 3+ — when independent Anchorage instances exist, how their state and reviewer pools relate).
 
 Specifying these before testing them would be guessing. The testbed exists exactly to replace guessing with measurement.
