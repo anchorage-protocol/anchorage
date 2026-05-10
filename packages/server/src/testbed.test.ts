@@ -1884,19 +1884,22 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // accept lands. The composition didn't fail — it performed
     // exactly as designed against the coalition the system has
     // observed (Carol+Dave). The seam is that adding identities to
-    // the coalition costs the operator nothing at attestation 0 —
-    // PRD §Identity specs four sybil-resistance layers (binding
-    // cost, issuance-frequency cap, per-identity rate-limit
-    // accounting, cross-cause identity-clustering) composing
+    // the coalition costs the operator nothing at the configured
+    // defaults — PRD §Identity specs four sybil-resistance layers
+    // (binding cost, issuance-frequency cap, per-identity rate-
+    // limit accounting, cross-cause identity-clustering) composing
     // multiplicatively against an adversary budget per the
     // §Adversary testbed adversary-budget model. The binding-cost
-    // gate is now wired (`min_attestation_level`); this scenario
-    // keeps it inert (default 0) and mints all identities at
-    // attestation 0 to preserve its role as the regression handle
-    // for the seam — the binding-cost gate's standalone refusal
-    // test below pins the closure under min > 0. The remaining
-    // three layers land in subsequent slices (see ROADMAP §Status
-    // for the slice sequence).
+    // gate (`min_attestation_level`) and per-identity rate-limit
+    // accounting (`rate_limit_actions_per_epoch`) are now wired;
+    // this scenario keeps both inert (defaults 0 / Infinity) and
+    // mints all identities at attestation 0 to preserve its role
+    // as the regression handle for the seam — each gate's
+    // standalone refusal scenario pins the closure under non-
+    // default settings. The remaining two layers (issuance-
+    // frequency cap, cross-cause identity-clustering) land in
+    // subsequent slices (see ROADMAP §Status for the slice
+    // sequence).
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
@@ -2192,6 +2195,109 @@ describe('testbed: synthetic populations against the wired surface', () => {
       external_ref: { kind: 'pmid', value: '3' },
     });
     expect(erinR.proposal_id).toBeDefined();
+  });
+
+  it('rate-limit accounting: per-identity write-action budget refuses with `rate_limited` after cap, resets on epoch boundary (PRD §Identity bullet 3)', async () => {
+    // PRD §Identity bullet 3 (per-identity rate-limit accounting) —
+    // the third of the four sybil-resistance layers PRD §Identity
+    // specs. Per-(identity, epoch) counters cap each identity's
+    // write-action throughput; when the counter hits the cap, the
+    // tool refuses with the new `rate_limited` mode (parallel to
+    // `not_found` and `unauthorized` but with a distinct recovery
+    // path: "wait for the next epoch"). The cap is on *total* write
+    // actions per identity per epoch, not per-tool, so the
+    // cost-multiplier reads as the per-sybil-throughput axis
+    // directly: at K sybils with cap T, the coalition's per-epoch
+    // budget is K × T.
+    //
+    // The scenario pins the contract end-to-end: a single
+    // identity's first 3 actions land, the 4th refuses, the same
+    // refusal fires across different write tools (proving the cap
+    // is global rather than per-tool), and the counter resets at
+    // the epoch boundary so the same identity can act again.
+    const sources = new Map([
+      ['1', 'arm A: stage III treatment X works in the cohort'],
+      ['2', 'arm B: stage IV treatment Y has no effect'],
+      ['3', 'arm C: combination Z'],
+      ['4', 'arm D: control'],
+    ]);
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 1000);
+    const server = new Server({
+      clock,
+      idGen: new SeededIdGen('rl'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        rate_limit_actions_per_epoch: 3,
+        rate_limit_epoch_seconds: 60,
+      },
+    });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const sub = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'st',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const eve = server.bootstrap.mintIdentity({ display_name: 'eve' });
+    const cEve = { identity_id: eve.id };
+
+    // Action 1: set_capacity (budget 1/3).
+    await server.tools.setCapacity(cEve, {
+      cause_id: cause.id,
+      rate: 5,
+      kinds: ['anchor', 'excerpt', 'review'],
+    });
+    // Action 2-3: propose_anchor (budget 2/3, then 3/3).
+    await server.tools.proposeAnchor(cEve, {
+      cause_id: cause.id,
+      home_sub_topic_id: sub.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    await server.tools.proposeAnchor(cEve, {
+      cause_id: cause.id,
+      home_sub_topic_id: sub.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+
+    // Action 4: refuses with `rate_limited`. The cap fires at the
+    // shared accountWriteAction helper, before tool-specific
+    // business logic; the same refusal would surface at any write
+    // tool the caller invokes next.
+    await expect(
+      server.tools.proposeAnchor(cEve, {
+        cause_id: cause.id,
+        home_sub_topic_id: sub.id,
+        content: 'paper 3',
+        external_ref: { kind: 'pmid', value: '3' },
+      }),
+    ).rejects.toMatchObject({ code: 'rate_limited' });
+    // Cross-tool: a *different* write tool hits the same cap. Pins
+    // the global-throughput semantic — the cap is on total
+    // per-identity write actions, not per-tool.
+    await expect(
+      server.tools.requestAssignment(cEve, { cause_id: cause.id }),
+    ).rejects.toMatchObject({ code: 'rate_limited' });
+
+    // Advance past the epoch boundary (60 seconds + a tick to be
+    // safe). The counter resets lazily on the next gate fire.
+    clock.advance(61 * 1000);
+    await server.tools.proposeAnchor(cEve, {
+      cause_id: cause.id,
+      home_sub_topic_id: sub.id,
+      content: 'paper 4',
+      external_ref: { kind: 'pmid', value: '4' },
+    });
+
+    // Server state: 3 anchor proposals successfully landed (papers
+    // 1, 2, 4 — paper 3 was refused). The refused calls left no
+    // proposal record, matching the contract that rate-limit
+    // refusal happens before tool-specific state changes.
+    const anchors = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'anchor' && p.proposer_id === eve.id,
+    );
+    expect(anchors).toHaveLength(3);
   });
 
   it('vote-decorrelating coalition stays in distinct strata and bypasses v0 stratification', async () => {

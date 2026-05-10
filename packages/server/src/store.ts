@@ -64,4 +64,16 @@ export class MemoryStore {
   // when verification ran; copied onto the materialized node at
   // acceptance time.
   readonly verifiedRefs = new Map<ProposalId, VerifiedRef>();
+  // Per-identity rate-limit counter (PRD §Identity bullet 3). Single
+  // record per identity, advanced on epoch boundary: when a write
+  // tool is invoked, the server resolves the current epoch from
+  // wall-clock time and the configured `rate_limit_epoch_seconds`,
+  // and either reuses the existing counter (same epoch) or resets to
+  // 0 (new epoch) before checking against the cap. The single-record
+  // shape is sufficient because the cap enforces a maximum-per-epoch
+  // and the counter is consumed atomically; historical per-epoch
+  // counts are not needed for enforcement (the curator's cross-cause
+  // identity-clustering projection — slice 4 — is where historical
+  // signals surface for surveillance, not enforcement).
+  readonly rateLimits = new Map<IdentityId, { epoch: number; count: number }>();
 }

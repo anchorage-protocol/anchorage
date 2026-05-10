@@ -444,6 +444,41 @@ export interface ReviewConfig {
   // behavior (which mints all synthetic identities at
   // attestation_level 0 by default).
   min_attestation_level: number;
+  // Maximum number of write actions a single identity can perform
+  // per epoch. PRD §Identity bullet 3 (per-identity rate-limit
+  // accounting): the third of the four sybil-resistance layers.
+  // The cap is on observable write actions across all write tools
+  // (`set_capacity`, `request_assignment`, `accept_assignment`,
+  // `decline_assignment`, `submit_assigned_proposal`, all
+  // `propose_*` tools, `cast_review_vote`) — single bucket rather
+  // than per-tool, so the cap measures total throughput per
+  // identity per epoch directly. The cost-multiplier reads as the
+  // per-sybil-throughput axis: at K sybils with per-sybil cap T,
+  // the coalition's per-epoch action budget is K × T. Refusal
+  // mode is `rate_limited` (a new ServerErrorCode parallel to
+  // `not_found` and `unauthorized`) — distinct from the
+  // attestation gate's `unauthorized` and the rep gates'
+  // `not_found` because the recovery path is "wait for the next
+  // epoch," not "obtain a higher attestation" or "no work
+  // available." Default Infinity leaves the gate inert; finite
+  // values opt the gate in for the testbed's adversary-budget
+  // model. Counted *after* schema parse, auth, and the attestation
+  // gate, but *before* tool-specific business logic — so malformed
+  // inputs and unauthorized callers don't burn budget, but
+  // valid-input-but-business-logic-failed calls do (an adversary
+  // can't probe the system with bogus business inputs without
+  // paying budget for each).
+  rate_limit_actions_per_epoch: number;
+  // Epoch window for rate-limit accounting, in seconds. PRD
+  // §Identity bullet 3: epochs are wall-clock windows (not sliding
+  // windows) — counter resets at epoch boundary, advanced lazily
+  // when the gate fires. Default Infinity is a single never-ending
+  // epoch (counter accumulates forever), which together with
+  // `rate_limit_actions_per_epoch=Infinity` keeps the gate inert
+  // by construction. Finite values (e.g., 60 for one-minute
+  // epochs) opt the gate in. The harness's `FakeClock.advance(ms)`
+  // is what scenarios use to cross epoch boundaries deliberately.
+  rate_limit_epoch_seconds: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -475,6 +510,8 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   assignment_decline_min_offers: 1,
   review_credit_contention_alpha: 1,
   min_attestation_level: 0,
+  rate_limit_actions_per_epoch: Number.POSITIVE_INFINITY,
+  rate_limit_epoch_seconds: Number.POSITIVE_INFINITY,
 };
 
 export interface ServerDeps {
@@ -790,6 +827,44 @@ export class Server {
       'unauthorized',
       `attestation level ${identity.attestation_level} below minimum ${this.review.min_attestation_level} for ${identity.id}`,
     );
+  }
+
+  // PRD §Identity bullet 3 (per-identity rate-limit accounting) —
+  // the third of the four sybil-resistance layers. Atomically
+  // checks the per-(identity, epoch) write-action counter against
+  // `rate_limit_actions_per_epoch` and increments on success, or
+  // throws `ServerError('rate_limited', ...)` when the cap is
+  // reached. Inert when the cap is Infinity (the `!isFinite`
+  // shortcut means scenarios that don't exercise the gate pay zero
+  // cost). The epoch index is derived lazily from wall-clock time
+  // (`floor(now_ms / (epoch_seconds * 1000))`); the store keeps
+  // one record per identity that the helper resets on epoch
+  // boundary rather than maintaining one entry per (identity,
+  // epoch) tuple — historical per-epoch counts aren't needed for
+  // enforcement, and slice 4's curator-side identity-clustering
+  // projection is where historical surveillance signals surface.
+  // Called after `resolveCaller` and `requireMinAttestation` so
+  // unauthorized callers don't burn budget; called before
+  // tool-specific business logic so valid-input-but-failed-logic
+  // calls *do* burn budget (an adversary can't probe the system
+  // with bogus business inputs without paying for each).
+  private accountWriteAction(identity: Identity): void {
+    const cap = this.review.rate_limit_actions_per_epoch;
+    if (!Number.isFinite(cap)) return;
+    const epochSeconds = this.review.rate_limit_epoch_seconds;
+    const epoch =
+      Number.isFinite(epochSeconds) && epochSeconds > 0
+        ? Math.floor(new Date(this.clock.now()).getTime() / (epochSeconds * 1000))
+        : 0;
+    const existing = this.store.rateLimits.get(identity.id);
+    const current = existing && existing.epoch === epoch ? existing.count : 0;
+    if (current + 1 > cap) {
+      throw new ServerError(
+        'rate_limited',
+        `write-action budget exhausted for ${identity.id}: ${current}/${cap} in epoch ${epoch} (cap ${cap} actions per ${epochSeconds}s)`,
+      );
+    }
+    this.store.rateLimits.set(identity.id, { epoch, count: current + 1 });
   }
 
   // Resolve an assignment that belongs to the given identity and is
@@ -1214,6 +1289,7 @@ export class Server {
       const parsed = SetCapacityInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
       this.requireActiveCause(parsed.cause_id);
       // De-duplicate kinds at the boundary: the schema has min(1) but
       // doesn't enforce uniqueness. A contributor declaring `[review,
@@ -1278,6 +1354,7 @@ export class Server {
       const parsed = RequestAssignmentInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
       this.requireActiveCause(parsed.cause_id);
 
       const capacity = this.store.capacities.get(`${identity.id}|${parsed.cause_id}`);
@@ -1572,6 +1649,7 @@ export class Server {
       const parsed = AcceptAssignmentInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
       const a = this.requireOwnedOfferedAssignment(parsed.assignment_id, identity.id);
       const now = this.clock.now();
       this.store.assignments.set(a.id, { ...a, status: 'accepted', updated_at: now });
@@ -1597,6 +1675,7 @@ export class Server {
       const parsed = DeclineAssignmentInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
       const a = this.requireOwnedOfferedAssignment(parsed.assignment_id, identity.id);
       const now = this.clock.now();
       this.store.assignments.set(a.id, {
@@ -1634,6 +1713,7 @@ export class Server {
       const parsed = SubmitAssignedProposalInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
 
       const a = this.store.assignments.get(parsed.assignment_id);
       if (!a) {
@@ -1707,6 +1787,7 @@ export class Server {
       const parsed = ProposeAnchorInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
 
       const cause = this.requireActiveCause(parsed.cause_id);
       this.requireActiveSubTopicInCause(parsed.home_sub_topic_id, cause.id, 'home');
@@ -1753,6 +1834,7 @@ export class Server {
       const parsed = ProposeExcerptInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
 
       const cause = this.requireActiveCause(parsed.cause_id);
       this.requireActiveSubTopicInCause(parsed.home_sub_topic_id, cause.id, 'home');
@@ -1802,6 +1884,7 @@ export class Server {
       const parsed = ProposeSynthesisInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
 
       const cause = this.requireActiveCause(parsed.cause_id);
       this.requireActiveSubTopicInCause(parsed.home_sub_topic_id, cause.id, 'home');
@@ -1861,6 +1944,7 @@ export class Server {
       const parsed = ProposeSupersedesInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
 
       if (parsed.from_node_id === parsed.to_node_id) {
         throw new ServerError('invalid_input', 'from_node_id and to_node_id must differ');
@@ -1930,6 +2014,7 @@ export class Server {
       const parsed = ProposeMembershipInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
 
       const node = this.store.nodes.get(parsed.node_id);
       if (!node) {
@@ -1997,6 +2082,7 @@ export class Server {
       const parsed = ProposeChangeOfHomeInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
 
       const node = this.store.nodes.get(parsed.node_id);
       if (!node) {
@@ -2047,6 +2133,7 @@ export class Server {
       const parsed = ProposeSubTopicInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
 
       const cause = this.requireActiveCause(parsed.cause_id);
 
@@ -2197,6 +2284,7 @@ export class Server {
       const parsed = CastReviewVoteInput.parse(input);
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
+      this.accountWriteAction(identity);
 
       const proposal = this.store.proposals.get(parsed.proposal_id);
       if (!proposal) {
