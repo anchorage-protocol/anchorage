@@ -10231,6 +10231,570 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // Eleventh parameter sweep cube: the stratification × honest-pool-
+  // size cube on the cluster-signal-eligible coalition. PRD §What's
+  // deliberately not specified names "Reviewer pool sizes (N for a
+  // given proposal class)" as a knob explicitly deferred to the
+  // testbed, and PRD §Reviewer assignment commits the closure
+  // property: "small-sub-topic case slower to close but not
+  // capturable by the pool-fits-the-coalition dynamic." Existing
+  // scenarios pin the closure at one pool size (the 1749 scenario,
+  // 'stratification closes the calibration-aware coalition on the
+  // small-pool case') without surveying the pool-size axis. Cube #11
+  // is the first cube to read the pool-size axis directly and
+  // measure the *quality* of the closure across pool sizes via the
+  // two-metric template cube #5 introduced (ASR + stall-rate).
+  //
+  // Attack pattern: the cluster-signal-eligible coalition (Carol+
+  // Dave with 3 priming proposals shared so the cluster signal fires
+  // after `stratum_min_shared_proposals: 2` + `stratum_agreement_
+  // threshold: 1.0`). The coalition uses calAwareBiasedDecider —
+  // bias zone narrow enough to pass calibration items and the
+  // calibration-aware-convergence weighting, so the only defense in
+  // scope is stratification. Coalition runs *first* so the strat=off
+  // baseline reads ASR=100% across all H (the regression handle on
+  // "pool size alone is not a defense at fixed ordering" — without
+  // stratification, the coalition's two rejects converge before the
+  // honest pool can vote). Then the honest pool of H reviewers
+  // (using acceptAllDecider) runs sequentially. votes_to_accept=2
+  // and votes_to_reject=2 throughout.
+  //
+  // Defense layers in scope:
+  //   - stratification_enabled (the toggled axis): when on, the
+  //     cluster signal computes vote-pattern co-occurrence clusters
+  //     after the priming, and the cross-stratum draw rule routes
+  //     Dave away from the contested target once Carol-already-
+  //     routed (Carol-Dave co-stratum). Dave never votes; the
+  //     coalition's effective leverage drops to Carol's lone reject.
+  //   - honest_pool_size H ∈ {1, 2, 3} (the swept pool axis): the
+  //     number of honest reviewers running after the coalition.
+  //     Each contributes one accept; convergence requires votes_to_
+  //     accept=2 honest votes plus Carol's lone reject doesn't reach
+  //     votes_to_reject=2.
+  //
+  // The composition reads:
+  //   strat=off (cluster signal disabled, Dave votes): coalition's
+  //     2 rejects converge contested 'rejected' before honest pool
+  //     can vote. ASR=100% across all H — pool size alone is not a
+  //     defense at coalition-first ordering. The K+1-honest dynamic
+  //     PRD §Reviewer assignment names is order-dependent and does
+  //     not apply when the coalition reaches votes_to_reject before
+  //     the honest pool reaches votes_to_accept.
+  //   strat=on (cluster signal closes Dave at request_assignment):
+  //     Carol's lone reject + H honest accepts. The closure quality
+  //     depends on H:
+  //       H=1: 1 accept (Erin) + 1 reject (Carol) → staged. Honest
+  //         pool below votes_to_accept; the proposal stalls (the
+  //         divergence-closure sweep eventually archives it). ASR=0%
+  //         (no capture) but stall_rate=100% (no full closure).
+  //       H=2: 2 accepts (Erin+Frank) + 1 reject (Carol) →
+  //         converges 'accepted' at votes_to_accept=2. ASR=0%,
+  //         stall_rate=0% — full closure.
+  //       H=3: same as H=2 with George's request finding no work
+  //         (contested already converged). The H=3 cell is the
+  //         saturation pin: closure stabilizes at H ≥ votes_to_
+  //         accept and doesn't improve further; a future change that
+  //         broke saturation (e.g. raised votes_to_accept implicitly)
+  //         would surface here before downstream ASR drift.
+  //
+  // Six cells over (H ∈ {1, 2, 3}) × (stratification ∈ {off, on})
+  // drive `it.each`. The aggregate groups by stratification (the
+  // defense knob) and reads both metrics per group across the pool-
+  // size axis: strat=off at (ASR=100%, stall=0%) — the regression
+  // handle on coalition-first capture; strat=on at (ASR=0%, stall=
+  // 33%) — cluster signal never captures, only the small-pool case
+  // (H=1, 1/3 cells) stalls. The complementary aggregate by H reads
+  // (ASR=50%, stall=*) — strat=off captures, strat=on stalls or
+  // closes depending on H.
+  //
+  // The headline is *graceful degradation*: PRD §Reviewer assignment
+  // commits "slower to close but not capturable by the pool-fits-
+  // the-coalition dynamic"; cube #11 reads this property directly.
+  // strat=on at H=1 lands the slower-but-not-capturable outcome
+  // (staged → archived after divergence-closure window); strat=on
+  // at H ≥ 2 lands the full closure (accepted). The pool-size axis
+  // does not buy *capture-resistance* (that's the cluster signal's
+  // job at any H); it buys *closure-quality* — the difference
+  // between "the proposal stalls in the staged state" and "the
+  // proposal converges accepted." The two-metric template cube #5
+  // introduced (a defense that closes by stalling honest review is
+  // partial; full closure requires the honest pool to drive
+  // convergence) reads here on the pool-size axis directly: at
+  // small pools the cluster signal closes the *capture* but the
+  // honest pool can't drive the *convergence*.
+  //
+  // The cube uses the same priming-then-contested-then-honest
+  // pattern as the existing 1749 standalone scenario byte-identical
+  // for the H=1, strat=on cell; cells beyond that extend the
+  // pattern with additional honest reviewers (Frank at H ≥ 2,
+  // George at H = 3) and a stratification_enabled=false twin for
+  // each H. The standalone scenario stays as-is for its additional
+  // observations (vote-roster, no node materialization); the cube
+  // measures the per-cell contested status and stall outcomes.
+  async function runStratifiedPoolSizeScenario(params: {
+    honest_pool_size: number;
+    stratification_enabled: boolean;
+  }): Promise<{
+    attack_succeeded: boolean;
+    stalled: boolean;
+    contested_status: string;
+    dave_voted: boolean;
+  }> {
+    if (params.honest_pool_size < 1 || params.honest_pool_size > 3) {
+      throw new Error(`runStratifiedPoolSizeScenario: H=${params.honest_pool_size} out of range [1,3]`);
+    }
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('sps'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        // Calibration channels off — the cube isolates the
+        // stratification × pool-size composition. Calibration density
+        // (cube #10) and calibration-aware convergence (cubes #5/#10)
+        // are separate axes pinned by their own cubes.
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        stratification_enabled: params.stratification_enabled,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+        stratification_degraded_extra: 1,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    // Reviewer identities. Coalition (Carol+Dave) plus the honest
+    // pool sized by H (Erin always, Frank at H ≥ 2, George at H = 3).
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
+    const honestIdentities: Array<{ id: typeof erin.id; name: string }> = [
+      { id: erin.id, name: 'erin' },
+    ];
+    if (params.honest_pool_size >= 2) {
+      const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
+      honestIdentities.push({ id: frank.id, name: 'frank' });
+    }
+    if (params.honest_pool_size >= 3) {
+      const george = server.bootstrap.mintIdentity({ display_name: 'george' });
+      honestIdentities.push({ id: george.id, name: 'george' });
+    }
+    for (const id of [carol.id, dave.id, ...honestIdentities.map((h) => h.id)]) {
+      await server.tools.setCapacity(
+        { identity_id: id },
+        { cause_id: cause.id, rate: 5, kinds: ['review'] },
+      );
+    }
+
+    // PRIMING: three bias-aligned excerpts. Carol and Dave both vote
+    // accept on each via direct cast_review_vote — bypassing the
+    // assignment loop so priming doesn't itself trigger cross-stratum
+    // routing decisions. The first auto-converges on Carol+Dave's
+    // unanimous accept; the second and third stay staged after the
+    // cluster forms (stratification-degraded tightens convergence
+    // past their two accepts) and are curator-accepted to clear the
+    // frontier.
+    for (let i = 0; i < 3; i++) {
+      const primer = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        {
+          proposal_id: primer.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: dave.id },
+        {
+          proposal_id: primer.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      const after = server.store.proposals.get(primer.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(primer.proposal_id);
+      }
+    }
+
+    // CONTESTED: the bias-misaligned excerpt under paper 2 — the
+    // proposal the coalition wants to suppress.
+    const contested = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+    const contestedId = contested.proposal_id;
+
+    // ADVERSARY PHASE. Carol requests assignment first, gets routed
+    // (no co-stratum reviewer yet routed for contested), votes reject.
+    const carolAssignment = await server.tools.requestAssignment(
+      { identity_id: carol.id },
+      { cause_id: cause.id },
+    );
+    if (carolAssignment.task.kind !== 'review') {
+      throw new Error('expected carol to be routed to a review task');
+    }
+    if (carolAssignment.task.proposal_id !== contestedId) {
+      throw new Error(
+        `expected carol routed to contested ${contestedId}, got ${carolAssignment.task.proposal_id}`,
+      );
+    }
+    await server.tools.castReviewVote(
+      { identity_id: carol.id },
+      {
+        proposal_id: contestedId,
+        decision: 'reject',
+        rationale: 'underpowered, methodological concerns',
+        assignment_id: carolAssignment.assignment_id,
+      },
+    );
+
+    // Dave requests assignment. With stratification on, the cross-
+    // stratum gate fires (Carol-already-routed + Carol-Dave co-
+    // stratum from priming) and refuses with `not_found`. With
+    // stratification off, Dave is routed to contested and votes
+    // reject — the second reject converges contested 'rejected'
+    // before the honest pool can vote.
+    let daveVoted = false;
+    try {
+      const daveAssignment = await server.tools.requestAssignment(
+        { identity_id: dave.id },
+        { cause_id: cause.id },
+      );
+      if (daveAssignment.task.kind === 'review' && daveAssignment.task.proposal_id === contestedId) {
+        await server.tools.castReviewVote(
+          { identity_id: dave.id },
+          {
+            proposal_id: contestedId,
+            decision: 'reject',
+            rationale: 'underpowered, methodological concerns',
+            assignment_id: daveAssignment.assignment_id,
+          },
+        );
+        daveVoted = true;
+      }
+    } catch (err) {
+      if (err instanceof ServerError && err.code === 'not_found') {
+        // Dave gated by the cross-stratum draw rule. Expected at
+        // strat=on.
+      } else {
+        throw err;
+      }
+    }
+
+    // HONEST PHASE. Honest reviewers run sequentially and vote
+    // accept. Each contributes one accept toward votes_to_accept=2.
+    // If contested already converged 'rejected' (strat=off), the
+    // loop short-circuits per request_assignment / cast_review_vote
+    // refusing on a non-staged proposal. The honest pool's role here
+    // is to drive convergence to 'accepted' when the cluster signal
+    // has closed Dave; without enough honest reviewers, the proposal
+    // stalls at 'staged'.
+    for (const honest of honestIdentities) {
+      const post = server.store.proposals.get(contestedId);
+      if (post?.status !== 'staged') break;
+      try {
+        const honestAssignment = await server.tools.requestAssignment(
+          { identity_id: honest.id },
+          { cause_id: cause.id },
+        );
+        if (
+          honestAssignment.task.kind !== 'review' ||
+          honestAssignment.task.proposal_id !== contestedId
+        ) {
+          continue;
+        }
+        await server.tools.castReviewVote(
+          { identity_id: honest.id },
+          {
+            proposal_id: contestedId,
+            decision: 'accept',
+            rationale: 'consistent with prevailing evidence',
+            assignment_id: honestAssignment.assignment_id,
+          },
+        );
+      } catch (err) {
+        if (err instanceof ServerError && err.code === 'not_found') {
+          // Honest reviewer also gated — the honest pool's stratum
+          // is singleton by construction (no shared history with
+          // anyone), so this should not fire. If it does, the cube's
+          // assumption that honest reviewers are routable to contested
+          // has been violated.
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    const final = server.store.proposals.get(contestedId);
+    if (!final) throw new Error('contested proposal not found');
+    return {
+      attack_succeeded: final.status === 'rejected',
+      stalled: final.status === 'staged',
+      contested_status: final.status,
+      dave_voted: daveVoted,
+    };
+  }
+
+  interface PoolSizeSweepCell {
+    name: string;
+    honest_pool_size: number;
+    stratification_enabled: boolean;
+    expected_attack_succeeded: boolean;
+    expected_stalled: boolean;
+    expected_dave_voted: boolean;
+  }
+  const poolSizeSweepCells: PoolSizeSweepCell[] = [
+    // strat=off row: cluster signal disabled, Dave votes alongside
+    // Carol, coalition reaches votes_to_reject=2 before honest pool
+    // can vote. ASR=100% across all H — pool size alone is not a
+    // defense at coalition-first ordering.
+    {
+      name: 'H=1, strat=off (coalition-first captures; pool size alone insufficient)',
+      honest_pool_size: 1,
+      stratification_enabled: false,
+      expected_attack_succeeded: true,
+      expected_stalled: false,
+      expected_dave_voted: true,
+    },
+    {
+      name: 'H=2, strat=off (coalition-first captures; honest pool comes too late)',
+      honest_pool_size: 2,
+      stratification_enabled: false,
+      expected_attack_succeeded: true,
+      expected_stalled: false,
+      expected_dave_voted: true,
+    },
+    {
+      name: 'H=3, strat=off (coalition-first captures; honest pool comes too late)',
+      honest_pool_size: 3,
+      stratification_enabled: false,
+      expected_attack_succeeded: true,
+      expected_stalled: false,
+      expected_dave_voted: true,
+    },
+    // strat=on row: cluster signal closes Dave (cross-stratum gate);
+    // closure quality depends on H. H=1 stalls (1 accept + 1 reject,
+    // below either threshold); H ≥ 2 = votes_to_accept converges
+    // 'accepted'.
+    {
+      name: 'H=1, strat=on (cluster closes Dave; honest pool below votes_to_accept, stalls staged)',
+      honest_pool_size: 1,
+      stratification_enabled: true,
+      expected_attack_succeeded: false,
+      expected_stalled: true,
+      expected_dave_voted: false,
+    },
+    {
+      name: 'H=2, strat=on (cluster closes Dave; honest pool reaches votes_to_accept, full closure)',
+      honest_pool_size: 2,
+      stratification_enabled: true,
+      expected_attack_succeeded: false,
+      expected_stalled: false,
+      expected_dave_voted: false,
+    },
+    {
+      name: 'H=3, strat=on (saturation: H ≥ votes_to_accept, full closure stable)',
+      honest_pool_size: 3,
+      stratification_enabled: true,
+      expected_attack_succeeded: false,
+      expected_stalled: false,
+      expected_dave_voted: false,
+    },
+  ];
+  it.each(poolSizeSweepCells)('pool-size × stratification sweep: $name', async ({
+    honest_pool_size,
+    stratification_enabled,
+    expected_attack_succeeded,
+    expected_stalled,
+    expected_dave_voted,
+  }) => {
+    const result = await runStratifiedPoolSizeScenario({
+      honest_pool_size,
+      stratification_enabled,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.stalled).toBe(expected_stalled);
+    // dave_voted invariant: at strat=off Dave votes; at strat=on
+    // Dave is gated by the cross-stratum draw rule. A future change
+    // that disabled or weakened the cluster signal would surface
+    // here before downstream ASR drift.
+    expect(result.dave_voted).toBe(expected_dave_voted);
+  });
+
+  it('pool-size × stratification sweep cube: ASR + stall-rate aggregate by stratification', () => {
+    // Aggregate per the two-metric template cube #5 introduced: ASR
+    // (capture rate) + stall_rate (staged-instead-of-converged
+    // rate). The two-metric shape distinguishes "defense closes the
+    // attack" from "defense closes by stalling honest review" — at
+    // strat=on H=1 the cluster signal closes the *capture* but the
+    // honest pool can't drive the *convergence*, so the stalled
+    // outcome surfaces as a closure-quality measurement rather than
+    // a closure-success measurement.
+    interface PoolSizeAsrCell {
+      stratification_enabled: boolean;
+      total: number;
+      attacks_succeeded: number;
+      stalled: number;
+    }
+    const groupedByStrat = new Map<boolean, PoolSizeAsrCell>();
+    for (const cell of poolSizeSweepCells) {
+      const g = groupedByStrat.get(cell.stratification_enabled) ?? {
+        stratification_enabled: cell.stratification_enabled,
+        total: 0,
+        attacks_succeeded: 0,
+        stalled: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      if (cell.expected_stalled) g.stalled += 1;
+      groupedByStrat.set(cell.stratification_enabled, g);
+    }
+    const asrByStrat = (s: boolean): number => {
+      const g = groupedByStrat.get(s);
+      if (!g) throw new Error(`missing strat=${s}`);
+      return g.attacks_succeeded / g.total;
+    };
+    const stallByStrat = (s: boolean): number => {
+      const g = groupedByStrat.get(s);
+      if (!g) throw new Error(`missing strat=${s}`);
+      return g.stalled / g.total;
+    };
+
+    // strat=off: ASR=100% across all 3 pool-size cells, stall_rate=
+    // 0%. The regression handle on coalition-first capture: pool
+    // size alone is not a defense at fixed ordering, even at H=3
+    // where the K+1-honest pool would in principle outvote the
+    // coalition under interleaved ordering. The K+1-honest dynamic
+    // PRD §Reviewer assignment names is order-dependent and does
+    // not apply to the coalition-first attack pattern this cube
+    // measures.
+    expect(asrByStrat(false)).toBe(1);
+    expect(stallByStrat(false)).toBe(0);
+    // strat=on: ASR=0% across all 3 pool-size cells, stall_rate=33%
+    // (H=1 stalls; H ≥ 2 closes). The cluster signal never captures
+    // — the closure is *capture-resistant* at any pool size, which
+    // is the load-bearing PRD §Reviewer assignment commitment "not
+    // capturable by the pool-fits-the-coalition dynamic." The
+    // stall_rate reads the *closure-quality* axis: at H=1 the
+    // proposal stalls (slower-to-close, the divergence-closure sweep
+    // archives it as `unresolved-archived`); at H ≥ 2 the honest
+    // pool reaches votes_to_accept and the proposal converges.
+    expect(asrByStrat(true)).toBe(0);
+    expect(stallByStrat(true)).toBeCloseTo(1 / 3);
+
+    // Aggregate by H reads the pool-size axis directly: each H value
+    // averages over (strat=off captures, strat=on stalls or closes).
+    interface PoolSizeAsrByHCell {
+      honest_pool_size: number;
+      total: number;
+      attacks_succeeded: number;
+      stalled: number;
+    }
+    const groupedByH = new Map<number, PoolSizeAsrByHCell>();
+    for (const cell of poolSizeSweepCells) {
+      const g = groupedByH.get(cell.honest_pool_size) ?? {
+        honest_pool_size: cell.honest_pool_size,
+        total: 0,
+        attacks_succeeded: 0,
+        stalled: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      if (cell.expected_stalled) g.stalled += 1;
+      groupedByH.set(cell.honest_pool_size, g);
+    }
+    const asrByH = (h: number): number => {
+      const g = groupedByH.get(h);
+      if (!g) throw new Error(`missing H=${h}`);
+      return g.attacks_succeeded / g.total;
+    };
+    const stallByH = (h: number): number => {
+      const g = groupedByH.get(h);
+      if (!g) throw new Error(`missing H=${h}`);
+      return g.stalled / g.total;
+    };
+
+    // H=1: ASR=50% (strat=off captures), stall_rate=50% (strat=on
+    // stalls). The small-pool cell where the closure quality is
+    // *partial*.
+    expect(asrByH(1)).toBe(0.5);
+    expect(stallByH(1)).toBe(0.5);
+    // H=2: ASR=50%, stall_rate=0%. The threshold H = votes_to_
+    // accept where strat=on closes fully ('accepted'); strat=off
+    // still captures.
+    expect(asrByH(2)).toBe(0.5);
+    expect(stallByH(2)).toBe(0);
+    // H=3: same as H=2 — saturation pin. A future change that
+    // raised votes_to_accept implicitly (or otherwise broke the
+    // saturation property) would land here before downstream ASR
+    // drift.
+    expect(asrByH(3)).toBe(0.5);
+    expect(stallByH(3)).toBe(0);
+
+    // Coverage invariants: every strat cell has 3 H cells, every H
+    // cell has 2 strat cells. Same shape cubes #6-#10 carry; a
+    // future cell expansion that breaks the symmetry trips the
+    // assertion and forces the aggregate to be re-keyed rather than
+    // silently averaging over uneven groups.
+    for (const cell of groupedByStrat.values()) {
+      expect(cell.total).toBe(3);
+    }
+    for (const cell of groupedByH.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
