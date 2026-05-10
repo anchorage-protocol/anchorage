@@ -8423,6 +8423,377 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // Seventh parameter sweep cube: the multi-epoch extension of cube
+  // #6, joining the `AdversaryBudget` primitive with an epoch-
+  // distribution sweep on the same one-shot suppression attack
+  // pattern. PRD §Identity bullet 2 names the issuance cap as the
+  // *time* primitive on the cost-multiplier — "an adversary affording
+  // K sybils still cannot mint them all in one epoch" — and cube #6
+  // measured the closure on the one-shot (epoch-0-only) case where
+  // the cap fires as a binary stop on K. Cube #7 sweeps the epoch
+  // axis to read what the cap actually does when an attack persists
+  // across epochs: it shapes K's *distribution* across epochs rather
+  // than capping K outright. K_eff = min(floor(B/T), N × E) — the
+  // budget B caps the total identities the operator can ever afford,
+  // the issuance cap N caps per-epoch mints, and the epoch count E
+  // multiplies N into the attack window. The attack pattern is the
+  // same one-shot contributor-initiated suppression cube #6 measured
+  // (K* = 2 sybils race two honest accepts on a contested excerpt),
+  // but with sybils spread across epochs rather than packed into
+  // epoch 0.
+  //
+  // Eight cells over (budget B ∈ {1, 4}, epochs E ∈ {1, 2}, issuance
+  // cap N ∈ {1, 2}) drive `it.each`. The binding-cost threshold T=1
+  // is held — cube #6 already measured the cost-multiplier axis on
+  // the (T=2, N=2) cell, and pinning T=1 here isolates the time
+  // primitive from the cost-multiplier so the read on (E, N) is not
+  // confounded by T's contribution to K_eff. The aggregate groups
+  // cells by (E, N) and reads ASR per group across the budget axis:
+  //
+  //   (E=1, N=1) at 0% — cube #6's baseline at the minimum-cap
+  //     defense config: the issuance cap closes the one-shot attack
+  //     at any budget.
+  //   (E=1, N=2) at 50% — cube #6's gates-inert reading recovered:
+  //     the one-shot attack lands at B=4 (K_eff=2) but budget closes
+  //     it at B=1 (K_eff=1).
+  //   (E=2, N=1) at 50% — *the multi-epoch lift on the time
+  //     primitive*. At B=4 the operator spreads K=2 across two
+  //     epochs (one mint each) and the attack lands; the issuance
+  //     cap as time primitive *delays* but does not *prevent* the
+  //     multi-epoch suppression. At B=1 the budget axis still binds
+  //     (one sybil affordable, period), closing the attack
+  //     independent of how many epochs the operator commits to.
+  //   (E=2, N=2) at 50% — issuance cap is non-binding (K_eff
+  //     saturates at K*=2 in epoch 0 alone); only the budget axis
+  //     constrains, same as (E=1, N=2).
+  //
+  // The headline reading is the (E=1, N=1) → (E=2, N=1) lift from
+  // 0% to 50%. Cube #6's (T=1, N=1) defense config closed the attack
+  // at 0% across both budget cells; cube #7 reads what *that same
+  // defense config* does when the attack persists for two epochs:
+  // it lifts to 50%. The remaining 50% is what the *budget* axis
+  // closes (B=1 cannot afford a second sybil at any T), and that
+  // bound is invariant to epoch count. The cube reads three load-
+  // bearing claims off the same arithmetic: (a) the issuance cap is
+  // a time primitive, not a hard K cap — its closure is bounded by
+  // the attack window E; (b) the budget B is a hard K cap at fixed
+  // T, invariant to E; (c) the cap composition K_eff = min(floor(B/T),
+  // N × E) reads the same numbers off the runner's loop structure
+  // that the harness fiction operationalizes.
+  //
+  // The cluster signal is disabled for the same reason as cube #6:
+  // the per-sybil-acts-once attack has no shared history to cluster
+  // on, so the cluster signal is structurally inert here regardless
+  // of config. Honest reviewers do not bootstrap demonstrated rep
+  // and the assignment-time gates default to inert — the attack is
+  // contributor-initiated, which bypasses the assignment surface by
+  // construction. Scope is the identity layer composed across the
+  // time axis. The "buys time for behavior-based defenses" framing
+  // PRD §Identity commits is what makes the time primitive
+  // *operationally* load-bearing in production; cube #7 reads the
+  // arithmetic of the time-buying without behavior defenses, leaving
+  // the joined cluster-signal-with-budget-axis cube as a follow-up.
+  async function runMultiEpochBudgetSybilSuppressionScenario(params: {
+    budget: number;
+    attestation_threshold: number;
+    issuance_cap_per_epoch: number;
+    epochs: number;
+  }): Promise<{
+    attack_succeeded: boolean;
+    sybils_minted: number;
+    contested_status: string;
+  }> {
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+    ]);
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('mebs'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        min_attestation_level: params.attestation_threshold,
+        // Cluster signal off — same rationale as cube #6's runner:
+        // the per-sybil-acts-once attack has no shared history, so
+        // the cluster signal is structurally inert regardless of
+        // config; explicit disable keeps the runner's scope honest.
+        stratification_enabled: false,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({
+      display_name: 'alice',
+      attestation_level: params.attestation_threshold,
+    });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const anchorProp = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'paper 1',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    server.curator.acceptProposal(anchorProp.proposal_id);
+    const anchorNode = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchorNode) throw new Error('anchor not materialized');
+    const contestedExcerpt = await server.tools.proposeExcerpt(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchorNode.id,
+        content: 'treatment X works for stage III',
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      },
+    );
+    const contestedId = contestedExcerpt.proposal_id;
+
+    // Adversary phase: spread up to K* = 2 sybil mints across E
+    // epochs. Within each epoch the inner loop mints until issuance
+    // cap fires (then advance to next epoch) or budget exhausts
+    // (then stop entirely). K_eff is bounded above by both
+    // floor(B/T) (budget axis) and N × E (issuance-cap × epoch
+    // axis); whichever binds first determines the attack outcome.
+    const SUPPRESSION_THRESHOLD = 2;
+    const budget = new AdversaryBudget({
+      initial: params.budget,
+      attestation_cost: params.attestation_threshold,
+      issuance_cap_per_epoch: params.issuance_cap_per_epoch,
+    });
+    let sybilsMinted = 0;
+    outer: for (let e = 0; e < params.epochs; e++) {
+      while (true) {
+        const mintResult = budget.tryMint(e);
+        if (!mintResult.ok) {
+          if (mintResult.reason === 'budget') break outer;
+          // issuance_cap: this epoch is exhausted; advance to the
+          // next. The budget arithmetic mirrors how a real IdP
+          // refuses upstream of any cost being charged — budget is
+          // unchanged on `issuance_cap` refusals.
+          break;
+        }
+        const sybil = server.bootstrap.mintIdentity({
+          display_name: `sybil-e${e}-${sybilsMinted}`,
+          attestation_level: params.attestation_threshold,
+        });
+        sybilsMinted += 1;
+        await server.tools.castReviewVote(
+          { identity_id: sybil.id },
+          {
+            proposal_id: contestedId,
+            decision: 'reject',
+            rationale: 'underpowered, methodological concerns',
+          },
+        );
+        const post = server.store.proposals.get(contestedId);
+        if (post?.status !== 'staged') break outer;
+        if (sybilsMinted >= SUPPRESSION_THRESHOLD) break outer;
+      }
+    }
+
+    // Honest phase: 2 honest reviewers cast accept on the contested
+    // target. If sybilsMinted < K* the proposal is still staged and
+    // the second honest accept converges it 'accepted'; if sybils
+    // already converged it 'rejected' the loop short-circuits.
+    for (const name of ['erin', 'frank']) {
+      const post = server.store.proposals.get(contestedId);
+      if (post?.status !== 'staged') break;
+      const honest = server.bootstrap.mintIdentity({
+        display_name: name,
+        attestation_level: params.attestation_threshold,
+      });
+      await server.tools.castReviewVote(
+        { identity_id: honest.id },
+        {
+          proposal_id: contestedId,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+    }
+
+    const final = server.store.proposals.get(contestedId);
+    if (!final) throw new Error('contested proposal not found');
+    return {
+      attack_succeeded: final.status === 'rejected',
+      sybils_minted: sybilsMinted,
+      contested_status: final.status,
+    };
+  }
+
+  interface MultiEpochBudgetSweepCell {
+    name: string;
+    budget: number;
+    attestation_threshold: number;
+    issuance_cap_per_epoch: number;
+    epochs: number;
+    expected_attack_succeeded: boolean;
+  }
+  const multiEpochBudgetSweepCells: MultiEpochBudgetSweepCell[] = [
+    // T=1 throughout; K_eff = min(floor(B/1), N × E); attack lands
+    // iff K_eff >= K* = 2.
+    {
+      name: 'B=1, E=1, N=1 (budget caps K_eff=1)',
+      budget: 1,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 1,
+      epochs: 1,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'B=1, E=1, N=2 (budget binds; issuance cap headroom unused)',
+      budget: 1,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 2,
+      epochs: 1,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'B=1, E=2, N=1 (budget binds across epochs — invariant to epoch count)',
+      budget: 1,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 1,
+      epochs: 2,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'B=1, E=2, N=2 (budget binds; both N × E and B/T headroom unused)',
+      budget: 1,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 2,
+      epochs: 2,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'B=4, E=1, N=1 (issuance cap caps K_eff=1 in one shot — cube #6 baseline)',
+      budget: 4,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 1,
+      epochs: 1,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'B=4, E=1, N=2 (gates inert at K*-affording budget — cube #6 baseline)',
+      budget: 4,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 2,
+      epochs: 1,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'B=4, E=2, N=1 (multi-epoch lift: K_eff=2 across two epochs at fixed N=1)',
+      budget: 4,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 1,
+      epochs: 2,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'B=4, E=2, N=2 (issuance cap saturates K_eff at K*=2 in epoch 0 alone)',
+      budget: 4,
+      attestation_threshold: 1,
+      issuance_cap_per_epoch: 2,
+      epochs: 2,
+      expected_attack_succeeded: true,
+    },
+  ];
+  it.each(multiEpochBudgetSweepCells)('multi-epoch budget sweep: $name', async ({
+    budget,
+    attestation_threshold,
+    issuance_cap_per_epoch,
+    epochs,
+    expected_attack_succeeded,
+  }) => {
+    const result = await runMultiEpochBudgetSybilSuppressionScenario({
+      budget,
+      attestation_threshold,
+      issuance_cap_per_epoch,
+      epochs,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+  });
+
+  it('multi-epoch budget sweep cube: ASR aggregates by (E, N) and reads issuance cap as time primitive', () => {
+    // Aggregate per the cube template (PRD §Adversary testbed,
+    // Architecture, "Parameter sweeps"): group cells by (E, N), read
+    // ASR per group across the budget axis. The headline lift —
+    // (E=1, N=1) at 0% → (E=2, N=1) at 50% — is what reads the
+    // issuance cap as a *time* primitive: the cap closes a one-shot
+    // attack outright at N=1, but a multi-epoch attack lifts K_eff to
+    // 2 across two epochs at the same defense config, and the only
+    // remaining closure on (E=2, N=1) is the budget axis B=1.
+    interface MultiEpochAsrCell {
+      epochs: number;
+      issuance_cap_per_epoch: number;
+      total: number;
+      attacks_succeeded: number;
+    }
+    const grouped = new Map<string, MultiEpochAsrCell>();
+    for (const cell of multiEpochBudgetSweepCells) {
+      const key = `${cell.epochs}|${cell.issuance_cap_per_epoch}`;
+      const g = grouped.get(key) ?? {
+        epochs: cell.epochs,
+        issuance_cap_per_epoch: cell.issuance_cap_per_epoch,
+        total: 0,
+        attacks_succeeded: 0,
+      };
+      g.total += 1;
+      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+      grouped.set(key, g);
+    }
+    const asr = (key: string): number => {
+      const g = grouped.get(key);
+      if (!g) throw new Error(`missing defense config: ${key}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // (E=1, N=1): ASR=0% — cube #6's baseline at the minimum-cap
+    // defense config recovered. The issuance cap closes the one-shot
+    // attack at any budget; K_eff caps at 1 in a single epoch.
+    expect(asr('1|1')).toBe(0);
+    // (E=1, N=2): ASR=50% — gates inert at the K*-affording budget.
+    // K_eff=2 at B=4; budget binds at B=1. Same reading as cube #6's
+    // (T=1, N=2) cell (here at 50% rather than 100% because cube #7
+    // sweeps a smaller B-axis where B=1 binds, while cube #6 swept
+    // B ∈ {2, 4} both above the K*-affording threshold at T=1).
+    expect(asr('1|2')).toBe(0.5);
+    // (E=2, N=1): ASR=50% — *the multi-epoch lift on the time
+    // primitive*. Cube #6 at the same (T=1, N=1) defense config read
+    // 0% across both budget cells; here, extending the attack window
+    // to E=2 lifts K_eff to 2 at B=4 (one mint per epoch), and the
+    // attack lands. B=1 still closes by the budget axis (one sybil
+    // affordable, period — invariant to epoch count). The cap
+    // *delays* the attack by one epoch but does not *prevent* it;
+    // PRD §Identity's "buys behavior-based defenses the accumulated
+    // history they need to fire" framing is what makes the delay
+    // operationally load-bearing — without behavior defenses fired
+    // in the gap, the time primitive only shapes K's distribution.
+    expect(asr('2|1')).toBe(0.5);
+    // (E=2, N=2): ASR=50% — issuance cap is non-binding (saturates
+    // K_eff at K*=2 in epoch 0 alone, second epoch unused); only the
+    // budget axis constrains. Same shape as (E=1, N=2): the multi-
+    // epoch dimension adds nothing once N >= K* in a single epoch.
+    expect(asr('2|2')).toBe(0.5);
+
+    // Coverage invariant: every (E, N) defense config in the cube
+    // has both budget cells. A future cell expansion that breaks
+    // this symmetry trips the assertion and forces the aggregate to
+    // be re-keyed rather than silently averaging over uneven groups.
+    for (const cell of grouped.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
