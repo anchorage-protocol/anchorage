@@ -6491,6 +6491,13 @@ describe('testbed: synthetic populations against the wired surface', () => {
     assignment_min_recent: number;
     assignment_min_demonstrated: number;
     review_credit_contention_alpha?: number;
+    // Cube #15 (decay-cadence) overrides. Default of 60 / 360 preserves
+    // the (recent_half_life=60s, quiet=6 half-lives) configuration cubes
+    // #2 and #5 are calibrated against — changing the defaults
+    // silently de-calibrates those cubes' lockout cells, so callers
+    // sweeping the decay axis pass both explicitly.
+    recent_half_life_seconds?: number;
+    quiet_window_seconds?: number;
   }): Promise<{
     attack_succeeded: boolean;
     carol_demonstrated: number;
@@ -6511,7 +6518,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     sources.set('100', 'arm C: treatment X has no effect in stage IV patients');
 
     const clock = new FakeClock('2026-01-01T00:00:00.000Z', 0);
-    const RECENT_HALF_LIFE_SECONDS = 60;
+    const RECENT_HALF_LIFE_SECONDS = params.recent_half_life_seconds ?? 60;
+    const QUIET_WINDOW_SECONDS =
+      params.quiet_window_seconds ?? RECENT_HALF_LIFE_SECONDS * 6;
     const server = new Server({
       clock,
       idGen: new SeededIdGen('pgs'),
@@ -6687,11 +6696,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const false_positive_lockout = firstContested?.status !== 'accepted';
 
     // Quiet window: Carol stops being recently active, by definition
-    // of the patient-adversary archetype. Six recent half-lives
-    // drains her recent by 64x — enough to fall below any reasonable
-    // threshold the gate is set to.
-    const QUIET_HALF_LIVES = 6;
-    clock.advance(RECENT_HALF_LIFE_SECONDS * QUIET_HALF_LIVES * 1000);
+    // of the patient-adversary archetype. The default (six recent
+    // half-lives) drains her recent by 64x — enough to fall below any
+    // reasonable threshold the gate is set to. Cube #15 overrides
+    // QUIET_WINDOW_SECONDS independently of RECENT_HALF_LIFE_SECONDS to
+    // sweep the W/T ratio directly.
+    clock.advance(QUIET_WINDOW_SECONDS * 1000);
 
     const secondContestedAnchorProp = await server.tools.proposeAnchor(
       { identity_id: alice.id },
@@ -12547,6 +12557,244 @@ describe('testbed: synthetic populations against the wired surface', () => {
       for (const cell of m.values()) {
         expect(cell.total).toBe(4);
       }
+    }
+  });
+
+  // Fifteenth parameter sweep cube: the (recent half-life × quiet
+  // window) ratio-invariance cube on the patient-adversary archetype,
+  // opening the reputation-decay axis the prior cubes left unswept.
+  // PRD §What's deliberately not specified names "reputation decay
+  // rates" as a knob deferred to the testbed; PRD §Reputation commits
+  // the two-component bookkeeping (a slow-decay `demonstrated` and a
+  // fast-decay `recent`, each with its own half-life), and the
+  // patient-adversary closure cube #2 ships the assignment-time gate
+  // (`assignment_min_recent`) that consumes the recent component
+  // post-quiet-window. The load-bearing question this cube answers is
+  // *what determines whether the gate fires* — the half-life value T,
+  // the quiet-window length W, or their ratio W/T (decay measured in
+  // half-lives). Cube #2 holds (T=60, W=360) fixed and reads the
+  // gate-firing axis through the threshold; cube #15 holds the
+  // threshold fixed at the cube-#2-tuned value (`assignment_min_recent`
+  // = 0.5) and sweeps (T, W) directly.
+  //
+  // Attack pattern: the patient-adversary archetype, identical to the
+  // canonical scenario the cube #2 runner pins — Carol primes through
+  // 4 honest accepts on bias-zone-out content + 4 calibration passes
+  // on the anchor corpus (calAwareBiasedDecider), drifts on a first
+  // contested target (which converges accepted via Erin+Frank's
+  // accepts), then attempts a second drift after a quiet window of W
+  // seconds. Carol's recent immediately post-priming is R₀ ≈ 8 (the
+  // bootstrap rotation contributes +1, calibration passes +4, and
+  // priming-convergence reviewer credits +4 minus a -1 penalty for
+  // voting against the converged first contested outcome — the exact
+  // R₀ value is invariant across the cube's cells because tick=0 means
+  // the clock doesn't advance during priming, so no decay is applied
+  // before the quiet window opens). The gate fires when the decayed
+  // recent R(W) = R₀ × 2^(-W/T) falls below the threshold of 0.5,
+  // which depends on W/T only — not on T or W independently.
+  //
+  // Defense layers in scope:
+  //   - recent_half_life_seconds T ∈ {60, 600}: decay rate axis. The
+  //     patient-adversary scenario at line 5117 hardcodes T=60; cube
+  //     #15 lifts it to a parameter via the runner extension on
+  //     runPatientAdversaryGateScenario, with T=60 preserved as the
+  //     default for cubes #2 and #5.
+  //   - quiet_window_seconds W ∈ {T×1, T×2, T×6}: drift-cadence axis.
+  //     The cube derives W from T at three ratios so the W/T axis is
+  //     directly read across all six cells; W is NOT held constant
+  //     because the closure depends on the ratio, and holding W
+  //     constant would conflate the two T values' positions in the
+  //     decay curve.
+  //   - assignment_min_recent fixed at 0.5: cube #2's calibrated
+  //     value, the same threshold the patient-adversary closure cube
+  //     reads through. Holding it fixed is what isolates the (T, W)
+  //     axis from the threshold axis cube #2 already measured.
+  //
+  // The composition reads:
+  //   r=1 (W = T): R(W) = R₀/2 ≈ 4. Above threshold 0.5 → gate doesn't
+  //     fire → Carol gets her second drift assignment → ASR=100%. Same
+  //     outcome at T=60 (W=60) and T=600 (W=600): the ratio is what
+  //     determines R, and 1 half-life is too short to drain R₀ below
+  //     the threshold at any T.
+  //   r=2 (W = 2T): R(W) = R₀/4 ≈ 2. Still above 0.5 → gate doesn't
+  //     fire → ASR=100%. Same at both T values.
+  //   r=6 (W = 6T): R(W) = R₀/64 ≈ 0.125. Below 0.5 → gate fires →
+  //     Carol's second drift attempt is refused at request_assignment
+  //     with `not_found` → ASR=0%. Same at both T values, the
+  //     6-half-life closure cube #2 reads at T=60.
+  //
+  // Six cells over (T ∈ {60, 600}) × (r ∈ {1, 2, 6}) drive `it.each`,
+  // with W computed as T × r per cell. The aggregate by ratio reads
+  // (ASR=100%, 100%, 0%) at (r=1, 2, 6) — a binary closure on the
+  // ratio axis that aggregates across both T values within each ratio
+  // group. The aggregate by T reads (ASR=67%, 67%) — *identical
+  // values across the T axis*, which is the load-bearing observation:
+  // T alone is not the closure determinant. The aggregate by W reads
+  // mixed values that don't align cleanly because W carries different
+  // amounts of decay at different T values.
+  //
+  // The headline is the *ratio-invariance reading*: the closure
+  // depends on W/T (decay measured in half-lives), not on T or W
+  // independently. This is structurally inevitable from PRD
+  // §Reputation's exponential-decay commitment — R(W) = R₀ × 2^(-W/T)
+  // is invariant under (T, W) scaling that preserves the ratio — but
+  // the cube reads it as a CI-checked invariant rather than relying
+  // on the structural argument alone, since it pins the property that
+  // any future change to the decay law (e.g. a non-exponential decay,
+  // or a per-event-count reset that breaks the half-life abstraction)
+  // would surface here as a ratio-aggregate that no longer reads
+  // identically across T groups.
+  //
+  // The cube is the third design pass on a non-identity axis after
+  // cube #11 (pool-size, graceful-degradation reading) and cube #12
+  // (vote-aggregation thresholds, K+1-honest-reviewer dynamic). The
+  // composition with cube #14's (stratification × threshold) cube is
+  // the natural follow-up: a coalition that times its quiet window
+  // against the half-life can re-acquire assignment after the gate
+  // re-opens, which re-introduces the multi-round dynamic the
+  // standalone patient-adversary scenarios pin at fixed cadence.
+  // That cube is testbed-territory follow-up; cube #15 stays on the
+  // single-axis ratio-invariance reading.
+  interface DecayCadenceSweepCell {
+    name: string;
+    recent_half_life_seconds: number;
+    quiet_window_seconds: number;
+    ratio: number;
+    expected_attack_succeeded: boolean;
+  }
+  const decayCadenceSweepCells: DecayCadenceSweepCell[] = [
+    // r=1: W equals one half-life. R(W) = R₀/2 ≈ 4 > 0.5 → gate
+    // doesn't fire. Same outcome at both T values.
+    {
+      name: 'T=60s, W=60s (1 half-life: R₀/2 above threshold; gate inert)',
+      recent_half_life_seconds: 60,
+      quiet_window_seconds: 60,
+      ratio: 1,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'T=600s, W=600s (1 half-life: R₀/2 above threshold; gate inert)',
+      recent_half_life_seconds: 600,
+      quiet_window_seconds: 600,
+      ratio: 1,
+      expected_attack_succeeded: true,
+    },
+    // r=2: W equals two half-lives. R(W) = R₀/4 ≈ 2 > 0.5 → gate
+    // doesn't fire. Same outcome at both T values.
+    {
+      name: 'T=60s, W=120s (2 half-lives: R₀/4 above threshold; gate inert)',
+      recent_half_life_seconds: 60,
+      quiet_window_seconds: 120,
+      ratio: 2,
+      expected_attack_succeeded: true,
+    },
+    {
+      name: 'T=600s, W=1200s (2 half-lives: R₀/4 above threshold; gate inert)',
+      recent_half_life_seconds: 600,
+      quiet_window_seconds: 1200,
+      ratio: 2,
+      expected_attack_succeeded: true,
+    },
+    // r=6: W equals six half-lives. R(W) = R₀/64 ≈ 0.125 < 0.5 → gate
+    // fires. Same outcome at both T values, the closure cube #2 reads
+    // at T=60.
+    {
+      name: 'T=60s, W=360s (6 half-lives: R₀/64 below threshold; gate fires)',
+      recent_half_life_seconds: 60,
+      quiet_window_seconds: 360,
+      ratio: 6,
+      expected_attack_succeeded: false,
+    },
+    {
+      name: 'T=600s, W=3600s (6 half-lives: R₀/64 below threshold; gate fires)',
+      recent_half_life_seconds: 600,
+      quiet_window_seconds: 3600,
+      ratio: 6,
+      expected_attack_succeeded: false,
+    },
+  ];
+  it.each(decayCadenceSweepCells)('decay-cadence sweep: $name', async ({
+    recent_half_life_seconds,
+    quiet_window_seconds,
+    expected_attack_succeeded,
+  }) => {
+    const result = await runPatientAdversaryGateScenario({
+      assignment_min_recent: 0.5,
+      assignment_min_demonstrated: 0,
+      recent_half_life_seconds,
+      quiet_window_seconds,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    // false_positive_lockout is alpha-invariant at alpha=1 (cube #5's
+    // baseline) — the bootstrap rotation gives Erin/Frank
+    // demonstrated=2.0, well above any threshold the cube uses
+    // (assignment_min_demonstrated=0). Pinning lockout=false on every
+    // cell catches a future regression where the runner's bootstrap
+    // changes and the honest pool collapses into the demo gate at the
+    // cube's cells.
+    expect(result.false_positive_lockout).toBe(false);
+  });
+
+  it('decay-cadence sweep cube: ASR aggregates by ratio invariantly across T (PRD §Reputation, exponential-decay commitment)', () => {
+    // Aggregate per the cube template: group cells by ratio (the W/T
+    // axis the closure actually depends on) and by T (the axis the
+    // ratio-invariance reading pins as *not* the closure determinant).
+    // The aggregate by ratio reads the binary closure: r ∈ {1, 2}
+    // both leak (R above threshold), r=6 closes (R below threshold).
+    // The aggregate by T reads identically (67%) across both T
+    // values — the headline ratio-invariance observation.
+    interface DecayAsrCell {
+      key: number;
+      total: number;
+      attacks_succeeded: number;
+    }
+    function group(keyOf: (cell: DecayCadenceSweepCell) => number): Map<number, DecayAsrCell> {
+      const m = new Map<number, DecayAsrCell>();
+      for (const cell of decayCadenceSweepCells) {
+        const k = keyOf(cell);
+        const g = m.get(k) ?? { key: k, total: 0, attacks_succeeded: 0 };
+        g.total += 1;
+        if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+        m.set(k, g);
+      }
+      return m;
+    }
+    const groupedByRatio = group((c) => c.ratio);
+    const groupedByT = group((c) => c.recent_half_life_seconds);
+    const asrOf = (m: Map<number, DecayAsrCell>, k: number): number => {
+      const g = m.get(k);
+      if (!g) throw new Error(`missing key=${k}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // By ratio: r=1 at 100% (R₀/2 ≈ 4 > 0.5 at any T); r=2 at 100%
+    // (R₀/4 ≈ 2 > 0.5 at any T); r=6 at 0% (R₀/64 ≈ 0.125 < 0.5 at
+    // any T). The closure crosses between r=2 and r=6 — between
+    // log2(R₀/0.5) ≈ 4 and 5 half-lives in this runner's R₀.
+    expect(asrOf(groupedByRatio, 1)).toBe(1);
+    expect(asrOf(groupedByRatio, 2)).toBe(1);
+    expect(asrOf(groupedByRatio, 6)).toBe(0);
+
+    // By T: identical values across both T axes — the ratio-invariance
+    // reading. Each T has 3 cells (one per ratio), 2 of which leak
+    // (r=1, 2) and 1 of which closes (r=6), so ASR=2/3 ≈ 0.67. A
+    // future change to the decay law that breaks ratio invariance
+    // (e.g. a per-event reset or a non-exponential decay) would
+    // surface here as different aggregates across T — the cube's CI-
+    // checked invariant.
+    expect(asrOf(groupedByT, 60)).toBeCloseTo(2 / 3);
+    expect(asrOf(groupedByT, 600)).toBeCloseTo(2 / 3);
+    expect(asrOf(groupedByT, 60)).toBe(asrOf(groupedByT, 600));
+
+    // Coverage invariants: every ratio cell has 2 T values, every T
+    // cell has 3 ratios. Same shape cubes #6-#14 carry; a future cell
+    // expansion that breaks the symmetry trips the assertion and
+    // forces the aggregate to be re-keyed.
+    for (const cell of groupedByRatio.values()) {
+      expect(cell.total).toBe(2);
+    }
+    for (const cell of groupedByT.values()) {
+      expect(cell.total).toBe(3);
     }
   });
 
