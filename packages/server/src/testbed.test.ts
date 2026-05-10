@@ -1885,12 +1885,15 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // exactly as designed against the coalition the system has
     // observed (Carol+Dave). The seam is that adding identities to
     // the coalition costs the operator nothing in v0 — PRD
-    // §Identity names identity-binding cost, rate-limited issuance,
-    // and global anti-abuse signals as the load-bearing defenses,
-    // and none of those are wired. The defense lives at a layer
-    // below the testbed surface; this scenario is the regression
-    // handle that says behavior-dependent defenses cannot close it
-    // alone.
+    // §Identity now specs four sybil-resistance layers (binding
+    // cost, issuance-frequency cap, per-identity rate-limit
+    // accounting, cross-cause identity-clustering) composing
+    // multiplicatively against an adversary budget per the
+    // §Adversary testbed adversary-budget model, and none of those
+    // are wired in v0; this scenario is the regression handle that
+    // says behavior-dependent defenses cannot close the seam alone
+    // and the four identity layers are what closes it (see ROADMAP
+    // §Status for the slice sequence).
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
       ['2', 'arm B: treatment X has no effect in stage IV patients'],
