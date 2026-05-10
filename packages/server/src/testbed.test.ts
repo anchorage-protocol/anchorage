@@ -13536,6 +13536,599 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // (recent-decay × cluster-signal) sweep — cube #18, the natural
+  // follow-up the prior milestones tail named after closing the
+  // reputation-decay design pass at the solo patient archetype with
+  // cubes #15 and #17. Cubes #15/#17 hold the cluster signal
+  // structurally inert (solo patient adversary, no shared vote
+  // history to cluster on) and read the exponential-decay law as
+  // ratio invariance on the (T × W) axes; cube #18 holds the decay
+  // parameters at cube #15's calibrated configuration (recent_half_
+  // life=60s, quiet=6 half-lives) and reads the recent-decay gate's
+  // role on a *coalition* multi-round attack pattern where Carol+
+  // Dave time their quiet window against the half-life and re-prime
+  // through contributor-initiated accept votes between drift rounds
+  // — the "re-acquire assignment after the gate re-opens" dynamic
+  // the prior next-milestones tail named by structural framing.
+  //
+  // The runner threads two drift rounds separated by a quiet window
+  // and a re-prime cycle:
+  //
+  //   1. Coalition priming: Carol+Dave cast contributor-initiated
+  //      accept votes on three bias-aligned excerpts (each converges
+  //      at vto=2 on the unanimous coalition accept under
+  //      review_credit_contention_alpha=1.0 default → +1 demonstrated
+  //      / +1 recent per convergence). After three convergences,
+  //      Carol+Dave each end with recent ≈ 3, demonstrated ≈ 3, well
+  //      above any 0.5 recent threshold the cube sweeps. The 3
+  //      shared accept votes form the cluster signal at
+  //      stratum_min_shared_proposals=2 + agreement_threshold=1.0.
+  //   2. Round 1 drift: contested #1 staged. Carol request_assignment
+  //      routes her first (no co-stratum reviewer yet routed for
+  //      contested), she casts reject. Dave request_assignment is
+  //      either cross-stratum gated (cluster on; the cluster signal
+  //      closure path cube #11 reads on the same primitive) or
+  //      routes him to also cast reject (cluster off → contested
+  //      converges 'rejected' at vto=2).
+  //   3. Quiet window: clock advances past 6 recent half-lives.
+  //      Carol+Dave's recent drains by ~64x to ≈ 0.047 — well below
+  //      0.5 if the gate is active.
+  //   4. Re-prime: Carol+Dave cast contributor-initiated accept on
+  //      three new bias-aligned excerpts. The contributor-initiated
+  //      `cast_review_vote` path bypasses the recent gate by null-
+  //      policy (PRD §Reputation: "fresh-reviewer bypass so first-
+  //      assignment bootstrap stays open" + the drained-but-honest
+  //      contributor recovery path the standalone patient-adversary
+  //      scenarios pin), so re-priming pays through the gate even
+  //      at recent=0.5. Each excerpt converges at vto=2 on the
+  //      coalition's two accepts → recent climbs back to ≈ 3 +
+  //      0.047 ≈ 3.05, well above 0.5.
+  //   5. Round 2 drift: contested #2 staged; same shape as round 1.
+  //      Recent gate doesn't fire because re-priming lifted recent
+  //      back; cluster signal still in vote store from priming + 3
+  //      more shared accepts from re-priming, so cross-stratum gate
+  //      fires against Dave on cluster-on cells.
+  //
+  // Cells: 4 over (assignment_min_recent ∈ {0, 0.5}) ×
+  // (stratification_enabled ∈ {off, on}). The headlines:
+  //
+  //   - (recent=0, cluster=off): no defenses, both rounds capture
+  //     → ASR=100%. The regression handle on the multi-round
+  //     coalition attack pattern itself.
+  //   - (recent=0, cluster=on): cluster signal alone closes Dave
+  //     both rounds (cross-stratum gate from priming history),
+  //     Carol's lone reject is below vto=2, contested stays staged
+  //     on both rounds → ASR=0%.
+  //   - (recent=0.5, cluster=off): re-priming lifts recent above
+  //     threshold each round, recent gate ineffective, both rounds
+  //     capture → ASR=100%. *The load-bearing cell*: the recent
+  //     gate alone cannot close coalition amplification across
+  //     timed rounds because re-priming pays through it.
+  //   - (recent=0.5, cluster=on): cluster signal closes Dave both
+  //     rounds regardless of recent gate → ASR=0%.
+  //
+  // Aggregate by cluster: off=100%, on=0%. *The cluster signal is
+  // what does the closure work against coalition amplification* —
+  // it operates on coalition structure (cross-stratum gate),
+  // independent of adversary timing.
+  //
+  // Aggregate by recent: identical 50% across both threshold values
+  // — *the recent-decay gate is ASR-invariant against this multi-
+  // round timed coalition pattern*. The re-prime cost is real
+  // (Carol+Dave each pay 3 honest accepts per cycle), but the gate
+  // alone doesn't translate it into closure: contributor-initiated
+  // voting bypasses by null-policy, so the adversary pays the
+  // accumulation cost upstream of the gate. PRD §Reputation names
+  // the recent gate's design role at the *solo* patient adversary
+  // where re-priming is unamortized (cube #2's lockout cells
+  // calibrated against the solo runner); cube #18 reads that role
+  // as inert against the *coalition* variant where re-priming is
+  // paid once and the cluster-signal closure does the actual work.
+  //
+  // The cube is the (decay × cluster-signal) sibling of cube #11
+  // (pool-size × cluster-signal) and cube #14 ((stratification ×
+  // threshold) composition): all three cubes read the cluster
+  // signal alongside a non-cluster axis on the coalition attack
+  // pattern, with cube #18's non-cluster axis being the recent-
+  // decay gate the cube #2 lockout cells calibrated on the *solo*
+  // patient archetype. Together cubes #11, #14, and #18 pin the
+  // cluster signal as the load-bearing coalition-amplification
+  // closure across three orthogonal axes (pool-size, threshold,
+  // decay-rate) — the (ASR-by-cluster) reading is invariantly
+  // 100%/0% across all three cubes against the K=2 coalition
+  // pattern.
+  async function runDecayClusterMultiRoundScenario(params: {
+    assignment_min_recent: number;
+    stratification_enabled: boolean;
+  }): Promise<{
+    attack_succeeded: boolean;
+    attack_succeeded_round_1: boolean;
+    attack_succeeded_round_2: boolean;
+    dave_voted_round_1: boolean;
+    dave_voted_round_2: boolean;
+  }> {
+    const RECENT_HALF_LIFE_SECONDS = 60;
+    const QUIET_WINDOW_SECONDS = RECENT_HALF_LIFE_SECONDS * 6;
+    const sources = new Map<string, string>([
+      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
+      ['2', 'arm B: treatment X has no effect in stage IV patients'],
+    ]);
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 1000);
+    const server = new Server({
+      clock,
+      idGen: new SeededIdGen('dcl'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      review: {
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        // Calibration channels off — cube #18 isolates the
+        // (decay × cluster-signal) composition on the convergence
+        // path. Calibration is a separate axis pinned by cubes #10
+        // / #13 / #16; mixing it in here would confound the read.
+        calibration_inject_every_n: 0,
+        calibration_aware_convergence: false,
+        stratification_enabled: params.stratification_enabled,
+        stratum_min_shared_proposals: 2,
+        stratum_agreement_threshold: 1.0,
+        stratum_target_count: 2,
+        // Stratification-degraded tightening disabled — the cube
+        // measures the cross-stratum *routing* gate (Dave refused
+        // when Carol already routed to the same proposal), not the
+        // convergence-threshold tightening (which would prevent the
+        // priming + re-priming convergences from firing in cluster=
+        // on cells once the cluster forms after the second shared
+        // accept, leaving Carol+Dave's coalition rep at the +1 from
+        // iteration 0 only and the recent-decay axis unmeasurable).
+        // The convergence-threshold tightening is what cube #11
+        // measures (closure-quality on the small-pool axis); cube
+        // #18 isolates the routing gate to read the (decay × cluster
+        // -signal) interaction without confounding by the
+        // convergence-threshold knob.
+        stratification_degraded_extra: 0,
+        // Cube #15's calibrated configuration: T=60s recent half-
+        // life, W=6 half-lives quiet window. Cube #15 already swept
+        // the W/T ratio axis and pinned ratio invariance on the
+        // solo patient archetype; cube #18 holds the configuration
+        // at cube #15's calibrated value and sweeps the cluster-
+        // signal axis alongside the recent gate threshold on the
+        // coalition variant.
+        recent_half_life_seconds: RECENT_HALF_LIFE_SECONDS,
+        // Demo gate stays off — cube #18's axis is the recent-decay
+        // gate; the demo gate is read on the patient archetype by
+        // cubes #2 and #17. With demo off, fresh Carol+Dave bypass
+        // by construction (no rep entries yet at first request_
+        // assignment, but priming runs through contributor-initiated
+        // votes that don't traverse the assignment gate at all).
+        assignment_min_recent: params.assignment_min_recent,
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'treatment-X',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const aliceCaller = { identity_id: alice.id };
+
+    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 1',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    server.curator.acceptProposal(anchor1.proposal_id);
+    const anchor1Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 1',
+    );
+    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
+    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      content: 'paper 2',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    server.curator.acceptProposal(anchor2.proposal_id);
+    const anchor2Node = [...server.store.nodes.values()].find(
+      (n) => n.kind === 'anchor' && n.content === 'paper 2',
+    );
+    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
+
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    for (const id of [carol.id, dave.id]) {
+      await server.tools.setCapacity(
+        { identity_id: id },
+        { cause_id: cause.id, rate: 5, kinds: ['review'] },
+      );
+    }
+
+    // Phase 1 — coalition priming. Three bias-aligned excerpts under
+    // anchor 1; Carol+Dave both contributor-initiated-accept on each.
+    // Each converges at vto=2 on the unanimous coalition accept; the
+    // third primer would stratification-degraded-tighten past two
+    // accepts once the cluster forms, so the runner curator-accepts
+    // any priming proposal still staged after the second vote so the
+    // frontier doesn't carry leftover staged primers into the round 1
+    // assignment loop.
+    for (let i = 0; i < 3; i++) {
+      const primer = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III priming ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        {
+          proposal_id: primer.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: dave.id },
+        {
+          proposal_id: primer.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      const after = server.store.proposals.get(primer.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(primer.proposal_id);
+      }
+    }
+
+    // Phase 2 — round 1 drift. Stage contested #1 (bias-misaligned
+    // excerpt under anchor 2). Carol request_assignment routes her
+    // first (no co-stratum reviewer yet routed for contested), she
+    // casts reject. Dave request_assignment is either cross-stratum
+    // gated (cluster on) or routes him to cast reject (cluster off
+    // → contested converges 'rejected' at vto=2 directly off the
+    // coalition's two rejects; there's no honest pool in this runner
+    // because the cube's ASR reading is "did the coalition land
+    // both rejects" and Carol+Dave at vto=2 don't need a third
+    // reviewer to converge if Dave is routable).
+    const contested1 = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV round 1',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+    const contested1Id = contested1.proposal_id;
+
+    const carolAssignment1 = await server.tools.requestAssignment(
+      { identity_id: carol.id },
+      { cause_id: cause.id },
+    );
+    if (carolAssignment1.task.kind !== 'review') {
+      throw new Error('round 1: expected carol routed to a review task');
+    }
+    if (carolAssignment1.task.proposal_id !== contested1Id) {
+      throw new Error(
+        `round 1: expected carol routed to contested ${contested1Id}, got ${carolAssignment1.task.proposal_id}`,
+      );
+    }
+    await server.tools.castReviewVote(
+      { identity_id: carol.id },
+      {
+        proposal_id: contested1Id,
+        decision: 'reject',
+        rationale: 'underpowered, methodological concerns',
+        assignment_id: carolAssignment1.assignment_id,
+      },
+    );
+
+    let daveVoted1 = false;
+    try {
+      const daveAssignment1 = await server.tools.requestAssignment(
+        { identity_id: dave.id },
+        { cause_id: cause.id },
+      );
+      if (
+        daveAssignment1.task.kind === 'review' &&
+        daveAssignment1.task.proposal_id === contested1Id
+      ) {
+        await server.tools.castReviewVote(
+          { identity_id: dave.id },
+          {
+            proposal_id: contested1Id,
+            decision: 'reject',
+            rationale: 'underpowered, methodological concerns',
+            assignment_id: daveAssignment1.assignment_id,
+          },
+        );
+        daveVoted1 = true;
+      }
+    } catch (err) {
+      if (err instanceof ServerError && err.code === 'not_found') {
+        // Dave gated by the cross-stratum draw rule (cluster on).
+        // At round 1 his recent is fresh from priming (≈ 3), so the
+        // recent gate cannot fire here regardless of threshold —
+        // this catch-branch is structurally cluster-only.
+      } else {
+        throw err;
+      }
+    }
+    const round1Status = server.store.proposals.get(contested1Id)?.status;
+
+    // Phase 3 — quiet window. Clock advances past 6 recent half-
+    // lives; recent drains by ~64x for Carol and Dave alike. This
+    // is the "times its quiet window against the half-life" beat
+    // the milestone names — at recent=0.5 the gate would fire on
+    // the next request_assignment if Carol/Dave didn't re-prime
+    // through it.
+    clock.advance(QUIET_WINDOW_SECONDS * 1000);
+
+    // Phase 4 — re-prime. Three new bias-aligned excerpts under
+    // anchor 1; Carol+Dave again contributor-initiated-accept on
+    // each. Contributor-initiated `cast_review_vote` bypasses the
+    // recent gate by null-policy (PRD §Reputation, recovery path),
+    // so re-priming pays through the gate even at recent=0.5. Each
+    // excerpt converges at vto=2 on the coalition's two accepts →
+    // recent climbs back to ≈ 3 + 0.047 ≈ 3.05, well above any 0.5
+    // threshold the cube sweeps. The cluster signal extends (3
+    // priming + 3 re-priming = 6 shared accepts), reinforcing the
+    // cross-stratum gate rather than weakening it.
+    for (let i = 0; i < 3; i++) {
+      const reprimer = await server.tools.proposeExcerpt(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: anchor1Node.id,
+        content: `treatment X works for stage III re-prime ${i}`,
+        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
+      });
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        {
+          proposal_id: reprimer.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: dave.id },
+        {
+          proposal_id: reprimer.proposal_id,
+          decision: 'accept',
+          rationale: 'consistent with prevailing evidence',
+        },
+      );
+      const after = server.store.proposals.get(reprimer.proposal_id);
+      if (after?.status === 'staged') {
+        server.curator.acceptProposal(reprimer.proposal_id);
+      }
+    }
+
+    // Phase 5 — round 2 drift. Stage contested #2; same shape as
+    // round 1. Recent gate doesn't fire because re-priming lifted
+    // Carol+Dave back above any 0.5 threshold; cluster signal
+    // still in vote store, so cross-stratum gate fires against
+    // Dave on cluster-on cells.
+    const contested2 = await server.tools.proposeExcerpt(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: subTopic.id,
+      parent_anchor_id: anchor2Node.id,
+      content: 'treatment X has no effect for stage IV round 2',
+      quoted_span: {
+        text: 'treatment X has no effect in stage IV patients',
+        offset: 0,
+      },
+    });
+    const contested2Id = contested2.proposal_id;
+
+    const carolAssignment2 = await server.tools.requestAssignment(
+      { identity_id: carol.id },
+      { cause_id: cause.id },
+    );
+    if (carolAssignment2.task.kind !== 'review') {
+      throw new Error('round 2: expected carol routed to a review task');
+    }
+    if (carolAssignment2.task.proposal_id !== contested2Id) {
+      throw new Error(
+        `round 2: expected carol routed to contested ${contested2Id}, got ${carolAssignment2.task.proposal_id}`,
+      );
+    }
+    await server.tools.castReviewVote(
+      { identity_id: carol.id },
+      {
+        proposal_id: contested2Id,
+        decision: 'reject',
+        rationale: 'underpowered, methodological concerns',
+        assignment_id: carolAssignment2.assignment_id,
+      },
+    );
+
+    let daveVoted2 = false;
+    try {
+      const daveAssignment2 = await server.tools.requestAssignment(
+        { identity_id: dave.id },
+        { cause_id: cause.id },
+      );
+      if (
+        daveAssignment2.task.kind === 'review' &&
+        daveAssignment2.task.proposal_id === contested2Id
+      ) {
+        await server.tools.castReviewVote(
+          { identity_id: dave.id },
+          {
+            proposal_id: contested2Id,
+            decision: 'reject',
+            rationale: 'underpowered, methodological concerns',
+            assignment_id: daveAssignment2.assignment_id,
+          },
+        );
+        daveVoted2 = true;
+      }
+    } catch (err) {
+      if (err instanceof ServerError && err.code === 'not_found') {
+        // Dave gated by cross-stratum (cluster on); recent gate
+        // can't fire on round 2 because re-priming lifted his
+        // recent above any 0.5 threshold the cube sweeps.
+      } else {
+        throw err;
+      }
+    }
+    const round2Status = server.store.proposals.get(contested2Id)?.status;
+
+    const attackR1 = round1Status === 'rejected';
+    const attackR2 = round2Status === 'rejected';
+    return {
+      attack_succeeded: attackR1 || attackR2,
+      attack_succeeded_round_1: attackR1,
+      attack_succeeded_round_2: attackR2,
+      dave_voted_round_1: daveVoted1,
+      dave_voted_round_2: daveVoted2,
+    };
+  }
+
+  interface DecayClusterSweepCell {
+    name: string;
+    assignment_min_recent: number;
+    stratification_enabled: boolean;
+    expected_attack_succeeded: boolean;
+    expected_attack_succeeded_round_1: boolean;
+    expected_attack_succeeded_round_2: boolean;
+    expected_dave_voted_round_1: boolean;
+    expected_dave_voted_round_2: boolean;
+  }
+  const decayClusterSweepCells: DecayClusterSweepCell[] = [
+    {
+      name: 'recent=0, cluster=off (no defenses; both rounds capture)',
+      assignment_min_recent: 0,
+      stratification_enabled: false,
+      expected_attack_succeeded: true,
+      expected_attack_succeeded_round_1: true,
+      expected_attack_succeeded_round_2: true,
+      expected_dave_voted_round_1: true,
+      expected_dave_voted_round_2: true,
+    },
+    {
+      name: 'recent=0, cluster=on (cluster signal closes Dave both rounds)',
+      assignment_min_recent: 0,
+      stratification_enabled: true,
+      expected_attack_succeeded: false,
+      expected_attack_succeeded_round_1: false,
+      expected_attack_succeeded_round_2: false,
+      expected_dave_voted_round_1: false,
+      expected_dave_voted_round_2: false,
+    },
+    {
+      name: 'recent=0.5, cluster=off (re-prime pays through recent gate; both rounds capture)',
+      assignment_min_recent: 0.5,
+      stratification_enabled: false,
+      expected_attack_succeeded: true,
+      expected_attack_succeeded_round_1: true,
+      expected_attack_succeeded_round_2: true,
+      expected_dave_voted_round_1: true,
+      expected_dave_voted_round_2: true,
+    },
+    {
+      name: 'recent=0.5, cluster=on (cluster closure dominates; recent gate adds no marginal closure)',
+      assignment_min_recent: 0.5,
+      stratification_enabled: true,
+      expected_attack_succeeded: false,
+      expected_attack_succeeded_round_1: false,
+      expected_attack_succeeded_round_2: false,
+      expected_dave_voted_round_1: false,
+      expected_dave_voted_round_2: false,
+    },
+  ];
+  it.each(decayClusterSweepCells)('(decay × cluster-signal) sweep: $name', async ({
+    assignment_min_recent,
+    stratification_enabled,
+    expected_attack_succeeded,
+    expected_attack_succeeded_round_1,
+    expected_attack_succeeded_round_2,
+    expected_dave_voted_round_1,
+    expected_dave_voted_round_2,
+  }) => {
+    const result = await runDecayClusterMultiRoundScenario({
+      assignment_min_recent,
+      stratification_enabled,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.attack_succeeded_round_1).toBe(expected_attack_succeeded_round_1);
+    expect(result.attack_succeeded_round_2).toBe(expected_attack_succeeded_round_2);
+    expect(result.dave_voted_round_1).toBe(expected_dave_voted_round_1);
+    expect(result.dave_voted_round_2).toBe(expected_dave_voted_round_2);
+  });
+
+  it('(decay × cluster-signal) sweep cube: ASR aggregates by cluster show closure, by recent show invariance (PRD §Reputation, recent gate is solo-design; cluster signal carries coalition closure)', () => {
+    interface DecayClusterAsrCell {
+      key: string;
+      total: number;
+      attacks_succeeded: number;
+    }
+    function group(
+      keyOf: (cell: DecayClusterSweepCell) => string,
+    ): Map<string, DecayClusterAsrCell> {
+      const m = new Map<string, DecayClusterAsrCell>();
+      for (const cell of decayClusterSweepCells) {
+        const k = keyOf(cell);
+        const g = m.get(k) ?? { key: k, total: 0, attacks_succeeded: 0 };
+        g.total += 1;
+        if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+        m.set(k, g);
+      }
+      return m;
+    }
+    const groupedByCluster = group((c) => (c.stratification_enabled ? 'on' : 'off'));
+    const groupedByRecent = group((c) => String(c.assignment_min_recent));
+    const asrOf = (m: Map<string, DecayClusterAsrCell>, k: string): number => {
+      const g = m.get(k);
+      if (!g) throw new Error(`missing key=${k}`);
+      return g.attacks_succeeded / g.total;
+    };
+
+    // By cluster: off=100% (both rounds capture in both recent
+    // cells — re-prime pays through any recent threshold the cube
+    // sweeps), on=0% (cluster signal closes Dave both rounds in
+    // both recent cells). The headline closure axis: against
+    // multi-round timed coalition amplification, the cluster signal
+    // is what does the load-bearing closure work — it operates on
+    // coalition structure (cross-stratum gate), independent of
+    // adversary timing.
+    expect(asrOf(groupedByCluster, 'off')).toBe(1);
+    expect(asrOf(groupedByCluster, 'on')).toBe(0);
+
+    // By recent: identical 50% across both threshold values — *the
+    // recent-decay gate is ASR-invariant against this multi-round
+    // timed coalition pattern*. The re-prime cost is real (Carol
+    // and Dave each pay 3 honest accepts per cycle), but the gate
+    // alone doesn't translate it into closure: contributor-
+    // initiated voting bypasses the recent gate by null-policy
+    // (PRD §Reputation, drained-but-honest contributor recovery
+    // path), so the adversary pays the accumulation cost upstream
+    // of the gate. PRD §Reputation names the recent gate's design
+    // role at the *solo* patient adversary where re-priming is
+    // unamortized (cube #2's lockout cells calibrated against the
+    // solo runner); cube #18 reads that role as inert against the
+    // *coalition* variant where re-priming is paid once and the
+    // cluster-signal closure does the actual work.
+    expect(asrOf(groupedByRecent, '0')).toBe(0.5);
+    expect(asrOf(groupedByRecent, '0.5')).toBe(0.5);
+    expect(asrOf(groupedByRecent, '0')).toBe(asrOf(groupedByRecent, '0.5'));
+
+    // Coverage invariants: 4 cells, 2 per (cluster) value, 2 per
+    // (recent) value. Same shape cubes #6-#17 carry; a future cell
+    // expansion that breaks the symmetry trips the assertion and
+    // forces the aggregate to be re-keyed.
+    for (const cell of groupedByCluster.values()) {
+      expect(cell.total).toBe(2);
+    }
+    for (const cell of groupedByRecent.values()) {
+      expect(cell.total).toBe(2);
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
