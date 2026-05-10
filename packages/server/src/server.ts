@@ -1300,9 +1300,10 @@ export class Server {
       }
 
       // Decline-pattern assignment gate (PRD §Capacity and assignment).
-      // The curator-side `declinePatterns` projection surfaces decliners
-      // by per-cause cumulative rate; this gate turns the same signal
-      // into an assignment-time primitive at the same seam as the rep
+      // PRD commits two surfaces on the same per-(cause, reviewer)
+      // cumulative-rate signal: the curator-side `declinePatterns`
+      // projection (visibility) and this gate (operational
+      // enforcement). The gate fires at the same seam as the rep
       // gates. The first defense knob for the multi-proposal coalition
       // seam: the seam evades the cluster signal by paired-decline (no
       // co-voting → no shared history → no edge metric to fire), and
