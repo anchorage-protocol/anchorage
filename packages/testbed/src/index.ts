@@ -46,4 +46,12 @@ export {
   type LlmAgentTurn,
   runLlmAgent,
 } from './archetypes/llm-agent.js';
+export {
+  honestStrongRole,
+  type LlmRole,
+  type LlmRoleId,
+  llmRole,
+  type PatientAdversaryOptions,
+  patientAdversaryRole,
+} from './archetypes/llm-roles.js';
 export { AnchorageClient, AnchorageClientError } from './client.js';

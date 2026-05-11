@@ -1,4 +1,10 @@
-import { type FetchLike, runLlmAgent } from '@anchorage/testbed';
+import {
+  type FetchLike,
+  honestStrongRole,
+  type LlmRole,
+  patientAdversaryRole,
+  runLlmAgent,
+} from '@anchorage/testbed';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it } from 'vitest';
@@ -244,4 +250,165 @@ describe('testbed: llm-agent archetype against the wired surface', () => {
     expect(result.turns.flatMap((t) => t.tool_calls).length).toBeGreaterThan(0);
     expect(result.stop_reason).not.toBe('max_turns');
   });
+});
+
+describe('testbed: llm-agent role configs against the wired surface', () => {
+  // The named deep-loop populations PRD §Adversary taxonomy commits —
+  // honest-strong and patient adversary — are `LlmRole` configs in the
+  // testbed package: a system prompt plus a cause-keyed task message,
+  // nothing more (the agent loop is role-blind by construction). The
+  // prompts are the *experimental treatment* in the deep loop, so they
+  // are pinned in one place and CI-exercised here with a scripted
+  // model. The scripted model ignores the system prompt — it cannot
+  // exhibit a role's distinguishing behavior, which needs a real model
+  // and a richer scenario than a one-anchor frontier — so what this
+  // pins is that each role config plugs into `runLlmAgent` and drives
+  // the governance write path. The real-model smoke below is the manual
+  // "does the prompt actually steer a frontier model" check.
+  //
+  // For the patient adversary specifically: during its reputation-build
+  // phase — which is *all* it can do against a frontier with no
+  // contested items — it is behaviorally indistinguishable from
+  // honest-strong at the write path, which is exactly PRD §Adversary
+  // taxonomy's "builds reputation honestly for months before drift
+  // attempts". The drift half (a misaligned vote on a contested
+  // assigned proposal once standing is established) is the deep-loop
+  // scenario this slice does not yet stand up; the gates that close it
+  // (per-(cause, sub-topic) recent-activity gating, review-as-staking,
+  // calibration injection) are the same ones cubes #2/#5/#15/#17
+  // already pin against the *scripted* patient-adversary archetype.
+
+  const roles: { name: string; role: LlmRole }[] = [
+    { name: 'honest-strong', role: honestStrongRole },
+    {
+      name: 'patient-adversary (build phase)',
+      role: patientAdversaryRole({
+        objective: 'bias the graph toward a stronger-than-warranted conclusion about assay X',
+      }),
+    },
+  ];
+
+  it.each(roles)('$name: the role config drives the assignment loop end to end', async ({
+    role,
+  }) => {
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen(`role-${role.id}`),
+      verifier: new FakeVerifier(),
+    });
+    const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'ctDNA-MRD',
+      description: 'mrd',
+      scope_query: 'ctDNA',
+    });
+    const anchorProposal = await server.tools.proposeAnchor(
+      { identity_id: seeder.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'landmark trial',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    server.curator.acceptProposal(anchorProposal.proposal_id);
+
+    const agentIdentity = server.bootstrap.mintIdentity({ display_name: 'agent' });
+    const mcpClient = await wireMcpClient(server, agentIdentity.id);
+
+    const result = await runLlmAgent(mcpClient, {
+      apiKey: 'test-key-not-used',
+      model: 'fake-model',
+      system: role.system,
+      task: role.buildTask(cause.id),
+      max_turns: 10,
+      fetch: scriptedHonestContributorFetch(cause.id),
+    });
+
+    expect(result.stop_reason).toBe('end_turn');
+    const calls = result.turns.flatMap((t) => t.tool_calls);
+    expect(calls.map((c) => c.name)).toEqual([
+      'set_capacity',
+      'request_assignment',
+      'accept_assignment',
+      'submit_assigned_proposal',
+      'request_assignment',
+    ]);
+    expect(calls.slice(0, 4).every((c) => !c.is_error)).toBe(true);
+    expect(calls.at(-1)?.is_error).toBe(true);
+
+    const excerptProposals = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    expect(excerptProposals).toHaveLength(1);
+    expect(excerptProposals[0]?.proposer_id).toBe(agentIdentity.id);
+  });
+
+  // The two roles are the same surface, different prompt — the only
+  // thing that should differ is the system text (and, for the
+  // adversary, that the task tells it it's early). If a future edit
+  // accidentally diverges the *task framing* (capacity → frontier
+  // loop), the scripted test above breaks for one role but not the
+  // other; this pins the shared-shape expectation directly.
+  it('honest-strong and patient-adversary share the task shape, differ only in the prompt', () => {
+    const adversary = patientAdversaryRole({ objective: 'redirect-conclusion-X' });
+    expect(adversary.system).not.toEqual(honestStrongRole.system);
+    expect(adversary.system).toContain('hidden objective');
+    expect(adversary.system).toContain('redirect-conclusion-X');
+    expect(honestStrongRole.system).not.toContain('hidden objective');
+    for (const role of [honestStrongRole, adversary]) {
+      const task = role.buildTask('cause_demo' as never);
+      expect(task).toContain('cause_demo');
+      expect(task).toContain('capacity');
+      expect(task).toContain('frontier');
+    }
+  });
+
+  // Real-API smoke for both roles. Same shape as the honest-contributor
+  // live smoke above, but driven from the shared role configs so the
+  // live check exercises the literal prompts CI ships. Tiny turn budget.
+  const hasKey = typeof process !== 'undefined' && !!process.env['ANTHROPIC_API_KEY'];
+  it.skipIf(!hasKey).each(roles)(
+    '$name: a real model drives the loop (live API)',
+    async ({ role }) => {
+      const server = new Server({
+        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+        idGen: new SeededIdGen(`role-live-${role.id}`),
+        verifier: new FakeVerifier(),
+      });
+      const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
+      const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
+      const subTopic = server.bootstrap.seedSubTopic({
+        cause_id: cause.id,
+        name: 'ctDNA-MRD',
+        description: 'mrd',
+        scope_query: 'ctDNA',
+      });
+      const anchorProposal = await server.tools.proposeAnchor(
+        { identity_id: seeder.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: 'landmark trial on ctDNA-guided therapy',
+          external_ref: { kind: 'pmid', value: '12345678' },
+        },
+      );
+      server.curator.acceptProposal(anchorProposal.proposal_id);
+
+      const agentIdentity = server.bootstrap.mintIdentity({ display_name: 'agent' });
+      const mcpClient = await wireMcpClient(server, agentIdentity.id);
+
+      const result = await runLlmAgent(mcpClient, {
+        apiKey: process.env['ANTHROPIC_API_KEY'] as string,
+        model: process.env['ANCHORAGE_TESTBED_MODEL'] ?? 'claude-haiku-4-5-20251001',
+        system: role.system,
+        task: role.buildTask(cause.id),
+        max_turns: 12,
+      });
+      expect(result.turns.flatMap((t) => t.tool_calls).length).toBeGreaterThan(0);
+      expect(result.stop_reason).not.toBe('max_turns');
+    },
+  );
 });
