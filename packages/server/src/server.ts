@@ -779,6 +779,23 @@ export class Server {
         hasStagedExcerptChild.add(p.payload.parent_anchor_id);
       }
     }
+    // Same reasoning, one step earlier in the lifecycle: an anchor
+    // with an in-flight excerpt assignment (offered or accepted, not
+    // yet submitted / declined / expired) isn't orphan. The window
+    // between a contributor pulling an excerpt assignment for an
+    // anchor and staging the proposal would otherwise let other
+    // contributors pull the same anchor concurrently — exactly the
+    // duplicate-work the staged-proposal guard above closes, but it
+    // only kicks in once the proposal exists. A population of N
+    // concurrent contributors hits this window N-deep on a fresh
+    // frontier without it.
+    const hasInFlightExcerptAssignment = new Set<NodeId>();
+    for (const a of this.store.assignments.values()) {
+      if (a.task.kind !== 'excerpt') continue;
+      if (a.status === 'offered' || a.status === 'accepted') {
+        hasInFlightExcerptAssignment.add(a.task.parent_anchor_id);
+      }
+    }
 
     for (const node of this.store.nodes.values()) {
       if (node.kind !== 'anchor') continue;
@@ -787,7 +804,8 @@ export class Server {
       if (
         node.status === 'active' &&
         !hasDerivesChild.has(node.id) &&
-        !hasStagedExcerptChild.has(node.id)
+        !hasStagedExcerptChild.has(node.id) &&
+        !hasInFlightExcerptAssignment.has(node.id)
       ) {
         items.push({
           kind: 'orphan_anchor',

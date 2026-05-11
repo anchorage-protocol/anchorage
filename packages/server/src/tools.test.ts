@@ -791,6 +791,44 @@ describe('tools.queryFrontier', () => {
     expect(items.find((i) => i.kind === 'orphan_anchor')).toBeUndefined();
   });
 
+  it('drops an anchor from the orphan frontier while an excerpt assignment for it is in flight', async () => {
+    const f = fixture();
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'parent',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(a.proposal_id);
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['excerpt'],
+    });
+    const { assignment_id } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    // Merely *offered* (not yet accepted) is enough — the anchor is
+    // no longer orphan, so a concurrent contributor can't pull it too.
+    {
+      const { items } = await f.server.tools.queryFrontier(f.caller, {});
+      expect(items.find((i) => i.kind === 'orphan_anchor')).toBeUndefined();
+    }
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
+    {
+      const { items } = await f.server.tools.queryFrontier(f.caller, {});
+      expect(items.find((i) => i.kind === 'orphan_anchor')).toBeUndefined();
+    }
+    // Bob bails — the anchor is orphan again, available to the pool.
+    await f.server.tools.declineAssignment(bobCaller, { assignment_id, reason: 'no time' });
+    {
+      const { items } = await f.server.tools.queryFrontier(f.caller, {});
+      expect(items.filter((i) => i.kind === 'orphan_anchor')).toHaveLength(1);
+    }
+  });
+
   it('surfaces a staged proposal as a needs_review item routed to its home', async () => {
     const f = fixture();
     const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
