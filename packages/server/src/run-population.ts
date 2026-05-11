@@ -8,6 +8,13 @@
 // reports the graph state after each round so you can watch the loop
 // actually close.
 //
+// This file is the *wiring*: read env, seed the server, mint the
+// contributors and connect each to it, then hand off to
+// `runPopulationRounds` (population-loop.ts) for the round structure,
+// the between-rounds curator-escalation pass, and the termination
+// logic — the same core `population-loop.test.ts` drives with scripted
+// archetypes to pin the honest baseline in CI.
+//
 // Like `run-live.ts` this is harness glue, not a test and not part of
 // the package's public surface: the archetype (`runLlmAgent`, in the
 // testbed package) only ever sees an MCP client; this script stands
@@ -16,7 +23,7 @@
 // hit the same MCP surface a real client would.
 //
 // Three things differ from a "real" instance and are deliberate v0
-// shortcuts (each noted again at the seam below):
+// shortcuts:
 //   1. The verifier is the FakeVerifier seeded with a source-text
 //      fixture per anchor, so a contributor's quoted span is matched
 //      against text it can actually see — there is no live PubMed
@@ -35,7 +42,7 @@
 //      a tie). A real curator reads the proposal; the harness
 //      exercises the *path* (curator.acceptProposal /
 //      curator.rejectProposal closing a stuck divergence), not the
-//      judgment. See `escalateStuckProposals`.
+//      judgment. See `escalateStuckProposals` in population-loop.ts.
 //
 // Budget: every model turn is an API round-trip and the conversation
 // is resent each turn (no prompt caching wired — see llm-agent.ts), so
@@ -60,6 +67,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { FakeClock } from './clock.js';
 import { SeededIdGen } from './id-gen.js';
 import { buildMcpServer } from './mcp.js';
+import { graphStatusLine, runPopulationRounds, usdCost } from './population-loop.js';
 import { Server } from './server.js';
 import { FakeVerifier } from './verifier.js';
 
@@ -86,13 +94,6 @@ function priceFor(model: string): { input: number; output: number } {
   if (p) return p;
   console.warn(`# no price table entry for ${model}; estimating at Haiku 4.5 rates`);
   return HAIKU_RATE;
-}
-
-function usdCost(
-  usage: { input_tokens: number; output_tokens: number },
-  rate: { input: number; output: number },
-): number {
-  return (usage.input_tokens * rate.input + usage.output_tokens * rate.output) / 1_000_000;
 }
 
 // Seeded orphan anchors. Each carries its source passage inline as
@@ -161,114 +162,6 @@ interface Contributor {
   identity_id: string;
   display_name: string;
   client: Client;
-}
-
-function graphStatusLine(server: Server): string {
-  const proposals = [...server.store.proposals.values()];
-  const byStatus = new Map<string, number>();
-  for (const p of proposals) byStatus.set(p.status, (byStatus.get(p.status) ?? 0) + 1);
-  const nodesByKind = new Map<string, number>();
-  for (const n of server.store.nodes.values())
-    nodesByKind.set(n.kind, (nodesByKind.get(n.kind) ?? 0) + 1);
-  const proposalStr =
-    [...byStatus.entries()].map(([s, c]) => `${s}=${c}`).join(' ') || '(no proposals)';
-  const nodeStr = [...nodesByKind.entries()].map(([k, c]) => `${k}=${c}`).join(' ') || '(no nodes)';
-  const reviewVotes = server.store.reviewVotes.size;
-  return `proposals: ${proposalStr} | nodes: ${nodeStr} | review_votes=${reviewVotes}`;
-}
-
-function frontierEmpty(server: Server): boolean {
-  // Orphan anchors with no excerpt child, or staged proposals still
-  // needing review, are the work the population can act on. Reading
-  // the store directly here is the same liberty `run-live.ts` takes —
-  // the contributors only ever see the MCP surface.
-  const stagedNeedingReview = [...server.store.proposals.values()].some(
-    (p) => p.status === 'staged',
-  );
-  if (stagedNeedingReview) return false;
-  const anchorNodeIds = new Set(
-    [...server.store.nodes.values()].filter((n) => n.kind === 'anchor').map((n) => n.id),
-  );
-  const excerptParentIds = new Set(
-    [...server.store.nodes.values()]
-      .filter((n) => n.kind === 'excerpt')
-      .map((n) => (n as { parent_anchor_id?: string }).parent_anchor_id),
-  );
-  // Also count staged excerpt proposals (already submitted, awaiting
-  // review) as "this anchor is handled".
-  for (const p of server.store.proposals.values()) {
-    if (p.payload.kind === 'excerpt') excerptParentIds.add(p.payload.parent_anchor_id);
-  }
-  for (const id of anchorNodeIds) if (!excerptParentIds.has(id)) return false;
-  return true;
-}
-
-interface EscalationOutcome {
-  proposal_id: string;
-  decision: 'accept' | 'reject';
-  accepts: number;
-  rejects: number;
-}
-
-// Vote counts per currently-staged proposal — the pre-round snapshot
-// `escalateStuckProposals` diffs against to tell "progressing" from
-// "stuck".
-function stagedVoteCounts(server: Server): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const p of server.store.proposals.values()) {
-    if (p.status === 'staged') counts.set(p.id, 0);
-  }
-  for (const v of server.store.reviewVotes.values()) {
-    if (counts.has(v.proposal_id)) counts.set(v.proposal_id, (counts.get(v.proposal_id) ?? 0) + 1);
-  }
-  return counts;
-}
-
-// Curator-escalation pass between rounds (PRD §Reviewer assignment
-// step 4): a staged proposal the population couldn't move during a
-// full round — a 1-1 review split with no tiebreaker, a contested
-// item the eligible pool is exhausted for, or one no reviewer ever
-// picked up — has no resolution path the contributor loops can reach.
-// The harness curator resolves it toward the majority of the votes
-// cast, accepting on a tie or with no votes (every excerpt here
-// already passed span verification at write time, so "accept" is the
-// productive default; the divergence is recorded in the vote history
-// either way). This is a deliberate v0 harness simplification of the
-// same shape as the FakeVerifier fixture and the absent calibration
-// corpus (file header): a real curator is a person or a model curator
-// reading the proposal, not a majority-vote heuristic — what the
-// harness exercises is the *path* (`curator.acceptProposal` /
-// `curator.rejectProposal` closing a stuck divergence), not the
-// judgment. A proposal staged mid-round is not yet in `preRoundCounts`
-// and so gets a full subsequent round of review opportunity before it
-// can be escalated; a proposal that gained any vote this round
-// counts as still progressing and is left alone.
-function escalateStuckProposals(
-  server: Server,
-  preRoundCounts: Map<string, number>,
-): EscalationOutcome[] {
-  const accepts = new Map<string, number>();
-  const rejects = new Map<string, number>();
-  const total = new Map<string, number>();
-  for (const v of server.store.reviewVotes.values()) {
-    total.set(v.proposal_id, (total.get(v.proposal_id) ?? 0) + 1);
-    if (v.decision === 'accept') accepts.set(v.proposal_id, (accepts.get(v.proposal_id) ?? 0) + 1);
-    else if (v.decision === 'reject')
-      rejects.set(v.proposal_id, (rejects.get(v.proposal_id) ?? 0) + 1);
-  }
-  const escalated: EscalationOutcome[] = [];
-  for (const p of server.store.proposals.values()) {
-    if (p.status !== 'staged') continue;
-    if (!preRoundCounts.has(p.id)) continue; // staged this round — give it another
-    if ((total.get(p.id) ?? 0) !== preRoundCounts.get(p.id)) continue; // still progressing
-    const a = accepts.get(p.id) ?? 0;
-    const r = rejects.get(p.id) ?? 0;
-    const decision: 'accept' | 'reject' = r > a ? 'reject' : 'accept';
-    if (decision === 'accept') server.curator.acceptProposal(p.id);
-    else server.curator.rejectProposal(p.id);
-    escalated.push({ proposal_id: p.id, decision, accepts: a, rejects: r });
-  }
-  return escalated;
 }
 
 async function main(): Promise<void> {
@@ -346,77 +239,43 @@ async function main(): Promise<void> {
   );
   console.log(`# round 0 (seeded): ${graphStatusLine(server)}\n`);
 
-  const totalUsage = { input_tokens: 0, output_tokens: 0 };
-  let stopReason = 'rounds_exhausted';
-
-  for (let round = 1; round <= MAX_ROUNDS; round++) {
-    const spentSoFar = usdCost(totalUsage, rate);
-    // A round of the default population is small relative to the
-    // ceiling; stop before a round that could plausibly cross it.
-    if (spentSoFar >= budgetUsd * 0.85) {
-      stopReason = 'budget';
-      console.log(
-        `# stopping before round ${round}: spent ~$${spentSoFar.toFixed(2)} of $${budgetUsd}`,
-      );
-      break;
-    }
-    if (frontierEmpty(server)) {
-      stopReason = 'frontier_drained';
-      console.log(`# frontier drained before round ${round}`);
-      break;
-    }
-
-    console.log(`# ── round ${round} ──`);
-    const preRoundCounts = stagedVoteCounts(server);
-    const results = await Promise.all(
-      contributors.map((c) =>
-        runLlmAgent(c.client, {
-          apiKey,
-          model,
-          system: honestStrongRole.system,
-          task: populationTask(cause.id),
-          max_turns: MAX_TURNS_PER_ROUND,
-          on_turn: (turn, index) => {
-            const tag = `[r${round} ${c.display_name} t${index}]`;
-            if (turn.text.trim()) console.log(`${tag} ${turn.text.trim()}`);
-            for (const call of turn.tool_calls) {
-              const status = call.is_error ? 'ERROR' : 'ok';
-              console.log(
-                `${tag} -> ${call.name}(${JSON.stringify(call.input)}) => ${status}: ${call.result_text}`,
-              );
-            }
-          },
-        }).then((r) => ({ contributor: c, result: r })),
-      ),
-    );
-
-    for (const { contributor, result } of results) {
-      totalUsage.input_tokens += result.usage.input_tokens;
-      totalUsage.output_tokens += result.usage.output_tokens;
-      console.log(
-        `# ${contributor.display_name}: stop=${result.stop_reason} turns=${result.turns.length} usage=(${result.usage.input_tokens}in/${result.usage.output_tokens}out)`,
-      );
-    }
-    // Curator escalation: resolve any divergence the population stalled
-    // on for the whole round (the 1-1-with-no-tiebreaker hole). Runs
-    // after the contributor loops have all returned, so no agent sees
-    // a half-resolved store.
-    for (const e of escalateStuckProposals(server, preRoundCounts)) {
-      console.log(
-        `# curator escalated ${e.proposal_id}: ${e.decision} (accepts=${e.accepts} rejects=${e.rejects})`,
-      );
-    }
-    console.log(
-      `# after round ${round}: ${graphStatusLine(server)} | spent ~$${usdCost(totalUsage, rate).toFixed(2)}\n`,
-    );
-  }
+  const result = await runPopulationRounds<Contributor>({
+    server,
+    contributors,
+    max_rounds: MAX_ROUNDS,
+    budget: { usd: budgetUsd, rate },
+    log: (line) => console.log(line),
+    runContributor: async (c, { round }) => {
+      const r = await runLlmAgent(c.client, {
+        apiKey,
+        model,
+        system: honestStrongRole.system,
+        task: populationTask(cause.id),
+        max_turns: MAX_TURNS_PER_ROUND,
+        on_turn: (turn, index) => {
+          const tag = `[r${round} ${c.display_name} t${index}]`;
+          if (turn.text.trim()) console.log(`${tag} ${turn.text.trim()}`);
+          for (const call of turn.tool_calls) {
+            const status = call.is_error ? 'ERROR' : 'ok';
+            console.log(
+              `${tag} -> ${call.name}(${JSON.stringify(call.input)}) => ${status}: ${call.result_text}`,
+            );
+          }
+        },
+      });
+      return {
+        usage: r.usage,
+        log_summary: `stop=${r.stop_reason} turns=${r.turns.length} usage=(${r.usage.input_tokens}in/${r.usage.output_tokens}out)`,
+      };
+    },
+  });
 
   // Final report.
   console.log('# ── final state ──');
   console.log(`# ${graphStatusLine(server)}`);
-  console.log(`# stop reason: ${stopReason}`);
+  console.log(`# stop reason: ${result.stop_reason}`);
   console.log(
-    `# total usage: ${totalUsage.input_tokens} input + ${totalUsage.output_tokens} output tokens ≈ $${usdCost(totalUsage, rate).toFixed(2)}`,
+    `# total usage: ${result.total_usage.input_tokens} input + ${result.total_usage.output_tokens} output tokens ≈ $${usdCost(result.total_usage, rate).toFixed(2)}`,
   );
   console.log('# reputation by contributor (cause, sub-topic):');
   for (const c of contributors) {
