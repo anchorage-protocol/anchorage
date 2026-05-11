@@ -71,9 +71,15 @@ type AnthropicRequest = {
   tools?: AnthropicToolDef[];
   messages: AnthropicMessage[];
 };
+// Token accounting, as the Messages API reports it per response. Only
+// the two fields the budget guard needs; the API also reports cache
+// hit/miss counts, which this loop doesn't use (no prompt caching
+// wired here — see the cost note at the top of the file).
+type AnthropicUsage = { input_tokens: number; output_tokens: number };
 type AnthropicResponse = {
   stop_reason: string | null;
   content: AnthropicContentBlock[];
+  usage: AnthropicUsage;
 };
 
 // A `fetch`-shaped function. Injectable so tests can drive the loop
@@ -84,10 +90,20 @@ export type FetchLike = (
   init: { method: string; headers: Record<string, string>; body: string },
 ) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
 
+// Token usage, summed over the Messages API calls a run made. Exposed
+// so a caller orchestrating many runs (the population runner) can hold
+// a spend budget without re-deriving cost from transcript length.
+export interface LlmAgentUsage {
+  input_tokens: number;
+  output_tokens: number;
+}
+
 // One model turn's worth of activity, recorded for the transcript.
 export interface LlmAgentTurn {
   // Free text the model emitted alongside (or instead of) tool calls.
   text: string;
+  // What the Messages API reported for this turn's request.
+  usage: LlmAgentUsage;
   // Tool calls the model made this turn, paired with what the MCP
   // server returned. `is_error` mirrors the MCP tool error result
   // (the server's typed `code`/`message` payload, JSON-stringified).
@@ -137,6 +153,8 @@ export interface LlmAgentResult {
   // `end_turn` (model finished), `max_turns` (budget exhausted), or
   // whatever stop_reason the API returned (`stop_sequence`, etc.).
   stop_reason: string;
+  // Token usage summed over every Messages API call this run made.
+  usage: LlmAgentUsage;
 }
 
 const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com';
@@ -202,7 +220,12 @@ async function callAnthropic(
   if (!Array.isArray(p.content)) {
     throw new Error(`Anthropic API response missing content array: ${bodyText.slice(0, 500)}`);
   }
-  return { stop_reason: p.stop_reason ?? null, content: p.content };
+  const u = (p.usage ?? {}) as Partial<AnthropicUsage>;
+  return {
+    stop_reason: p.stop_reason ?? null,
+    content: p.content,
+    usage: { input_tokens: u.input_tokens ?? 0, output_tokens: u.output_tokens ?? 0 },
+  };
 }
 
 // Run an LLM-backed agent against a connected MCP client until the
@@ -223,6 +246,7 @@ export async function runLlmAgent(
 
   const messages: AnthropicMessage[] = [{ role: 'user', content: config.task }];
   const turns: LlmAgentTurn[] = [];
+  const totalUsage: LlmAgentUsage = { input_tokens: 0, output_tokens: 0 };
 
   for (let turnIndex = 0; turnIndex < config.max_turns; turnIndex++) {
     const response = await callAnthropic(fetchImpl, baseUrl, config.apiKey, {
@@ -232,6 +256,9 @@ export async function runLlmAgent(
       tools,
       messages,
     });
+
+    totalUsage.input_tokens += response.usage.input_tokens;
+    totalUsage.output_tokens += response.usage.output_tokens;
 
     // Record the assistant message verbatim so the next request
     // carries the full conversation (tool_use blocks included).
@@ -245,12 +272,12 @@ export async function runLlmAgent(
       (b): b is AnthropicToolUseBlock => b.type === 'tool_use',
     );
 
-    const turn: LlmAgentTurn = { text, tool_calls: [] };
+    const turn: LlmAgentTurn = { text, usage: response.usage, tool_calls: [] };
 
     if (toolUses.length === 0) {
       turns.push(turn);
       config.on_turn?.(turn, turnIndex);
-      return { turns, stop_reason: response.stop_reason ?? 'end_turn' };
+      return { turns, stop_reason: response.stop_reason ?? 'end_turn', usage: totalUsage };
     }
 
     // Execute each tool call against the MCP server and build the
@@ -293,5 +320,5 @@ export async function runLlmAgent(
     config.on_turn?.(turn, turnIndex);
   }
 
-  return { turns, stop_reason: 'max_turns' };
+  return { turns, stop_reason: 'max_turns', usage: totalUsage };
 }
