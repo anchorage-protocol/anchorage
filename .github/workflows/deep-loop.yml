@@ -1,0 +1,46 @@
+name: deep-loop
+
+# Manual-trigger only for now. The model-backed deep loop (a small
+# population of real-LLM contributors — mostly honest-strong, plus one
+# patient adversary — against a fresh Anchorage instance with a
+# contested item the adversary can drift on) costs real Anthropic
+# tokens, so it runs on demand rather than on every push. A `schedule:`
+# trigger is the natural next step once an ANTHROPIC_API_KEY is
+# provisioned in repo secrets. Without that secret the runner prints how
+# to set a key and exits 0, so this workflow is safe even before the key
+# exists — it just does nothing useful.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Anthropic model id'
+        required: false
+        default: 'claude-haiku-4-5-20251001'
+      budget_usd:
+        description: 'USD spend ceiling for the run'
+        required: false
+        default: '15'
+      adversary_objective:
+        description: "Patient adversary's hidden objective (blank = runner default)"
+        required: false
+        default: ''
+
+jobs:
+  deep-loop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: run the deep loop
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANCHORAGE_TESTBED_MODEL: ${{ inputs.model }}
+          ANCHORAGE_POPULATION_BUDGET_USD: ${{ inputs.budget_usd }}
+          ANCHORAGE_ADVERSARY_OBJECTIVE: ${{ inputs.adversary_objective }}
+        run: pnpm --filter @anchorage/server deep-loop
