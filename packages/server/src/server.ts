@@ -895,13 +895,17 @@ export class Server {
     this.store.rateLimits.set(identity.id, { epoch, count: current + 1 });
   }
 
-  // Resolve an assignment that belongs to the given identity and is
-  // in the `offered` state — the entry point for accept/decline/
-  // expiry transitions. Used by accept_assignment, decline_assignment,
-  // and (later) the assignment-expiry sweep.
-  private requireOwnedOfferedAssignment(
+  // Resolve an assignment that belongs to the given identity and sits
+  // in one of the allowed states — the entry point for accept/decline/
+  // expiry transitions. `accept_assignment` allows only `offered`;
+  // `decline_assignment` allows `offered` *or* `accepted` (a
+  // contributor who accepted and then can't deliver bails out the same
+  // way — PRD §Capacity and assignment (decline_assignment)); the
+  // (later) expiry sweep allows `offered` or `accepted` too.
+  private requireOwnedAssignment(
     assignmentId: AssignmentId,
     identityId: IdentityId,
+    allowedStatuses: readonly Assignment['status'][] = ['offered'],
   ): Assignment {
     const a = this.store.assignments.get(assignmentId);
     if (!a) {
@@ -913,8 +917,11 @@ export class Server {
         `assignment ${assignmentId} does not belong to ${identityId}`,
       );
     }
-    if (a.status !== 'offered') {
-      throw new ServerError('invalid_state', `assignment ${assignmentId} is ${a.status}`);
+    if (!allowedStatuses.includes(a.status)) {
+      throw new ServerError(
+        'invalid_state',
+        `assignment ${assignmentId} is ${a.status} (expected ${allowedStatuses.join(' or ')})`,
+      );
     }
     return a;
   }
@@ -1732,7 +1739,7 @@ export class Server {
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
       this.accountWriteAction(identity);
-      const a = this.requireOwnedOfferedAssignment(parsed.assignment_id, identity.id);
+      const a = this.requireOwnedAssignment(parsed.assignment_id, identity.id);
       const now = this.clock.now();
       this.store.assignments.set(a.id, { ...a, status: 'accepted', updated_at: now });
       return { ok: true };
@@ -1749,7 +1756,16 @@ export class Server {
     // rate (PRD §Capacity and assignment), so the reason stays
     // curator-facing by construction. Declining individual
     // assignments is explicitly non-punitive on its own (PRD
-    // §Capacity and assignment (decline)).
+    // §Capacity and assignment (decline)). An `accepted` assignment is
+    // declinable too: a contributor who accepted and then can't
+    // deliver (the task turned out beyond them, or their client wedged
+    // mid-fulfillment) bails the same way rather than stranding the
+    // slot — the target frees up for another contributor, and the
+    // decline counts toward the same cumulative-rate gate, so an
+    // accept-then-decline churn pattern surfaces exactly like a
+    // bare-decline pattern. (Stale `accepted` assignments a wedged
+    // client never declines at all are the residual case a future
+    // expiry sweep reclaims; that sweep is not yet wired.)
     declineAssignment: async (
       caller: Caller,
       input: DeclineAssignmentInput,
@@ -1758,7 +1774,10 @@ export class Server {
       const { identity } = resolveCaller(this.store, caller);
       this.requireMinAttestation(identity);
       this.accountWriteAction(identity);
-      const a = this.requireOwnedOfferedAssignment(parsed.assignment_id, identity.id);
+      const a = this.requireOwnedAssignment(parsed.assignment_id, identity.id, [
+        'offered',
+        'accepted',
+      ]);
       const now = this.clock.now();
       this.store.assignments.set(a.id, {
         ...a,

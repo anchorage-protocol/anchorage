@@ -57,7 +57,7 @@ import { FakeVerifier } from './verifier.js';
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const DEFAULT_BUDGET_USD = 15;
-const CONTRIBUTOR_COUNT = 3;
+const CONTRIBUTOR_COUNT = 5;
 const MAX_ROUNDS = 6;
 const MAX_TURNS_PER_ROUND = 16;
 
@@ -164,8 +164,7 @@ function graphStatusLine(server: Server): string {
     nodesByKind.set(n.kind, (nodesByKind.get(n.kind) ?? 0) + 1);
   const proposalStr =
     [...byStatus.entries()].map(([s, c]) => `${s}=${c}`).join(' ') || '(no proposals)';
-  const nodeStr =
-    [...nodesByKind.entries()].map(([k, c]) => `${k}=${c}`).join(' ') || '(no nodes)';
+  const nodeStr = [...nodesByKind.entries()].map(([k, c]) => `${k}=${c}`).join(' ') || '(no nodes)';
   const reviewVotes = server.store.reviewVotes.size;
   return `proposals: ${proposalStr} | nodes: ${nodeStr} | review_votes=${reviewVotes}`;
 }
@@ -280,7 +279,9 @@ async function main(): Promise<void> {
     // ceiling; stop before a round that could plausibly cross it.
     if (spentSoFar >= budgetUsd * 0.85) {
       stopReason = 'budget';
-      console.log(`# stopping before round ${round}: spent ~$${spentSoFar.toFixed(2)} of $${budgetUsd}`);
+      console.log(
+        `# stopping before round ${round}: spent ~$${spentSoFar.toFixed(2)} of $${budgetUsd}`,
+      );
       break;
     }
     if (frontierEmpty(server)) {
@@ -346,8 +347,13 @@ async function main(): Promise<void> {
   }
   console.log('# nodes in the graph:');
   for (const n of server.store.nodes.values()) {
-    const span = n.kind === 'excerpt' ? ` span="${(n as { quoted_span: { text: string } }).quoted_span.text}"` : '';
-    console.log(`#   ${n.kind} ${n.id} status=${n.status} content="${n.content.slice(0, 80)}${n.content.length > 80 ? '…' : ''}"${span}`);
+    const span =
+      n.kind === 'excerpt'
+        ? ` span="${(n as { quoted_span: { text: string } }).quoted_span.text}"`
+        : '';
+    console.log(
+      `#   ${n.kind} ${n.id} status=${n.status} content="${n.content.slice(0, 80)}${n.content.length > 80 ? '…' : ''}"${span}`,
+    );
   }
 }
 

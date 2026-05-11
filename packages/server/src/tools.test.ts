@@ -1138,6 +1138,31 @@ describe('tools.acceptAssignment / declineAssignment', () => {
     const next = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
     expect(next.assignment_id).not.toBe(assignment_id);
   });
+
+  it('declines an accepted assignment, freeing the target for another contributor', async () => {
+    const { f, bobCaller, assignment_id } = await withOfferedExcerptAssignment();
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
+    // Bob accepted, then can't deliver — declining an `accepted`
+    // assignment is allowed and is the bail-out path.
+    await f.server.tools.declineAssignment(bobCaller, {
+      assignment_id,
+      reason: 'client wedged mid-fulfillment',
+    });
+    const stored = f.server.store.assignments.get(assignment_id);
+    expect(stored?.status).toBe('declined');
+    expect(stored?.decline_reason).toBe('client wedged mid-fulfillment');
+    // The single seeded orphan anchor is now offerable to a fresh
+    // contributor (decline blocks re-offer only to the decliner).
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const carolCaller: Caller = { identity_id: carol.id };
+    await f.server.tools.setCapacity(carolCaller, {
+      cause_id: f.cause_id,
+      rate: 3,
+      kinds: ['excerpt'],
+    });
+    const next = await f.server.tools.requestAssignment(carolCaller, { cause_id: f.cause_id });
+    expect(next.task.kind).toBe('excerpt');
+  });
 });
 
 describe('tools.submitAssignedProposal', () => {
