@@ -14129,6 +14129,380 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
+  // (cross-cause-sybil × min_signal) sweep — cube #19, the adversary
+  // -measurement cube on the cross-cause identity-clustering surface
+  // ROADMAP §Status's prior next-milestones tail named ("slice 4 of
+  // identity-cost is wired as a curator projection but not yet cube-
+  // checked against multi-cause sybil farms"). Cubes #6-#9 read the
+  // four-layer sybil-resistance architecture's *enforcement* layers
+  // (binding cost, issuance cap, per-identity rate-limit) at the
+  // write-path gate; cube #19 reads the *visibility* layer (cross-
+  // cause identity-clustering, `server.curator.identityClusters`) on
+  // the regression-handle attack pattern PRD §Identity bullet 4
+  // names: a sybil pair working multiple causes whose cross-cause
+  // behavioral fingerprint lights up only when read across the whole
+  // graph, with a single-cause honest pair as noise control to read
+  // the precision axis alongside recall.
+  //
+  // The cube is structurally distinct from the prior 18 in that the
+  // closure is *visibility for curator action*, not enforcement at
+  // the write-path. PRD §Identity bullet 4 commits the projection as
+  // a curator surface (specific signals operationally private at the
+  // production instance) — the curator's enforcement choice on the
+  // surfaced pair is downstream of the projection itself, so the
+  // cube reads "did the projection surface the sybil pair" as the
+  // ASR proxy and "did it filter the honest pair" as the precision
+  // proxy. The mapping: ASR ≡ sybil pair NOT in projection result
+  // (operator's perspective: the sybil farm evaded the curator's
+  // visibility surface); false_positive_rate ≡ honest pair IN
+  // projection result (curator's perspective: the surface lit up
+  // against legitimate single-cause coordination).
+  //
+  // The runner sets up K_sybil causes; sybil pair (alice+bob) co-
+  // votes on one excerpt in each cause (cross_cause_count = K_sybil,
+  // shared_proposal_count = K_sybil); honest pair (carol+dave) co-
+  // votes on one excerpt in cause 0 only (cross_cause_count = 1,
+  // shared_proposal_count = 1). The projection is computed at
+  // `min_signal=M` and the runner reads pair presence directly off
+  // the result list. Cluster-formation under the cube is purely
+  // arithmetic — pairs surface iff cross_cause_count ≥ M — so the
+  // cube reads M's effect on the precision-recall pivot directly:
+  //
+  //   - (K=2, M=1): sybil in (count=2 ≥ 1), honest in (count=1 ≥
+  //     1) → attack=false, fp=true. Both pairs surface; M=1 is the
+  //     "show everything" threshold the v0 default avoids.
+  //   - (K=2, M=2): sybil in (2 ≥ 2), honest out (1 < 2) → attack=
+  //     false, fp=false. *The precision-recall pivot, the v0
+  //     default*: sybil pair surfaces, honest noise filtered.
+  //   - (K=2, M=3): sybil out (2 < 3), honest out → attack=true,
+  //     fp=false. Tighter threshold lets the K=2 farm evade.
+  //   - (K=3, M=1): sybil in, honest in → attack=false, fp=true.
+  //   - (K=3, M=2): sybil in (3 ≥ 2), honest out → attack=false,
+  //     fp=false.
+  //   - (K=3, M=3): sybil in (3 ≥ 3), honest out → attack=false,
+  //     fp=false. Wider farms surface at any M ≤ K.
+  //
+  // Aggregate by min_signal:
+  //   - M=1: ASR=0% (everything surfaces), fp_rate=100% (honest noise
+  //     surfaces).
+  //   - M=2: ASR=0% (sybils all surface), fp_rate=0% (honest filtered)
+  //     — *the precision-recall pivot, the v0 default per the
+  //     identityClusters() implementation, and the smallest threshold
+  //     that filters single-cause coordination noise*.
+  //   - M=3: ASR=50% (K=2 evades, K=3 surfaces), fp_rate=0%.
+  //
+  // Aggregate by K_sybil:
+  //   - K=2: ASR=33% (only M=3 evades), fp_rate=33% (only M=1 fp).
+  //   - K=3: ASR=0% (no M evades), fp_rate=33% (only M=1 fp).
+  //
+  // The K=2 vs K=3 ASR difference reads the *operator's spread-thin
+  // strategy*: at the v0 default M=2 the projection catches K=2 and
+  // K=3 farms uniformly; raising M trades recall (K=2 evades at
+  // M=3) for tighter precision the M=2 default already buys for
+  // free. The curator's threshold choice is operationally private
+  // per PRD §Identity bullet 4 ("methodology is public, tuning is
+  // not") — cube #19 reads the public methodology's precision-
+  // recall structure across thresholds without committing the v0
+  // default to a particular tuning regime.
+  //
+  // Cube #19 is the visibility-layer sibling of cube #9 (the
+  // enforcement-layer cube on the four-layer sybil-resistance
+  // architecture): cube #9 reads the cluster-signal × budget-axis
+  // composition where the closure is structural at the assignment
+  // gate (cross-stratum routing); cube #19 reads the cross-cause
+  // identity-clustering projection where the closure is
+  // visibility for curator action. The two cubes cover
+  // complementary modalities of the same architecture: cube #9 the
+  // write-path gate, cube #19 the curator-side surface, both
+  // reading regression-handle attack patterns PRD §Identity names
+  // by structural framing.
+  async function runCrossCauseSybilDetectionScenario(params: {
+    sybil_cause_count: number;
+    min_signal: number;
+  }): Promise<{
+    sybil_pair_surfaced: boolean;
+    honest_pair_surfaced: boolean;
+    attack_succeeded: boolean;
+    honest_false_positive: boolean;
+    sybil_cross_cause_count: number;
+    honest_cross_cause_count: number;
+  }> {
+    if (params.sybil_cause_count < 2) {
+      throw new Error(
+        `runCrossCauseSybilDetectionScenario: sybil_cause_count=${params.sybil_cause_count} below 2 — single-cause coordination is not the cross-cause projection's domain by design (PRD §Identity bullet 4); other cubes (e.g. cube #11 stratification on coalition) measure single-cause closure paths`,
+      );
+    }
+    const sources = new Map<string, string>();
+    for (let c = 0; c < params.sybil_cause_count; c++) {
+      // PMIDs validate as `^\d+$` per the contracts schema; use a
+      // deterministic numeric encoding (cause-c → "100+c") rather
+      // than letter-prefixed keys so proposeAnchor's input parse
+      // doesn't reject the external_ref.
+      sources.set(String(100 + c), `cause ${c} sybil paper`);
+    }
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('cci'),
+      verifier: new FakeVerifier(new Set(), new Map(), sources),
+      // No special review config — the projection is a curator-side
+      // surface, agnostic to assignment-time and convergence-time
+      // knobs. Defaults keep the runner's scope honest: cube #19
+      // measures the projection itself, not its interaction with
+      // assignment gates or convergence thresholds.
+    });
+    const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
+    const seederCaller = { identity_id: seeder.id };
+
+    interface SybilCause {
+      id: CauseId;
+      subTopicId: SubTopicId;
+      anchorId: NodeId;
+    }
+    type CauseId = ReturnType<typeof server.bootstrap.createCause>['id'];
+    type SubTopicId = ReturnType<typeof server.bootstrap.seedSubTopic>['id'];
+    const causes: SybilCause[] = [];
+    for (let c = 0; c < params.sybil_cause_count; c++) {
+      const cause = server.bootstrap.createCause({
+        name: `cause-${c}`,
+        description: `cause ${c}`,
+      });
+      const subTopic = server.bootstrap.seedSubTopic({
+        cause_id: cause.id,
+        name: `st-${c}`,
+        description: 'x',
+        scope_query: 'x',
+      });
+      const anchor = await server.tools.proposeAnchor(seederCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: `cause-${c} sybil anchor`,
+        external_ref: { kind: 'pmid', value: String(100 + c) },
+      });
+      server.curator.acceptProposal(anchor.proposal_id);
+      const anchorNode = [...server.store.nodes.values()].find(
+        (n) => n.kind === 'anchor' && n.content === `cause-${c} sybil anchor`,
+      );
+      if (!anchorNode) throw new Error(`cause ${c} anchor not materialized`);
+      causes.push({ id: cause.id, subTopicId: subTopic.id, anchorId: anchorNode.id });
+    }
+
+    // Sybil pair: alice+bob co-vote on one excerpt in each of the
+    // K_sybil causes → cross_cause_count = K_sybil,
+    // shared_proposal_count = K_sybil. The contributor-initiated
+    // path doesn't require capacity (no assignment loop), so the
+    // sybil pair operates fresh-from-mint without rep-gate setup.
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    for (const c of causes) {
+      const excerpt = await server.tools.proposeExcerpt(seederCaller, {
+        cause_id: c.id,
+        home_sub_topic_id: c.subTopicId,
+        parent_anchor_id: c.anchorId,
+        content: 'sybil-shared excerpt',
+        quoted_span: { text: 'sybil paper', offset: 0 },
+      });
+      for (const id of [alice.id, bob.id]) {
+        await server.tools.castReviewVote(
+          { identity_id: id },
+          { proposal_id: excerpt.proposal_id, decision: 'accept', rationale: 'r' },
+        );
+      }
+    }
+
+    // Honest noise pair: carol+dave co-vote on one excerpt in cause
+    // 0 only → cross_cause_count = 1, shared_proposal_count = 1.
+    // The cube's precision axis: at min_signal=1 they surface as a
+    // false positive; at min_signal ≥ 2 they're filtered by the
+    // projection threshold.
+    const cause0 = causes[0];
+    if (!cause0) throw new Error('cause 0 missing');
+    const honestExcerpt = await server.tools.proposeExcerpt(seederCaller, {
+      cause_id: cause0.id,
+      home_sub_topic_id: cause0.subTopicId,
+      parent_anchor_id: cause0.anchorId,
+      content: 'honest single-cause excerpt',
+      quoted_span: { text: 'sybil paper', offset: 0 },
+    });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    for (const id of [carol.id, dave.id]) {
+      await server.tools.castReviewVote(
+        { identity_id: id },
+        { proposal_id: honestExcerpt.proposal_id, decision: 'accept', rationale: 'r' },
+      );
+    }
+
+    const clusters = server.curator.identityClusters({ min_signal: params.min_signal });
+    const sybilIds = [alice.id, bob.id].sort();
+    const honestIds = [carol.id, dave.id].sort();
+    const sybilEntry = clusters.find(
+      (c) => [c.identity_a, c.identity_b].sort().join('|') === sybilIds.join('|'),
+    );
+    const honestEntry = clusters.find(
+      (c) => [c.identity_a, c.identity_b].sort().join('|') === honestIds.join('|'),
+    );
+    return {
+      sybil_pair_surfaced: sybilEntry !== undefined,
+      honest_pair_surfaced: honestEntry !== undefined,
+      attack_succeeded: sybilEntry === undefined,
+      honest_false_positive: honestEntry !== undefined,
+      sybil_cross_cause_count: sybilEntry?.cross_cause_count ?? 0,
+      honest_cross_cause_count: honestEntry?.cross_cause_count ?? 0,
+    };
+  }
+
+  interface CrossCauseSweepCell {
+    name: string;
+    sybil_cause_count: number;
+    min_signal: number;
+    expected_attack_succeeded: boolean;
+    expected_honest_false_positive: boolean;
+  }
+  const crossCauseSweepCells: CrossCauseSweepCell[] = [
+    {
+      name: 'K_sybil=2, min_signal=1 (everything surfaces; honest noise lights up as false positive)',
+      sybil_cause_count: 2,
+      min_signal: 1,
+      expected_attack_succeeded: false,
+      expected_honest_false_positive: true,
+    },
+    {
+      name: 'K_sybil=2, min_signal=2 (precision-recall pivot, v0 default — sybils surface, honest filtered)',
+      sybil_cause_count: 2,
+      min_signal: 2,
+      expected_attack_succeeded: false,
+      expected_honest_false_positive: false,
+    },
+    {
+      name: 'K_sybil=2, min_signal=3 (tighter threshold lets K=2 farm evade; honest still filtered)',
+      sybil_cause_count: 2,
+      min_signal: 3,
+      expected_attack_succeeded: true,
+      expected_honest_false_positive: false,
+    },
+    {
+      name: 'K_sybil=3, min_signal=1 (everything surfaces; honest noise false positive)',
+      sybil_cause_count: 3,
+      min_signal: 1,
+      expected_attack_succeeded: false,
+      expected_honest_false_positive: true,
+    },
+    {
+      name: 'K_sybil=3, min_signal=2 (default; wider farm surfaces, honest filtered)',
+      sybil_cause_count: 3,
+      min_signal: 2,
+      expected_attack_succeeded: false,
+      expected_honest_false_positive: false,
+    },
+    {
+      name: 'K_sybil=3, min_signal=3 (M = K_sybil boundary; pair just makes it through)',
+      sybil_cause_count: 3,
+      min_signal: 3,
+      expected_attack_succeeded: false,
+      expected_honest_false_positive: false,
+    },
+  ];
+  it.each(crossCauseSweepCells)('(cross-cause-sybil × min_signal) sweep: $name', async ({
+    sybil_cause_count,
+    min_signal,
+    expected_attack_succeeded,
+    expected_honest_false_positive,
+  }) => {
+    const result = await runCrossCauseSybilDetectionScenario({
+      sybil_cause_count,
+      min_signal,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.honest_false_positive).toBe(expected_honest_false_positive);
+    // Regression handle on the projection's metric arithmetic:
+    // sybil cross_cause_count must equal sybil_cause_count when
+    // surfaced (a future change to the per-pair counting that
+    // misses the cause-distinct semantics would surface here
+    // before downstream ASR drift). When the pair is below
+    // threshold the runner reports 0 by construction (filtered
+    // pairs aren't in the result list); the assertion only fires
+    // on cells where the pair surfaces.
+    if (!expected_attack_succeeded) {
+      expect(result.sybil_cross_cause_count).toBe(sybil_cause_count);
+    }
+    if (expected_honest_false_positive) {
+      expect(result.honest_cross_cause_count).toBe(1);
+    }
+  });
+
+  it('(cross-cause-sybil × min_signal) sweep cube: ASR + false-positive-rate aggregate by min_signal isolates the precision-recall pivot at the v0 default M=2 (PRD §Identity bullet 4, cross-cause clustering as visibility surface)', () => {
+    interface CrossCauseAsrCell {
+      key: number;
+      total: number;
+      attacks_succeeded: number;
+      false_positives: number;
+    }
+    function group(keyOf: (cell: CrossCauseSweepCell) => number): Map<number, CrossCauseAsrCell> {
+      const m = new Map<number, CrossCauseAsrCell>();
+      for (const cell of crossCauseSweepCells) {
+        const k = keyOf(cell);
+        const g = m.get(k) ?? { key: k, total: 0, attacks_succeeded: 0, false_positives: 0 };
+        g.total += 1;
+        if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+        if (cell.expected_honest_false_positive) g.false_positives += 1;
+        m.set(k, g);
+      }
+      return m;
+    }
+    const groupedByMin = group((c) => c.min_signal);
+    const groupedByK = group((c) => c.sybil_cause_count);
+    const asrOf = (m: Map<number, CrossCauseAsrCell>, k: number): number => {
+      const g = m.get(k);
+      if (!g) throw new Error(`missing key=${k}`);
+      return g.attacks_succeeded / g.total;
+    };
+    const fprOf = (m: Map<number, CrossCauseAsrCell>, k: number): number => {
+      const g = m.get(k);
+      if (!g) throw new Error(`missing key=${k}`);
+      return g.false_positives / g.total;
+    };
+
+    // By min_signal: the precision-recall pivot reading. M=1 is
+    // "show everything" — both metrics at their permissive extreme:
+    // ASR=0% (no farm evades) but fp_rate=100% (honest noise lights
+    // up). M=2 (the v0 default in identityClusters()) is *the
+    // smallest threshold that filters single-cause noise*: ASR
+    // stays 0% (all multi-cause farms surface) but fp_rate flips to
+    // 0%. M=3 trades recall for nothing — fp_rate already 0% at
+    // M=2, but ASR rises to 50% as the K=2 farm evades. The
+    // pivot at M=2 is the headline: it's the smallest threshold
+    // that achieves perfect precision against single-cause noise
+    // without sacrificing any recall against the K ∈ {2, 3} farms
+    // the cube measures.
+    expect(asrOf(groupedByMin, 1)).toBe(0);
+    expect(fprOf(groupedByMin, 1)).toBe(1);
+    expect(asrOf(groupedByMin, 2)).toBe(0);
+    expect(fprOf(groupedByMin, 2)).toBe(0);
+    expect(asrOf(groupedByMin, 3)).toBe(0.5);
+    expect(fprOf(groupedByMin, 3)).toBe(0);
+
+    // By K_sybil: the operator's spread-thin reading. K=2 farms
+    // evade at M=3 (1/3 cells leak); K=3 farms surface at every M
+    // the cube measures (0/3 cells leak). The fp_rate reads
+    // identical 33% across both K values because the noise pair is
+    // configured at K=1 regardless and only M=1 surfaces it.
+    expect(asrOf(groupedByK, 2)).toBeCloseTo(1 / 3);
+    expect(asrOf(groupedByK, 3)).toBe(0);
+    expect(fprOf(groupedByK, 2)).toBeCloseTo(1 / 3);
+    expect(fprOf(groupedByK, 3)).toBeCloseTo(1 / 3);
+
+    // Coverage invariants: 6 cells, 2 per (min_signal) value, 3
+    // per (K_sybil) value. Same shape cubes #6-#18 carry; a future
+    // cell expansion that breaks the symmetry trips the assertion
+    // and forces the aggregate to be re-keyed.
+    for (const cell of groupedByMin.values()) {
+      expect(cell.total).toBe(2);
+    }
+    for (const cell of groupedByK.values()) {
+      expect(cell.total).toBe(3);
+    }
+  });
+
   it('surfaces typed error codes through AnchorageClientError', async () => {
     const server = new Server({
       clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
