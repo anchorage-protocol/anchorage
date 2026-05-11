@@ -1,0 +1,246 @@
+import {
+  AnchorageClient,
+  acceptAllDecider,
+  type ContentProvider,
+  type ReviewDecider,
+  rejectAllDecider,
+  runHonestReviewer,
+  runHonestStrong,
+} from '@anchorage/testbed';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { describe, expect, it } from 'vitest';
+import { FakeClock } from './clock.js';
+import { SeededIdGen } from './id-gen.js';
+import { buildMcpServer } from './mcp.js';
+import { runPopulationRounds } from './population-loop.js';
+import { type ReviewConfig, Server } from './server.js';
+import { FakeVerifier } from './verifier.js';
+
+// Honest-baseline integration for the population round-loop core. The
+// model-backed runner (`run-population.ts`) needs an Anthropic key to
+// run, so its round structure, the between-rounds curator-escalation
+// pass, the frontier-drained termination, and the per-round status
+// logging would otherwise only ever be "I ran it once and it looked
+// fine". Here `runPopulationRounds` is driven by the deterministic
+// scripted archetypes (the same ones `testbed.test.ts` uses for
+// adversary scenarios) over the in-memory MCP transport: contributors
+// run *concurrently* per round (the regime `testbed.test.ts`'s
+// sequential reviewer runs don't exercise), and the test asserts the
+// run drains a seeded orphan-anchor frontier to a clean graph.
+//
+// What this pins, and what it doesn't: it pins the *harness plumbing*
+// (round loop, frontier accounting, curator escalation, the
+// `runContributor` seam) — the governance machinery under honest
+// populations is already heavily covered by `testbed.test.ts`'s
+// scenarios, and a real model can still misquote a span or misvote in
+// ways scripted archetypes don't. This is the honest *baseline* the
+// adversarial deep-loop scenarios build on, not a substitute for
+// occasional real-model runs.
+
+const SEED_ANCHORS: { pmid: string; source: string }[] = [
+  {
+    pmid: '40000001',
+    source:
+      'In a prospective cohort of resected stage II colon cancer, ctDNA detected four to ten weeks after surgery identified a group at sharply elevated recurrence risk.',
+  },
+  {
+    pmid: '40000002',
+    source:
+      'Among ctDNA-negative patients after curative-intent resection, withholding adjuvant chemotherapy was non-inferior to standard adjuvant therapy for two-year recurrence-free survival.',
+  },
+  {
+    pmid: '40000003',
+    source:
+      'A meta-analysis of eleven post-operative ctDNA studies in colorectal cancer found a positive landmark result carried a hazard ratio for recurrence near seven relative to a negative result.',
+  },
+];
+
+// Stand up a fresh server seeded with the orphan anchors above, plus a
+// content provider keyed by the materialized anchor node ids so an
+// excerpt-worker archetype can quote a verbatim span from each.
+async function seedServer(reviewOverrides: Partial<ReviewConfig>) {
+  const sources = new Map<string, string>(SEED_ANCHORS.map((a) => [a.pmid, a.source]));
+  const server = new Server({
+    clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+    idGen: new SeededIdGen('pop-test'),
+    verifier: new FakeVerifier(new Set(), new Map(), sources),
+    review: reviewOverrides,
+  });
+  const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
+  const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
+  const subTopic = server.bootstrap.seedSubTopic({
+    cause_id: cause.id,
+    name: 'ctDNA-MRD',
+    description: 'ctDNA minimal residual disease in resected colorectal cancer',
+    scope_query: 'ctDNA MRD colorectal cancer',
+  });
+  const sourceByAnchorNode = new Map<string, string>();
+  for (const a of SEED_ANCHORS) {
+    const proposal = await server.tools.proposeAnchor(
+      { identity_id: seeder.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: a.source,
+        external_ref: { kind: 'pmid', value: a.pmid },
+      },
+    );
+    const { node_id } = server.curator.acceptProposal(proposal.proposal_id);
+    if (!node_id) throw new Error('expected materialized anchor node');
+    sourceByAnchorNode.set(node_id, a.source);
+  }
+  const content: ContentProvider = {
+    forAnchor(anchorId: string) {
+      const source = sourceByAnchorNode.get(anchorId);
+      if (!source) return null;
+      // A verbatim span the FakeVerifier matches against the source,
+      // plus a paraphrased atomic claim (not span-verified).
+      return {
+        content: `Claim extracted from ${anchorId}: ${source.slice(0, 50)}`,
+        quoted_span: { text: source.slice(0, 60), offset: 0 },
+      };
+    },
+  };
+  return { server, cause_id: cause.id, content };
+}
+
+async function wireClient(server: Server, identity_id: string): Promise<AnchorageClient> {
+  const mcp = buildMcpServer(server, { caller: { identity_id: identity_id as never } });
+  const client = new Client({ name: 'pop-contributor', version: '0.0.0' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await Promise.all([mcp.connect(st), client.connect(ct)]);
+  return new AnchorageClient(client);
+}
+
+// A population contributor: a display name, an MCP-wired client, and a
+// fixed role. The archetypes set their own capacity each round, so a
+// contributor keeps the same role across rounds.
+type ContributorRole =
+  | { kind: 'excerpt'; content: ContentProvider }
+  | { kind: 'review'; decide: ReviewDecider };
+interface PopContributor {
+  display_name: string;
+  client: AnchorageClient;
+  role: ContributorRole;
+}
+
+async function buildPopulation(
+  server: Server,
+  spec: { content: ContentProvider; excerptWorkers: number; reviewers: ReviewDecider[] },
+): Promise<PopContributor[]> {
+  const pop: PopContributor[] = [];
+  for (let i = 1; i <= spec.excerptWorkers; i++) {
+    const identity = server.bootstrap.mintIdentity({ display_name: `excerpt-${i}` });
+    pop.push({
+      display_name: `excerpt-${i}`,
+      client: await wireClient(server, identity.id),
+      role: { kind: 'excerpt', content: spec.content },
+    });
+  }
+  for (const [i, decide] of spec.reviewers.entries()) {
+    const identity = server.bootstrap.mintIdentity({ display_name: `reviewer-${i + 1}` });
+    pop.push({
+      display_name: `reviewer-${i + 1}`,
+      client: await wireClient(server, identity.id),
+      role: { kind: 'review', decide },
+    });
+  }
+  return pop;
+}
+
+function runContributorFor(cause_id: string) {
+  return async (c: PopContributor) => {
+    if (c.role.kind === 'excerpt') {
+      await runHonestStrong(c.client, {
+        cause_id: cause_id as never,
+        rate: 10,
+        kinds: ['excerpt'],
+        content: c.role.content,
+      });
+    } else {
+      await runHonestReviewer(c.client, {
+        cause_id: cause_id as never,
+        rate: 10,
+        decide: c.role.decide,
+      });
+    }
+    return { usage: { input_tokens: 0, output_tokens: 0 } };
+  };
+}
+
+function excerptNodeCount(server: Server): number {
+  return [...server.store.nodes.values()].filter((n) => n.kind === 'excerpt').length;
+}
+
+function stagedCount(server: Server): number {
+  return [...server.store.proposals.values()].filter((p) => p.status === 'staged').length;
+}
+
+describe('population-loop honest baseline', () => {
+  it('drains a seeded orphan-anchor frontier to one peer-reviewed excerpt per anchor', async () => {
+    const { server, cause_id, content } = await seedServer({ votes_to_accept: 3 });
+    const population = await buildPopulation(server, {
+      content,
+      excerptWorkers: 2,
+      reviewers: [acceptAllDecider, acceptAllDecider, acceptAllDecider],
+    });
+
+    const result = await runPopulationRounds<PopContributor>({
+      server,
+      contributors: population,
+      runContributor: runContributorFor(cause_id),
+      max_rounds: 6,
+    });
+
+    expect(result.stop_reason).toBe('frontier_drained');
+    expect(result.escalations).toEqual([]);
+    expect(result.total_usage).toEqual({ input_tokens: 0, output_tokens: 0 });
+    // Every seeded anchor now has exactly one excerpt node, all active,
+    // and nothing is left staged.
+    expect(excerptNodeCount(server)).toBe(SEED_ANCHORS.length);
+    expect(stagedCount(server)).toBe(0);
+    for (const n of server.store.nodes.values()) {
+      if (n.kind === 'excerpt') expect(n.status).toBe('active');
+    }
+    const acceptedExcerpts = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt' && p.status === 'accepted',
+    );
+    expect(acceptedExcerpts.length).toBe(SEED_ANCHORS.length);
+  });
+
+  it('curator escalation resolves a 1-1 review split the population stalls on', async () => {
+    // votes_to_accept = votes_to_reject = 2, one accept-all reviewer
+    // and one reject-all reviewer: every staged excerpt lands 1 accept
+    // + 1 reject and converges in neither direction. Both reviewers
+    // have then voted, so the population makes no further progress —
+    // the between-rounds curator pass escalates each the round after
+    // the votes land, toward the majority (a 1-1 tie resolves accept).
+    const { server, cause_id, content } = await seedServer({
+      votes_to_accept: 2,
+      votes_to_reject: 2,
+    });
+    const population = await buildPopulation(server, {
+      content,
+      excerptWorkers: 2,
+      reviewers: [acceptAllDecider, rejectAllDecider],
+    });
+
+    const result = await runPopulationRounds<PopContributor>({
+      server,
+      contributors: population,
+      runContributor: runContributorFor(cause_id),
+      max_rounds: 6,
+    });
+
+    expect(result.stop_reason).toBe('frontier_drained');
+    expect(result.escalations.length).toBe(SEED_ANCHORS.length);
+    for (const e of result.escalations) {
+      expect(e.decision).toBe('accept');
+      expect(e.accepts).toBe(1);
+      expect(e.rejects).toBe(1);
+    }
+    expect(excerptNodeCount(server)).toBe(SEED_ANCHORS.length);
+    expect(stagedCount(server)).toBe(0);
+  });
+});
