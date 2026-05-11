@@ -39,4 +39,11 @@ export {
   type HonestWeakResult,
   runHonestWeak,
 } from './archetypes/honest-weak.js';
+export {
+  type FetchLike,
+  type LlmAgentConfig,
+  type LlmAgentResult,
+  type LlmAgentTurn,
+  runLlmAgent,
+} from './archetypes/llm-agent.js';
 export { AnchorageClient, AnchorageClientError } from './client.js';

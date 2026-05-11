@@ -54,6 +54,31 @@ function isServerErrorCode(s: unknown): s is ServerErrorCode {
   );
 }
 
+// The server returns its typed `{ code, message }` error payload as
+// JSON text in the first `content` block of an error result (see the
+// error-shape note in the server's `mcp.ts` for why it isn't
+// `structuredContent`). Pull it back out, tolerating a missing or
+// malformed block.
+function parseErrorPayload(content: unknown): { code?: unknown; message?: unknown } {
+  if (!Array.isArray(content)) return {};
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === 'object' &&
+      (block as { type?: unknown }).type === 'text' &&
+      typeof (block as { text?: unknown }).text === 'string'
+    ) {
+      try {
+        const parsed = JSON.parse((block as { text: string }).text) as Record<string, unknown>;
+        return { code: parsed['code'], message: parsed['message'] };
+      } catch {
+        return {};
+      }
+    }
+  }
+  return {};
+}
+
 // AnchorageClient — a typed wrapper around an MCP client connected to
 // an Anchorage server. Each method corresponds to one entry in the
 // PRD's MCP tool surface; inputs and outputs are the contracts'
@@ -203,9 +228,11 @@ export class AnchorageClient {
   // The single point at which we shape an MCP callTool round-trip
   // into a typed result. Two failure modes:
   //   - The tool returned `isError: true` with our typed code/message
-  //     payload → throw AnchorageClientError carrying the typed code.
-  //   - The tool returned a result that doesn't parse against the
-  //     output schema → throw a generic Error (this is a contract
+  //     payload (JSON text in the first `content` block — see the
+  //     error-shape note in the server's `mcp.ts`) → throw
+  //     AnchorageClientError carrying the typed code.
+  //   - The tool returned a success result that doesn't parse against
+  //     the output schema → throw a generic Error (this is a contract
   //     drift, not a runtime decision the archetype makes).
   private async call<S extends ZodTypeAny>(
     tool: ToolName,
@@ -214,9 +241,10 @@ export class AnchorageClient {
   ): Promise<z.infer<S>> {
     const result = await this.client.callTool({ name: tool, arguments: args });
     if (result.isError) {
-      const sc = (result.structuredContent ?? {}) as { code?: unknown; message?: unknown };
-      const code = isServerErrorCode(sc.code) ? sc.code : 'invalid_state';
-      const message = typeof sc.message === 'string' ? sc.message : 'unspecified server error';
+      const payload = parseErrorPayload(result.content);
+      const code = isServerErrorCode(payload.code) ? payload.code : 'invalid_state';
+      const message =
+        typeof payload.message === 'string' ? payload.message : 'unspecified server error';
       throw new AnchorageClientError(code, tool, message);
     }
     const parsed = schema.safeParse(result.structuredContent);

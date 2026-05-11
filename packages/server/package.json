@@ -17,7 +17,8 @@
     "build": "tsc -b",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "start": "tsx src/index.ts"
+    "start": "tsx src/index.ts",
+    "live": "tsx src/run-live.ts"
   },
   "dependencies": {
     "@anchorage/contracts": "workspace:*",

@@ -104,7 +104,15 @@ describe('mcp transport', () => {
       },
     });
     expect(result.isError).toBe(true);
-    const payload = result.structuredContent as { code?: string; message?: string };
+    // The typed payload rides in the first `content` text block, not
+    // in `structuredContent` — see the error-shape note in `mcp.ts`
+    // (an error payload would fail the tool's output-schema validation
+    // for any client that has listed tools).
+    expect(result.structuredContent).toBeUndefined();
+    const textBlock = (result.content as { type: string; text?: string }[]).find(
+      (b) => b.type === 'text',
+    );
+    const payload = JSON.parse(textBlock?.text ?? '{}') as { code?: string; message?: string };
     // PRD's typed error codes — the testbed adversaries pattern-match
     // on these against the in-process server, and they must survive
     // the transport unchanged.

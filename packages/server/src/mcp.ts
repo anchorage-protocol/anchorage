@@ -68,9 +68,20 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
 
   // Wrap a Server.tools.* method into an MCP tool callback. Wraps
   // ServerError into a tool error result; lets other throws bubble
-  // up as protocol errors. Both successful results and errors return
-  // structuredContent for clients that prefer the typed shape, plus
-  // a JSON-stringified text fallback.
+  // up as protocol errors.
+  //
+  // Success results carry `structuredContent` (the typed shape) plus a
+  // JSON-stringified text fallback. Error results carry the typed
+  // `{ code, message }` payload only as JSON text in `content` — *not*
+  // as `structuredContent`. This is deliberate: a client that has
+  // called `tools/list` caches each tool's `outputSchema` and validates
+  // any `structuredContent` it gets back against it (MCP spec
+  // behavior), and the error payload does not conform to the tool's
+  // success-output schema. Putting it in `content` keeps the typed code
+  // on the wire (the AnchorageClient parses it back out; see
+  // `client.ts`) without tripping output-schema validation. Clients
+  // that never list tools (the scripted archetypes) are unaffected
+  // either way.
   function wrap<I, O>(
     handler: (caller: Caller, input: I) => Promise<O>,
   ): (input: I) => Promise<CallToolResult> {
@@ -86,7 +97,6 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
           const payload = { code: err.code, message: err.message };
           return {
             isError: true,
-            structuredContent: payload,
             content: [{ type: 'text', text: JSON.stringify(payload) }],
           };
         }
