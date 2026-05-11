@@ -34,6 +34,7 @@ import {
 } from '@anchorage/testbed';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { resolveCassetteFetch } from './cassette-file.js';
 import { FakeClock } from './clock.js';
 import { SeededIdGen } from './id-gen.js';
 import { buildMcpServer } from './mcp.js';
@@ -63,8 +64,10 @@ function resolveRole(): LlmRole {
 }
 
 async function main(): Promise<void> {
+  const cassette = resolveCassetteFetch();
   const apiKey = process.env['ANTHROPIC_API_KEY'];
-  if (!apiKey) {
+  const replayOnly = cassette?.mode === 'replay';
+  if (!apiKey && !replayOnly) {
     console.log(
       [
         'No ANTHROPIC_API_KEY set — nothing to run.',
@@ -78,10 +81,16 @@ async function main(): Promise<void> {
         '',
         '  ANCHORAGE_TESTBED_MODEL=claude-sonnet-4-6 ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server live',
         '  ANCHORAGE_TESTBED_ROLE=patient-adversary ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server live',
+        '',
+        'Or replay a previously recorded run with no key and no cost (single-agent runs replay exactly):',
+        '',
+        '  ANCHORAGE_CASSETTE=run.json ANCHORAGE_CASSETTE_MODE=record ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server live',
+        '  ANCHORAGE_CASSETTE=run.json ANCHORAGE_CASSETTE_MODE=replay pnpm --filter @anchorage/server live',
       ].join('\n'),
     );
     return;
   }
+  const effectiveApiKey = apiKey ?? 'cassette-replay-no-key';
   const model = process.env['ANCHORAGE_TESTBED_MODEL'] ?? DEFAULT_MODEL;
   const role = resolveRole();
 
@@ -123,14 +132,17 @@ async function main(): Promise<void> {
   await Promise.all([mcp.connect(st), client.connect(ct)]);
 
   console.log(`# live llm-agent run — model=${model} role=${role.id}`);
-  console.log(`# cause=${cause.id} sub_topic=${subTopic.id} (3 orphan anchors seeded)\n`);
+  console.log(`# cause=${cause.id} sub_topic=${subTopic.id} (3 orphan anchors seeded)`);
+  if (cassette) console.log(`# cassette: ${cassette.path} (mode ${cassette.mode})`);
+  console.log('');
 
   const result = await runLlmAgent(client, {
-    apiKey,
+    apiKey: effectiveApiKey,
     model,
     system: role.system,
     task: role.buildTask(cause.id),
     max_turns: 24,
+    ...(cassette ? { fetch: cassette.fetch } : {}),
     on_turn: (turn, index) => {
       if (turn.text.trim()) console.log(`[turn ${index}] ${turn.text.trim()}`);
       for (const call of turn.tool_calls) {

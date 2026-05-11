@@ -54,4 +54,10 @@ export {
   type PatientAdversaryOptions,
   patientAdversaryRole,
 } from './archetypes/llm-roles.js';
+export {
+  type CassetteEntry,
+  type CassetteMode,
+  type RecordingFetchOptions,
+  recordingFetch,
+} from './archetypes/recording-fetch.js';
 export { AnchorageClient, AnchorageClientError } from './client.js';

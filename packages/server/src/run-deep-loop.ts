@@ -65,6 +65,7 @@ import {
 } from '@anchorage/testbed';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { resolveCassetteFetch } from './cassette-file.js';
 import { FakeClock } from './clock.js';
 import { SeededIdGen } from './id-gen.js';
 import { buildMcpServer } from './mcp.js';
@@ -162,8 +163,10 @@ interface Contributor {
 }
 
 async function main(): Promise<void> {
+  const cassette = resolveCassetteFetch();
   const apiKey = process.env['ANTHROPIC_API_KEY'];
-  if (!apiKey) {
+  const replayOnly = cassette?.mode === 'replay';
+  if (!apiKey && !replayOnly) {
     console.log(
       [
         'No ANTHROPIC_API_KEY set — nothing to run.',
@@ -179,10 +182,16 @@ async function main(): Promise<void> {
         '  ANCHORAGE_TESTBED_MODEL=claude-sonnet-4-6 ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop',
         '  ANCHORAGE_POPULATION_BUDGET_USD=5 ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop',
         '  ANCHORAGE_ADVERSARY_OBJECTIVE="..." ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop',
+        '',
+        'Or replay a previously recorded run with no key and no cost:',
+        '',
+        '  ANCHORAGE_CASSETTE=run.json ANCHORAGE_CASSETTE_MODE=record ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop   # record once',
+        '  ANCHORAGE_CASSETTE=run.json ANCHORAGE_CASSETTE_MODE=replay pnpm --filter @anchorage/server deep-loop                            # replay it',
       ].join('\n'),
     );
     return;
   }
+  const effectiveApiKey = apiKey ?? 'cassette-replay-no-key';
   const model = process.env['ANCHORAGE_TESTBED_MODEL'] ?? DEFAULT_MODEL;
   const budgetUsd = Number(process.env['ANCHORAGE_POPULATION_BUDGET_USD'] ?? DEFAULT_BUDGET_USD);
   if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) {
@@ -276,6 +285,7 @@ async function main(): Promise<void> {
   console.log(
     `# contested proposal: ${contestedProposalId} (claim overstates a non-significant trend)`,
   );
+  if (cassette) console.log(`# cassette: ${cassette.path} (mode ${cassette.mode})`);
   console.log(`# round 0 (seeded): ${graphStatusLine(server)}\n`);
 
   const result = await runPopulationRounds<Contributor>({
@@ -286,11 +296,12 @@ async function main(): Promise<void> {
     log: (line) => console.log(line),
     runContributor: async (c, { round }) => {
       const r = await runLlmAgent(c.client, {
-        apiKey,
+        apiKey: effectiveApiKey,
         model,
         system: c.role.system,
         task: deepLoopTask(cause.id),
         max_turns: MAX_TURNS_PER_ROUND,
+        ...(cassette ? { fetch: cassette.fetch } : {}),
         on_turn: (turn, index) => {
           const tag = `[r${round} ${c.display_name} t${index}]`;
           if (turn.text.trim()) console.log(`${tag} ${turn.text.trim()}`);
