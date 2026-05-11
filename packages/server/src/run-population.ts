@@ -15,8 +15,8 @@
 // small body of work. Sim/prod indistinguishability holds — the agents
 // hit the same MCP surface a real client would.
 //
-// Two things differ from a "real" instance and are deliberate v0
-// shortcuts (both noted again at the seam below):
+// Three things differ from a "real" instance and are deliberate v0
+// shortcuts (each noted again at the seam below):
 //   1. The verifier is the FakeVerifier seeded with a source-text
 //      fixture per anchor, so a contributor's quoted span is matched
 //      against text it can actually see — there is no live PubMed
@@ -28,6 +28,14 @@
 //      the real staged proposals; calibration salting (PRD
 //      §Calibration batches) is left to the scripted-archetype
 //      scenarios and the deep loop.
+//   3. The curator-escalation step between rounds (PRD §Reviewer
+//      assignment step 4) is a deterministic harness actor, not an
+//      agent: it resolves a divergence the population stalled on for a
+//      full round toward the majority of the votes cast (accepting on
+//      a tie). A real curator reads the proposal; the harness
+//      exercises the *path* (curator.acceptProposal /
+//      curator.rejectProposal closing a stuck divergence), not the
+//      judgment. See `escalateStuckProposals`.
 //
 // Budget: every model turn is an API round-trip and the conversation
 // is resent each turn (no prompt caching wired — see llm-agent.ts), so
@@ -195,6 +203,74 @@ function frontierEmpty(server: Server): boolean {
   return true;
 }
 
+interface EscalationOutcome {
+  proposal_id: string;
+  decision: 'accept' | 'reject';
+  accepts: number;
+  rejects: number;
+}
+
+// Vote counts per currently-staged proposal — the pre-round snapshot
+// `escalateStuckProposals` diffs against to tell "progressing" from
+// "stuck".
+function stagedVoteCounts(server: Server): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const p of server.store.proposals.values()) {
+    if (p.status === 'staged') counts.set(p.id, 0);
+  }
+  for (const v of server.store.reviewVotes.values()) {
+    if (counts.has(v.proposal_id)) counts.set(v.proposal_id, (counts.get(v.proposal_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+// Curator-escalation pass between rounds (PRD §Reviewer assignment
+// step 4): a staged proposal the population couldn't move during a
+// full round — a 1-1 review split with no tiebreaker, a contested
+// item the eligible pool is exhausted for, or one no reviewer ever
+// picked up — has no resolution path the contributor loops can reach.
+// The harness curator resolves it toward the majority of the votes
+// cast, accepting on a tie or with no votes (every excerpt here
+// already passed span verification at write time, so "accept" is the
+// productive default; the divergence is recorded in the vote history
+// either way). This is a deliberate v0 harness simplification of the
+// same shape as the FakeVerifier fixture and the absent calibration
+// corpus (file header): a real curator is a person or a model curator
+// reading the proposal, not a majority-vote heuristic — what the
+// harness exercises is the *path* (`curator.acceptProposal` /
+// `curator.rejectProposal` closing a stuck divergence), not the
+// judgment. A proposal staged mid-round is not yet in `preRoundCounts`
+// and so gets a full subsequent round of review opportunity before it
+// can be escalated; a proposal that gained any vote this round
+// counts as still progressing and is left alone.
+function escalateStuckProposals(
+  server: Server,
+  preRoundCounts: Map<string, number>,
+): EscalationOutcome[] {
+  const accepts = new Map<string, number>();
+  const rejects = new Map<string, number>();
+  const total = new Map<string, number>();
+  for (const v of server.store.reviewVotes.values()) {
+    total.set(v.proposal_id, (total.get(v.proposal_id) ?? 0) + 1);
+    if (v.decision === 'accept') accepts.set(v.proposal_id, (accepts.get(v.proposal_id) ?? 0) + 1);
+    else if (v.decision === 'reject')
+      rejects.set(v.proposal_id, (rejects.get(v.proposal_id) ?? 0) + 1);
+  }
+  const escalated: EscalationOutcome[] = [];
+  for (const p of server.store.proposals.values()) {
+    if (p.status !== 'staged') continue;
+    if (!preRoundCounts.has(p.id)) continue; // staged this round — give it another
+    if ((total.get(p.id) ?? 0) !== preRoundCounts.get(p.id)) continue; // still progressing
+    const a = accepts.get(p.id) ?? 0;
+    const r = rejects.get(p.id) ?? 0;
+    const decision: 'accept' | 'reject' = r > a ? 'reject' : 'accept';
+    if (decision === 'accept') server.curator.acceptProposal(p.id);
+    else server.curator.rejectProposal(p.id);
+    escalated.push({ proposal_id: p.id, decision, accepts: a, rejects: r });
+  }
+  return escalated;
+}
+
 async function main(): Promise<void> {
   const apiKey = process.env['ANTHROPIC_API_KEY'];
   if (!apiKey) {
@@ -291,6 +367,7 @@ async function main(): Promise<void> {
     }
 
     console.log(`# ── round ${round} ──`);
+    const preRoundCounts = stagedVoteCounts(server);
     const results = await Promise.all(
       contributors.map((c) =>
         runLlmAgent(c.client, {
@@ -318,6 +395,15 @@ async function main(): Promise<void> {
       totalUsage.output_tokens += result.usage.output_tokens;
       console.log(
         `# ${contributor.display_name}: stop=${result.stop_reason} turns=${result.turns.length} usage=(${result.usage.input_tokens}in/${result.usage.output_tokens}out)`,
+      );
+    }
+    // Curator escalation: resolve any divergence the population stalled
+    // on for the whole round (the 1-1-with-no-tiebreaker hole). Runs
+    // after the contributor loops have all returned, so no agent sees
+    // a half-resolved store.
+    for (const e of escalateStuckProposals(server, preRoundCounts)) {
+      console.log(
+        `# curator escalated ${e.proposal_id}: ${e.decision} (accepts=${e.accepts} rejects=${e.rejects})`,
       );
     }
     console.log(

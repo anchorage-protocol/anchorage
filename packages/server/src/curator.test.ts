@@ -451,6 +451,45 @@ describe('curator.acceptProposal', () => {
   });
 });
 
+describe('curator.rejectProposal', () => {
+  it('closes a staged proposal as rejected without materializing a node', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const nodesBefore = f.server.store.nodes.size;
+    f.server.curator.rejectProposal(proposal_id);
+    expect(f.server.store.proposals.get(proposal_id)?.status).toBe('rejected');
+    expect(f.server.store.nodes.size).toBe(nodesBefore);
+  });
+
+  it('rejects rejecting a non-staged proposal', async () => {
+    const f = fixture();
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    f.server.curator.acceptProposal(proposal_id);
+    expect(() => f.server.curator.rejectProposal(proposal_id)).toThrow(ServerError);
+  });
+
+  it('rejects an unknown proposal id', () => {
+    const f = fixture();
+    try {
+      // biome-ignore lint/suspicious/noExplicitAny: fabricating an unknown id
+      f.server.curator.rejectProposal('prp_nope' as any);
+      expect.fail('expected ServerError');
+    } catch (err) {
+      expect((err as ServerError).code).toBe('not_found');
+    }
+  });
+});
+
 describe('curator.expireStaleAssignments', () => {
   // Stand up N orphan anchors in the fixture's cause so excerpt
   // assignments have a frontier to draw from. Returns the anchor node

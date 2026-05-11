@@ -2663,6 +2663,39 @@ export class Server {
       return this.acceptStaged(proposal);
     },
 
+    // The reject side of the curator-escalation path `acceptProposal`
+    // documents (PRD §Reviewer assignment step 4): when the review
+    // loop can't resolve a divergent proposal — a 1-1 split with no
+    // tiebreaker in a small pool, a stalled contested item — the
+    // curator can resolve it either way, not only upward. Since no
+    // node was ever materialized for a staged proposal, rejecting it
+    // is just the status transition (parallel to the reject branch of
+    // `resolveByConvergence`); there is nothing to unwind. Like
+    // `acceptProposal`, this is a curator override and stays rep-
+    // neutral — a curator tiebreak is not the peer agreement the
+    // convergence path's reputation deltas are calibrated against, and
+    // folding curator overrides into the rep ledger would let a curator
+    // move reputation by fiat. Only staged proposals are resolvable;
+    // `change_of_home`-style in-place kinds resolve through their own
+    // curator seams, not here.
+    rejectProposal: (proposalId: ProposalId): void => {
+      const proposal = this.store.proposals.get(proposalId);
+      if (!proposal) {
+        throw new ServerError('not_found', `proposal not found: ${proposalId}`);
+      }
+      if (proposal.status !== 'staged') {
+        throw new ServerError(
+          'invalid_state',
+          `cannot reject proposal in status ${proposal.status}`,
+        );
+      }
+      this.store.proposals.set(proposal.id, {
+        ...proposal,
+        status: 'rejected',
+        updated_at: this.clock.now(),
+      });
+    },
+
     // PRD §Sub-topic creation: "Curator accepts as `active`,
     // defers as `proposed`, or rejects." This is the deferral path —
     // the curator has decided to record the sub-topic but hold off on
