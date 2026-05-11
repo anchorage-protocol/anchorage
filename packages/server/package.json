@@ -18,8 +18,8 @@
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "start": "tsx src/index.ts",
-    "live": "tsx src/run-live.ts",
-    "population": "tsx src/run-population.ts"
+    "live": "tsx --env-file-if-exists=../../.env --env-file-if-exists=.env src/run-live.ts",
+    "population": "tsx --env-file-if-exists=../../.env --env-file-if-exists=.env src/run-population.ts"
   },
   "dependencies": {
     "@anchorage/contracts": "workspace:*",
