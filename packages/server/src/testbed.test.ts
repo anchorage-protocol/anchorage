@@ -7022,6 +7022,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
     assignment_min_recent: number;
     assignment_min_demonstrated: number;
     review_credit_contention_alpha?: number;
+    // Cube #20 ((alpha × stratification) re-baseline) overrides this
+    // to sweep the cluster-signal closure axis. Default `true`
+    // preserves the freshness-bypass scenario cubes #2 and #5 are
+    // built on (the cross-stratum gate closes Dave, the demo gate's
+    // null-policy closes Eve, and the honest pool's bootstrap
+    // rotation converges contested across singleton strata). With it
+    // off, Dave is never cross-stratum-gated, so Carol+Dave's two
+    // rejects converge contested directly at vto=2 — the coalition
+    // captures by arithmetic regardless of the demo gate (their
+    // priming demonstrated clears it at both alphas the cube
+    // sweeps), and the demo gate's only effect is the eligibility-
+    // tier lockout on the honest pool at alpha < 1.
+    stratification_enabled?: boolean;
   }): Promise<{
     attack_succeeded: boolean;
     false_positive_lockout: boolean;
@@ -7040,7 +7053,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
         votes_to_reject: 2,
         calibration_inject_every_n: 0,
         calibration_aware_convergence: false,
-        stratification_enabled: true,
+        stratification_enabled: params.stratification_enabled ?? true,
         stratum_min_shared_proposals: 2,
         stratum_agreement_threshold: 1.0,
         stratum_target_count: 2,
@@ -14500,6 +14513,314 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
     for (const cell of groupedByK.values()) {
       expect(cell.total).toBe(3);
+    }
+  });
+
+  // (alpha × stratification × demo-threshold) sweep — cube #20, the
+  // re-baseline of cube #5's difficulty-aware findings on cube #11's
+  // stratification axis the prior next-milestones tail named. Cube #5
+  // swept `review_credit_contention_alpha` ∈ {1.0, 0.5} on the
+  // patient-adversary gate-threshold cube #2 and pinned the alpha-
+  // shrinkage failure mode: at alpha=0.5 the bootstrap demonstrated
+  // shrinks from 2.0 to 1.0 and a demo gate calibrated against the
+  // alpha=1 bootstrap (1.5) false-positive-locks-out the honest pool,
+  // with the re-tuned demo=0.75 recovering the closure with the same
+  // 0.25 headroom; cube #5 pinned the recovery on the sybil pattern
+  // as a single companion regression at the re-tuned thresholds.
+  // Cube #20 generalizes that companion regression into a cube across
+  // (alpha × stratification × demo-threshold) on the sybil-amplified-
+  // coalition pattern (`runSybilAmplifiedGateScenario`), reading the
+  // alpha-recalibration on cube #11's stratification axis — the
+  // closure mechanism here is the cross-stratum gate (cluster signal
+  // closes Dave) plus the demo gate's null-policy (closes the fresh
+  // recruit Eve), not cube #2/#5's recent gate.
+  //
+  // Eight cells over (`review_credit_contention_alpha` ∈ {1.0, 0.5})
+  // × (`stratification_enabled` ∈ {off, on}) × (`assignment_min_
+  // demonstrated` ∈ {1.5, 0.75}), `assignment_min_recent`=0
+  // throughout (isolating the demo axis the alpha-recalibration acts
+  // on). Per-cell readings:
+  //
+  //   - (alpha=1, strat=off, demo ∈ {1.5, 0.75}): coalition captures
+  //     by arithmetic — Carol+Dave's two rejects reach vto=2 before
+  //     the honest pool can vote, and their priming demonstrated
+  //     (3.0 at alpha=1) clears both demo thresholds. ASR=100%,
+  //     lockout=false (Erin's bootstrap demonstrated=2.0 clears the
+  //     demo gate, she votes accept first but the coalition's two
+  //     rejects converge anyway).
+  //   - (alpha=1, strat=on, demo ∈ {1.5, 0.75}): cross-stratum gate
+  //     closes Dave, demo gate's null-policy closes Eve (zero rep <
+  //     any positive threshold), Carol's lone reject is below vto=2,
+  //     and the honest pool (bootstrap demonstrated=2.0 ≥ both
+  //     thresholds) converges contested 'accepted' across singleton
+  //     strata. ASR=0%, lockout=false.
+  //   - (alpha=0.5, strat=off, demo=1.5): Erin's bootstrap
+  //     demonstrated shrinks to 1.0 < 1.5 → she's locked out at
+  //     request_assignment. Carol+Dave's priming demonstrated is 1.5
+  //     (= the threshold, 1.5 < 1.5 is false → passes), so they
+  //     route and reject → contested converges 'rejected' at vto=2.
+  //     ASR=100%, lockout=true — *the demo gate at alpha=0.5 is
+  //     worse than useless here: it fails to gate the coalition
+  //     (whose priming demonstrated clears it) while locking out the
+  //     honest pool as pure collateral damage*.
+  //   - (alpha=0.5, strat=off, demo=0.75): Erin's bootstrap
+  //     demonstrated=1.0 ≥ 0.75 → she passes and votes accept first;
+  //     Carol+Dave still capture by arithmetic. ASR=100%,
+  //     lockout=false — the re-tuned threshold preserves the honest
+  //     pool but the coalition still captures (strat=off has no
+  //     cluster signal to close Dave).
+  //   - (alpha=0.5, strat=on, demo=1.5): cross-stratum gate closes
+  //     Dave, demo gate's null-policy closes Eve, and the demo gate
+  //     *also* fires on the honest pool (bootstrap demonstrated=1.0 <
+  //     1.5) — so contested has Carol's lone reject, no honest
+  //     accepts, and the degraded-pool tightening bumps vto past 2 →
+  //     contested stalls 'staged'. ASR=0%, lockout=true — *the
+  //     misleading-closure cell*: the closure observation (ASR=0%)
+  //     reads as honest defense but is actually honest-pool collapse,
+  //     the same shape cube #5 read on the recent-gate closure
+  //     mechanism. This is the cell the re-tuned threshold recovers.
+  //   - (alpha=0.5, strat=on, demo=0.75): Erin's bootstrap
+  //     demonstrated=1.0 ≥ 0.75 → honest pool passes and converges
+  //     contested 'accepted'; cross-stratum gate still closes Dave,
+  //     demo gate's null-policy still closes Eve. ASR=0%,
+  //     lockout=false — the re-tuned threshold recovers the
+  //     stratification closure's honest-defense reading at alpha=0.5.
+  //
+  // Aggregate by stratification: off=(ASR=100%, lockout=25%) — the
+  // coalition captures regardless of demo/alpha; the demo gate's
+  // alpha=0.5 lockout (the demo=1.5 cell) is pure collateral damage.
+  // on=(ASR=0%, lockout=25%) — the cross-stratum gate + demo null-
+  // policy close capture at every cell; the demo gate's alpha=0.5
+  // lockout (the demo=1.5 cell) is what makes that closure
+  // observation misleading. *ASR is stratification-determined: the
+  // cluster signal is the capture-closure, alpha-invariant; alpha
+  // and demo only move the lockout metric* — the closure-quality
+  // axis, exactly cube #5's two-metric template generalized to the
+  // stratification mechanism.
+  //
+  // Aggregate by alpha: alpha=1=(ASR=50%, lockout=0%) — the alpha=1
+  // bootstrap demonstrated (2.0) clears both demo thresholds, no
+  // lockout anywhere. alpha=0.5=(ASR=50%, lockout=50%) — the
+  // shrunken bootstrap demonstrated (1.0) trips the demo=1.5
+  // threshold at both stratification settings, so the demo=1.5 cells
+  // (one strat=off, one strat=on) both lock out.
+  //
+  // Aggregate by demo-threshold: demo=1.5=(ASR=50%, lockout=50%) —
+  // the threshold calibrated against the alpha=1 bootstrap locks out
+  // the honest pool at alpha=0.5 regardless of stratification.
+  // demo=0.75=(ASR=50%, lockout=0%) — cube #5's re-tuned threshold
+  // preserves the 0.25 headroom at alpha=0.5 and is trivially clear
+  // at alpha=1, so zero lockout at both alphas. *The re-tuned
+  // threshold's recovery is mechanism-agnostic*: cube #5 pinned it
+  // on the recent-gate closure (patient archetype); cube #20 reads
+  // the same recovery on the stratification closure (coalition
+  // archetype), converting the mechanism-agnostic-recalibration
+  // claim into a CI-checked invariant.
+  //
+  // Cube #20 is the alpha-axis sibling of cube #5 (the difficulty-
+  // aware re-baseline of cube #2 on the patient archetype): cube #5
+  // reads the alpha-recalibration on the recent-gate closure, cube
+  // #20 on the stratification closure. Together they pin the
+  // recalibration as a property of the demo gate's eligibility-tier
+  // role (a threshold calibrated for alpha=1 false-positive-locks-out
+  // at alpha < 1, and the re-tuned demo=0.75 recovers it), invariant
+  // to which mechanism does the actual capture-closure — cube #14's
+  // closure-quality-independence reading applied to the alpha axis.
+  interface AlphaStratSweepCell {
+    name: string;
+    review_credit_contention_alpha: number;
+    stratification_enabled: boolean;
+    assignment_min_demonstrated: number;
+    expected_attack_succeeded: boolean;
+    expected_false_positive_lockout: boolean;
+  }
+  const alphaStratSweepCells: AlphaStratSweepCell[] = [
+    {
+      name: 'alpha=1, strat=off, demo=1.5 (coalition captures by arithmetic; honest pool clears the demo gate)',
+      review_credit_contention_alpha: 1.0,
+      stratification_enabled: false,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
+    },
+    {
+      name: 'alpha=1, strat=off, demo=0.75 (coalition captures; re-tuned threshold trivially clear)',
+      review_credit_contention_alpha: 1.0,
+      stratification_enabled: false,
+      assignment_min_demonstrated: 0.75,
+      expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
+    },
+    {
+      name: 'alpha=1, strat=on, demo=1.5 (cross-stratum closes Dave; demo null-policy closes Eve; honest pool converges)',
+      review_credit_contention_alpha: 1.0,
+      stratification_enabled: true,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
+    },
+    {
+      name: 'alpha=1, strat=on, demo=0.75 (composition closes; honest defense at both metrics)',
+      review_credit_contention_alpha: 1.0,
+      stratification_enabled: true,
+      assignment_min_demonstrated: 0.75,
+      expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
+    },
+    {
+      name: 'alpha=0.5, strat=off, demo=1.5 (coalition still captures; demo gate locks out honest pool as collateral damage)',
+      review_credit_contention_alpha: 0.5,
+      stratification_enabled: false,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: true,
+      expected_false_positive_lockout: true,
+    },
+    {
+      name: 'alpha=0.5, strat=off, demo=0.75 (coalition still captures; re-tuned threshold preserves honest pool)',
+      review_credit_contention_alpha: 0.5,
+      stratification_enabled: false,
+      assignment_min_demonstrated: 0.75,
+      expected_attack_succeeded: true,
+      expected_false_positive_lockout: false,
+    },
+    {
+      name: 'alpha=0.5, strat=on, demo=1.5 (misleading closure: cluster closes capture but honest-pool collapse is why ASR reads 0%)',
+      review_credit_contention_alpha: 0.5,
+      stratification_enabled: true,
+      assignment_min_demonstrated: 1.5,
+      expected_attack_succeeded: false,
+      expected_false_positive_lockout: true,
+    },
+    {
+      name: 'alpha=0.5, strat=on, demo=0.75 (re-tuned threshold recovers honest defense at both metrics)',
+      review_credit_contention_alpha: 0.5,
+      stratification_enabled: true,
+      assignment_min_demonstrated: 0.75,
+      expected_attack_succeeded: false,
+      expected_false_positive_lockout: false,
+    },
+  ];
+  it.each(alphaStratSweepCells)('(alpha × stratification × demo) sweep: $name', async ({
+    review_credit_contention_alpha,
+    stratification_enabled,
+    assignment_min_demonstrated,
+    expected_attack_succeeded,
+    expected_false_positive_lockout,
+  }) => {
+    const result = await runSybilAmplifiedGateScenario({
+      assignment_min_recent: 0,
+      assignment_min_demonstrated,
+      review_credit_contention_alpha,
+      stratification_enabled,
+    });
+    expect(result.attack_succeeded).toBe(expected_attack_succeeded);
+    expect(result.false_positive_lockout).toBe(expected_false_positive_lockout);
+    // The coalition's post-priming demonstrated (3 unanimous
+    // priming accepts × alpha) is what clears the demo gate by the
+    // strict-less-than predicate at strat=on — but the value
+    // `carol_demonstrated` reports here is read *after* the
+    // contested phase, where Carol's reject becomes inaccurate
+    // (and alpha-contention-scaled) if contested converges, so
+    // it's only 3 × alpha on cells where contested stalls. The
+    // priming arithmetic itself is pinned by cube #5's standalone
+    // `carol_demonstrated ≈ 1.5` regression (demo=1.5, alpha=0.5,
+    // contested stalls staged); cube #20 doesn't re-pin it.
+  });
+
+  it('(alpha × stratification × demo) sweep cube: ASR is stratification-determined; lockout-rate carries the alpha-recalibration, recovered by cube #5 re-tuned demo=0.75 (PRD §Reputation, difficulty-normalized review credit)', () => {
+    interface AlphaStratAggCell {
+      key: string;
+      total: number;
+      attacks_succeeded: number;
+      lockouts: number;
+    }
+    function group(keyOf: (cell: AlphaStratSweepCell) => string): Map<string, AlphaStratAggCell> {
+      const m = new Map<string, AlphaStratAggCell>();
+      for (const cell of alphaStratSweepCells) {
+        const k = keyOf(cell);
+        const g = m.get(k) ?? { key: k, total: 0, attacks_succeeded: 0, lockouts: 0 };
+        g.total += 1;
+        if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
+        if (cell.expected_false_positive_lockout) g.lockouts += 1;
+        m.set(k, g);
+      }
+      return m;
+    }
+    const groupedByStrat = group((c) => (c.stratification_enabled ? 'on' : 'off'));
+    const groupedByAlpha = group((c) => String(c.review_credit_contention_alpha));
+    const groupedByDemo = group((c) => String(c.assignment_min_demonstrated));
+    const asrOf = (m: Map<string, AlphaStratAggCell>, k: string): number => {
+      const g = m.get(k);
+      if (!g) throw new Error(`missing key=${k}`);
+      return g.attacks_succeeded / g.total;
+    };
+    const lockoutOf = (m: Map<string, AlphaStratAggCell>, k: string): number => {
+      const g = m.get(k);
+      if (!g) throw new Error(`missing key=${k}`);
+      return g.lockouts / g.total;
+    };
+
+    // By stratification: ASR is mechanism-determined — strat=off the
+    // coalition captures by arithmetic (Carol+Dave's two rejects
+    // reach vto=2 before the honest pool can vote, and their priming
+    // demonstrated clears both demo thresholds at both alphas);
+    // strat=on the cross-stratum gate closes Dave and the demo
+    // null-policy closes Eve, collapsing the coalition's amplification
+    // to Carol's lone reject. lockout-rate is identical 25% at both
+    // settings — the single demo=1.5-alpha=0.5 cell — but its
+    // *meaning* differs: at strat=off it's collateral damage (the
+    // attack wins anyway), at strat=on it's the misleading-closure
+    // failure mode (the attack appears closed because honest review
+    // collapsed). The two-metric template cube #5 introduced reads
+    // both — "a defense that closes the attack by collapsing the
+    // honest pool is not a defense" — and cube #20 generalizes it
+    // from the recent-gate to the stratification closure mechanism.
+    expect(asrOf(groupedByStrat, 'off')).toBe(1);
+    expect(asrOf(groupedByStrat, 'on')).toBe(0);
+    expect(lockoutOf(groupedByStrat, 'off')).toBe(0.25);
+    expect(lockoutOf(groupedByStrat, 'on')).toBe(0.25);
+
+    // By alpha: ASR identical 50% (the two strat=off cells capture
+    // at each alpha; the two strat=on cells close) — alpha doesn't
+    // move ASR. lockout-rate flips from 0% at alpha=1 (the bootstrap
+    // demonstrated of 2.0 clears both demo thresholds) to 50% at
+    // alpha=0.5 (the shrunken bootstrap demonstrated of 1.0 trips the
+    // demo=1.5 threshold at both stratification settings). *This is
+    // the alpha-recalibration headline*: the demo gate calibrated
+    // against the alpha=1 bootstrap false-positive-locks-out at
+    // alpha < 1, the same shape cube #5 read on the patient
+    // archetype.
+    expect(asrOf(groupedByAlpha, '1')).toBe(0.5);
+    expect(asrOf(groupedByAlpha, '0.5')).toBe(0.5);
+    expect(lockoutOf(groupedByAlpha, '1')).toBe(0);
+    expect(lockoutOf(groupedByAlpha, '0.5')).toBe(0.5);
+
+    // By demo-threshold: ASR identical 50% (the strat axis carries
+    // ASR, not the demo threshold). lockout-rate: demo=1.5 at 50%
+    // (the threshold calibrated against the alpha=1 bootstrap locks
+    // out at alpha=0.5 regardless of stratification), demo=0.75 at
+    // 0% (cube #5's re-tuned threshold preserves the 0.25 headroom
+    // at alpha=0.5 and is trivially clear at alpha=1). *The re-tuned
+    // threshold's recovery is mechanism-agnostic* — cube #5 pinned
+    // it on the recent-gate closure, cube #20 reads it on the
+    // stratification closure.
+    expect(asrOf(groupedByDemo, '1.5')).toBe(0.5);
+    expect(asrOf(groupedByDemo, '0.75')).toBe(0.5);
+    expect(lockoutOf(groupedByDemo, '1.5')).toBe(0.5);
+    expect(lockoutOf(groupedByDemo, '0.75')).toBe(0);
+
+    // Coverage invariants: 8 cells, 4 per (stratification) value, 4
+    // per (alpha) value, 4 per (demo) value. Same shape cubes
+    // #6-#19 carry; a future cell expansion that breaks the symmetry
+    // trips the assertion and forces the aggregate to be re-keyed.
+    for (const cell of groupedByStrat.values()) {
+      expect(cell.total).toBe(4);
+    }
+    for (const cell of groupedByAlpha.values()) {
+      expect(cell.total).toBe(4);
+    }
+    for (const cell of groupedByDemo.values()) {
+      expect(cell.total).toBe(4);
     }
   });
 
