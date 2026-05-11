@@ -914,12 +914,14 @@ export class Server {
   }
 
   // Resolve an assignment that belongs to the given identity and sits
-  // in one of the allowed states — the entry point for accept/decline/
-  // expiry transitions. `accept_assignment` allows only `offered`;
-  // `decline_assignment` allows `offered` *or* `accepted` (a
-  // contributor who accepted and then can't deliver bails out the same
-  // way — PRD §Capacity and assignment (decline_assignment)); the
-  // (later) expiry sweep allows `offered` or `accepted` too.
+  // in one of the allowed states — the entry point for the
+  // contributor-driven transitions. `accept_assignment` allows only
+  // `offered`; `decline_assignment` allows `offered` *or* `accepted`
+  // (a contributor who accepted and then can't deliver bails out the
+  // same way — PRD §Capacity and assignment (decline_assignment)). The
+  // expiry transition (`curator.expireStaleAssignments`) covers the
+  // same `offered`/`accepted` set but is curator-side — no owning
+  // identity to check — so it doesn't pass through here.
   private requireOwnedAssignment(
     assignmentId: AssignmentId,
     identityId: IdentityId,
@@ -1782,8 +1784,10 @@ export class Server {
     // decline counts toward the same cumulative-rate gate, so an
     // accept-then-decline churn pattern surfaces exactly like a
     // bare-decline pattern. (Stale `accepted` assignments a wedged
-    // client never declines at all are the residual case a future
-    // expiry sweep reclaims; that sweep is not yet wired.)
+    // client never declines at all are the residual case
+    // `curator.expireStaleAssignments` reclaims — non-punitively,
+    // since "went silent" is the curator's signal to weigh, not the
+    // decline channel's.)
     declineAssignment: async (
       caller: Caller,
       input: DeclineAssignmentInput,
@@ -2924,6 +2928,60 @@ export class Server {
         archived.push(proposal.id);
       }
       return archived;
+    },
+
+    // Stale-assignment expiry sweep — the reclaim path for the
+    // residual wedged-client case PRD §Capacity and assignment names:
+    // a contributor who pulled an assignment (`offered`) or accepted
+    // it (`accepted`) and then went silent without ever submitting or
+    // declining strands the target. The anchor stays out of the orphan
+    // frontier (`deriveFrontier` treats an in-flight excerpt assignment
+    // as work-covered), a review slot stays held — and
+    // `decline_assignment` is the bail-out a *responsive* client uses,
+    // not one a wedged client ever reaches. This sweep transitions any
+    // `offered` or `accepted` assignment whose last activity
+    // (`updated_at`) is older than `window_seconds` to `expired`, which
+    // `request_assignment` and `deriveFrontier` already treat as "slot
+    // released": the target is re-offerable — to other contributors
+    // and, since a recovered client is a legitimate worker, to the
+    // original contributor too (`expired` does not block re-offer the
+    // way `declined` does) — and an anchor with no remaining in-flight
+    // excerpt assignment re-enters the orphan frontier.
+    //
+    // Expiry is *not* a decline: the assignment carries no reason and
+    // does not count toward the `assignment_max_decline_rate` gate or
+    // the `declinePatterns` projection (both key on `status ===
+    // 'declined'`). A chronically-wedged client is a real signal, but
+    // it is the curator's to read off expiry volume directly, not one
+    // this sweep folds into the decline channel — conflating "couldn't
+    // deliver, said so" with "went silent" would mislead the decline-
+    // pattern surface, which exists to flag deliberate cherry-picking.
+    //
+    // Curator-triggered, same posture as `archiveStaleProposals`:
+    // production likely runs it on a scheduler, but the trigger is
+    // operationally private and testbed-tunable. Returns the expired
+    // assignment ids so callers can audit. cause_id is an optional
+    // per-cause filter (an assignment whose cause cannot be located —
+    // a review task pointing at a vanished proposal — is skipped when
+    // the filter is set, included when it isn't).
+    expireStaleAssignments: (options: {
+      window_seconds: number;
+      cause_id?: CauseId;
+    }): AssignmentId[] => {
+      if (options.window_seconds <= 0) return [];
+      const now = this.clock.now();
+      const cutoffMs = Date.parse(now) - options.window_seconds * 1000;
+      const expired: AssignmentId[] = [];
+      for (const a of this.store.assignments.values()) {
+        if (a.status !== 'offered' && a.status !== 'accepted') continue;
+        if (Date.parse(a.updated_at) > cutoffMs) continue; // recent activity
+        if (options.cause_id !== undefined && this.causeOfTask(a.task) !== options.cause_id) {
+          continue;
+        }
+        this.store.assignments.set(a.id, { ...a, status: 'expired', updated_at: now });
+        expired.push(a.id);
+      }
+      return expired;
     },
 
     deferSubTopic: (proposalId: ProposalId): { sub_topic_id: SubTopicId } => {

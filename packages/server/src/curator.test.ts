@@ -450,3 +450,141 @@ describe('curator.acceptProposal', () => {
     }
   });
 });
+
+describe('curator.expireStaleAssignments', () => {
+  // Stand up N orphan anchors in the fixture's cause so excerpt
+  // assignments have a frontier to draw from. Returns the anchor node
+  // ids in creation order.
+  async function seedOrphanAnchors(f: Fixture, n: number) {
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: `paper ${i}`,
+        external_ref: { kind: 'pmid', value: String(1000 + i) },
+      });
+      const { node_id } = f.server.curator.acceptProposal(proposal_id);
+      if (!node_id) throw new Error('expected materialized anchor node');
+      ids.push(node_id);
+    }
+    return ids;
+  }
+
+  it('expires stale offered and accepted assignments, leaves fresh and terminal ones, and reclaims the target', async () => {
+    const f = fixture();
+    await seedOrphanAnchors(f, 4);
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 5,
+      kinds: ['excerpt'],
+    });
+
+    // a1: accepted then goes silent. a2: offered then goes silent.
+    // a3: declined (terminal — must stay declined). All three are
+    // requested up front so their timestamps land in the early window.
+    const a1 = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+      kind: 'excerpt',
+    });
+    await f.server.tools.acceptAssignment(bobCaller, { assignment_id: a1.assignment_id });
+    const a2 = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+      kind: 'excerpt',
+    });
+    const a3 = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+      kind: 'excerpt',
+    });
+    await f.server.tools.declineAssignment(bobCaller, {
+      assignment_id: a3.assignment_id,
+      reason: 'out of my wheelhouse',
+    });
+
+    // Advance the clock well past the sweep window. Each clock.now()
+    // tick is 1s; 100 ticks comfortably clears the 50s window the
+    // early assignments were stamped within.
+    for (let i = 0; i < 100; i++) f.server.clock.now();
+
+    // a4: a fresh offered assignment, stamped *after* the gap, so it
+    // sits inside the window and the sweep must leave it alone. Only
+    // anchor 3 (a3's target was freed by the decline but is re-offer-
+    // blocked to bob) and anchor 3's sibling remain — request_assign
+    // picks whichever orphan is still free; the point is it is fresh.
+    const a4 = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+      kind: 'excerpt',
+    });
+
+    const anchorOf = (assignmentId: typeof a1.assignment_id) => {
+      const t = f.server.store.assignments.get(assignmentId)?.task;
+      if (t?.kind !== 'excerpt') throw new Error('not an excerpt task');
+      return t.parent_anchor_id;
+    };
+    const reclaimable = new Set([anchorOf(a1.assignment_id), anchorOf(a2.assignment_id)]);
+
+    const expired = f.server.curator.expireStaleAssignments({
+      window_seconds: 50,
+      cause_id: f.cause_id,
+    });
+    expect(expired.sort()).toEqual([a1.assignment_id, a2.assignment_id].sort());
+
+    expect(f.server.store.assignments.get(a1.assignment_id)?.status).toBe('expired');
+    expect(f.server.store.assignments.get(a2.assignment_id)?.status).toBe('expired');
+    expect(f.server.store.assignments.get(a3.assignment_id)?.status).toBe('declined');
+    expect(f.server.store.assignments.get(a4.assignment_id)?.status).toBe('offered');
+
+    // Idempotent: nothing left in offered/accepted older than the
+    // window.
+    expect(
+      f.server.curator.expireStaleAssignments({ window_seconds: 50, cause_id: f.cause_id }),
+    ).toEqual([]);
+
+    // Reclaim: the swept anchors are back in the orphan frontier (an
+    // expired assignment no longer counts as in-flight, and `expired`
+    // does not block re-offer to bob the way `declined` does — a4's
+    // anchor is still in-flight and a3's is decline-blocked to bob),
+    // so a fresh request lands on one of the two reclaimed anchors.
+    const reOffered = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+      kind: 'excerpt',
+    });
+    expect(reclaimable.has(anchorOf(reOffered.assignment_id))).toBe(true);
+  });
+
+  it('honors the cause filter and no-ops on a non-positive window', async () => {
+    const f = fixture();
+    await seedOrphanAnchors(f, 1);
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller = { identity_id: bob.id };
+    await f.server.tools.setCapacity(bobCaller, {
+      cause_id: f.cause_id,
+      rate: 5,
+      kinds: ['excerpt'],
+    });
+    const a = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+      kind: 'excerpt',
+    });
+    for (let i = 0; i < 100; i++) f.server.clock.now();
+
+    // Non-positive window: no-op (parity with archiveStaleProposals).
+    expect(f.server.curator.expireStaleAssignments({ window_seconds: 0 })).toEqual([]);
+    expect(f.server.store.assignments.get(a.assignment_id)?.status).toBe('offered');
+
+    // A different cause: the stale assignment is out of scope.
+    const otherCause = f.server.bootstrap.createCause({ name: 'AMR', description: 'x' });
+    expect(
+      f.server.curator.expireStaleAssignments({ window_seconds: 50, cause_id: otherCause.id }),
+    ).toEqual([]);
+    expect(f.server.store.assignments.get(a.assignment_id)?.status).toBe('offered');
+
+    // The owning cause (and the unfiltered sweep) catch it.
+    expect(
+      f.server.curator.expireStaleAssignments({ window_seconds: 50, cause_id: f.cause_id }),
+    ).toEqual([a.assignment_id]);
+    expect(f.server.store.assignments.get(a.assignment_id)?.status).toBe('expired');
+  });
+});
