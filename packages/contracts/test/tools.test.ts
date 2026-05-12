@@ -72,6 +72,21 @@ describe('Capacity & assignment tool I/O', () => {
     });
     expect(i.payload.kind).toBe('membership');
   });
+
+  it('accepts a JSON-string-encoded payload (a model client that stringifies the nested value)', () => {
+    const i = SubmitAssignedProposalInput.parse({
+      assignment_id: 'assn_1',
+      payload: JSON.stringify({ kind: 'membership', node_id: 'n_def', sub_topic_id: 'st_lynch' }),
+    });
+    expect(i.payload.kind).toBe('membership');
+    if (i.payload.kind === 'membership') expect(i.payload.node_id).toBe('n_def');
+  });
+
+  it('rejects a string payload that is not valid JSON', () => {
+    expect(() =>
+      SubmitAssignedProposalInput.parse({ assignment_id: 'assn_1', payload: 'not json at all' }),
+    ).toThrow();
+  });
 });
 
 describe('Contributor-initiated propose_* inputs', () => {

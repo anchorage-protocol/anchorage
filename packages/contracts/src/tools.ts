@@ -52,8 +52,28 @@ export type DeclineAssignmentInput = z.infer<typeof DeclineAssignmentInput>;
 export const DeclineAssignmentOutput = ok;
 export type DeclineAssignmentOutput = z.infer<typeof DeclineAssignmentOutput>;
 
+// `payload` is a nested object with a generic name, and a recurring
+// failure mode of model clients (smaller models especially) is to send
+// it as a JSON-*encoded string* rather than an object — the client knows
+// the shape but stringifies the value. Rather than refuse a well-formed
+// proposal over an encoding slip, accept a string here and parse it
+// before validating against `ProposalPayload`; a non-string passes
+// straight through, and a string that isn't valid JSON falls through to
+// the `ProposalPayload` error unchanged (the parse failure isn't the
+// useful message). The advertised input schema is unaffected — it still
+// shows the object shape, so a correct client has no reason to stringify.
+const jsonObjectLenient = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((v) => {
+    if (typeof v !== 'string') return v;
+    try {
+      return JSON.parse(v);
+    } catch {
+      return v;
+    }
+  }, schema);
+
 export const SubmitAssignedProposalInput = z
-  .object({ assignment_id: AssignmentId, payload: ProposalPayload })
+  .object({ assignment_id: AssignmentId, payload: jsonObjectLenient(ProposalPayload) })
   .strict();
 export type SubmitAssignedProposalInput = z.infer<typeof SubmitAssignedProposalInput>;
 export const SubmitAssignedProposalOutput = proposalIdResult;

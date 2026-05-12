@@ -156,7 +156,8 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
   mcp.registerTool(
     'submit_assigned_proposal',
     {
-      description: 'Fulfill an accepted propose-kind assignment.',
+      description:
+        'Fulfill an accepted propose-kind assignment. `payload` is the proposal-body object — its `kind` plus the same fields the matching `propose_*` tool takes (e.g. an excerpt task: { kind: "excerpt", cause_id, home_sub_topic_id, parent_anchor_id, content, quoted_span }). Pass it as a JSON object, not a JSON-encoded string. Review-kind assignments are fulfilled via `cast_review_vote` with `assignment_id`, not this tool.',
       inputSchema: SubmitAssignedProposalInput.shape,
       outputSchema: SubmitAssignedProposalOutput.shape,
     },
