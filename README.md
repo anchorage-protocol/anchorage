@@ -53,9 +53,9 @@ No tokens. No marketplace. No paid tier. Reputation and credit are the only curr
 
 Concurrent Phase 0 + Phase 1. Design docs are settled.
 
-The v0 MCP tool surface is fully implemented and runs end-to-end through the actual MCP transport. The testbed exercises it against a roster of synthetic archetypes — from honest contributors of varying competence to coordinated adversarial coalitions — with reputation, calibration, and convergence outcomes observable over the wire.
+The v0 MCP tool surface is fully implemented and runs end-to-end through the actual MCP transport. The testbed exercises it against a roster of synthetic archetypes — from honest contributors of varying competence to coordinated adversarial coalitions — and, in a deeper loop, against real-LLM contributors carrying those same adversary-taxonomy roles; reputation, calibration, and convergence outcomes are observable over the wire either way, and a recorded model-backed run replays deterministically as a CI regression check.
 
-A growing set of parameter-sweep cubes aggregate attack-success-rate per defense config — and, where a defense's failure mode is collapsing the honest pool rather than letting the attack through, lockout-rate alongside it — as the Phase-1-exit-criterion shape. Live-fetch verification (PMID/DOI/URL resolution) stays a stub until the testbed needs it.
+A growing set of parameter-sweep cubes aggregate attack-success-rate per defense config — and, where a defense's failure mode is collapsing the honest pool rather than letting the attack through, lockout-rate alongside it — as the Phase-1-exit-criterion shape, the model-backed loop included. Live-fetch verification (PMID/DOI/URL resolution) stays a stub until the testbed needs it.
 
 See [ROADMAP.md](./ROADMAP.md) for phasing.
 
