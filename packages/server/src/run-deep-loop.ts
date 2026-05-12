@@ -22,8 +22,9 @@
 // It reuses the population round-loop core (`runPopulationRounds`,
 // population-loop.ts) — the same core `run-population.ts` and
 // `population-loop.test.ts` use — through the `runContributor` seam: a
-// contributor's role (honest-strong / patient-adversary) is just which
-// system prompt its `runLlmAgent` loop gets. The role *prompts* are the
+// contributor's role (honest-strong / patient or strategic adversary) is
+// just which system prompt its `runLlmAgent` loop gets. The role
+// *prompts* are the
 // experimental treatment and are pinned in the testbed package's
 // `LlmRole` definitions, the same ones the scripted-model integration
 // test exercises in CI.
@@ -50,12 +51,23 @@
 // 2 honest + 1 patient adversary, 2 honest anchors, 2 calibration
 // anchors, 1 contested.
 //
+// Adversary role: `ANCHORAGE_ADVERSARY_ROLE` picks `patient-adversary`
+// (default) or `strategic-adversary` — the latter acts on the contested
+// item as soon as it is handed one rather than building standing first.
+// When it is strategic the runner also raises `votes_to_reject` to 3:
+// the lone adversary runs after the honest reviewers each round, so at
+// the default threshold of 2 the contested overstated excerpt is already
+// rejected before the adversary is offered the review — bumping the
+// threshold keeps it assignable long enough for the adversary's
+// contested-item decision to be observable, the same knob the cube's
+// `strategic-adversary` cell uses.
+//
 // Parameter sweep: `run-deep-loop-cube.ts` (`pnpm --filter
 // @anchorage/server deep-loop-cube`) runs this same loop once per cell
-// of a swept defense parameter — today the calibration defense on vs.
-// off (`DEEP_LOOP_CUBE_CELLS`) — each cell its own cassette; this
-// single-run runner is the per-cell template, the model-backed analogue
-// of `testbed.test.ts`'s scripted parameter-sweep cubes.
+// of a swept axis — the calibration defense on vs. off, and the
+// adversary role (`DEEP_LOOP_CUBE_CELLS`) — each cell its own cassette;
+// this single-run runner is the per-cell template, the model-backed
+// analogue of `testbed.test.ts`'s scripted parameter-sweep cubes.
 //
 // v0 shortcuts (inherited from `run-population.ts` plus one more):
 //   1. FakeVerifier with an inline source-text fixture per anchor (no
@@ -74,6 +86,7 @@
 // Usage:
 //   ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop
 //   ANCHORAGE_TESTBED_MODEL=claude-sonnet-4-6 ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop
+//   ANCHORAGE_ADVERSARY_ROLE=strategic-adversary ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop
 //   ANCHORAGE_ADVERSARY_OBJECTIVE="..." ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop
 //   ANCHORAGE_DEEP_LOOP_PRESET=ci ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop
 //
@@ -87,6 +100,7 @@ import {
   DEEP_DEFAULT_MODEL,
   DEEP_MAX_ROUNDS,
   DEEP_MAX_TURNS_PER_ROUND,
+  type DeepLoopAdversaryRole,
   type DeepLoopContributor,
   type DeepLoopScenarioOpts,
   deepLoopTask,
@@ -105,15 +119,17 @@ async function main(): Promise<void> {
         'No ANTHROPIC_API_KEY set — nothing to run.',
         '',
         'This script runs a small population of real-model contributors — mostly honest, plus one',
-        'patient adversary with a hidden objective — against a fresh Anchorage instance that',
-        'includes a deliberately contested item the adversary can drift on. Set a key and re-run:',
+        'adversary with a hidden objective (patient by default; strategic if ANCHORAGE_ADVERSARY_ROLE',
+        'is set) — against a fresh Anchorage instance that includes a deliberately contested item the',
+        'adversary can drift on. Set a key and re-run:',
         '',
         '  ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop',
         '',
-        `Optional: model (default ${DEEP_DEFAULT_MODEL}), spend ceiling (default $${DEFAULT_BUDGET_USD}), adversary objective, preset (full | ci):`,
+        `Optional: model (default ${DEEP_DEFAULT_MODEL}), spend ceiling (default $${DEFAULT_BUDGET_USD}), adversary role (patient-adversary | strategic-adversary) and objective, preset (full | ci):`,
         '',
         '  ANCHORAGE_TESTBED_MODEL=claude-sonnet-4-6 ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop',
         '  ANCHORAGE_POPULATION_BUDGET_USD=5 ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop',
+        '  ANCHORAGE_ADVERSARY_ROLE=strategic-adversary ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop',
         '  ANCHORAGE_ADVERSARY_OBJECTIVE="..." ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop',
         '  ANCHORAGE_DEEP_LOOP_PRESET=ci ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop',
         '',
@@ -138,10 +154,26 @@ async function main(): Promise<void> {
   if (preset !== 'full' && preset !== 'ci') {
     throw new Error(`ANCHORAGE_DEEP_LOOP_PRESET must be "full" or "ci", got "${preset}"`);
   }
+  const adversaryRoleEnv = process.env['ANCHORAGE_ADVERSARY_ROLE'] || 'patient-adversary';
+  if (adversaryRoleEnv !== 'patient-adversary' && adversaryRoleEnv !== 'strategic-adversary') {
+    throw new Error(
+      `ANCHORAGE_ADVERSARY_ROLE must be "patient-adversary" or "strategic-adversary", got "${adversaryRoleEnv}"`,
+    );
+  }
+  const adversaryRoleOpt: DeepLoopAdversaryRole = adversaryRoleEnv;
   const rate = priceFor(model);
   const scenarioOpts: DeepLoopScenarioOpts = {
     ...(preset === 'ci' ? CI_DEEP_LOOP_OPTS : {}),
     ...(adversaryObjective ? { adversary_objective: adversaryObjective } : {}),
+    adversary_role: adversaryRoleOpt,
+    // The lone adversary runs after the honest reviewers each round, so
+    // with the default `votes_to_reject: 2` the contested overstated
+    // excerpt is rejected before a strategic adversary is offered the
+    // review; raise the threshold so its contested-item decision is
+    // observable. (Harmless for the patient adversary, which doesn't
+    // drift here anyway — but only applied when it would otherwise
+    // matter, to keep the patient path on the default thresholds.)
+    ...(adversaryRoleOpt === 'strategic-adversary' ? { review: { votes_to_reject: 3 } } : {}),
   };
 
   const {
@@ -151,15 +183,18 @@ async function main(): Promise<void> {
     sub_topic_id,
     contested_proposal_id: contestedProposalId,
     adversary_id: adversaryId,
+    adversary_role: adversaryRole,
     honest_anchor_count,
     calibration_anchor_count,
   } = await buildDeepLoopScenario(scenarioOpts);
   const honestCount = contributors.filter((c) => c.identity_id !== adversaryId).length;
   const effectiveObjective = adversaryObjective ?? '(default)';
 
-  console.log(`# anchorage deep-loop run — model=${model} budget=$${budgetUsd} preset=${preset}`);
   console.log(
-    `# cause=${cause_id} sub_topic=${sub_topic_id} | ${honest_anchor_count} honest orphan anchors + ${calibration_anchor_count} calibration anchors (pre-accepted excerpts) + 1 contested | ${honestCount} honest + 1 patient adversary`,
+    `# anchorage deep-loop run — model=${model} budget=$${budgetUsd} preset=${preset} adversary=${adversaryRole}`,
+  );
+  console.log(
+    `# cause=${cause_id} sub_topic=${sub_topic_id} | ${honest_anchor_count} honest orphan anchors + ${calibration_anchor_count} calibration anchors (pre-accepted excerpts) + 1 contested | ${honestCount} honest + 1 ${adversaryRole}`,
   );
   console.log(`# adversary objective: ${effectiveObjective}`);
   console.log(
@@ -229,7 +264,7 @@ async function main(): Promise<void> {
   }
   const nameFor = (id: string): string =>
     id === adversaryId
-      ? 'PATIENT-ADVERSARY'
+      ? adversaryRole.toUpperCase()
       : (contributors.find((c) => c.identity_id === id)?.display_name ?? id);
 
   console.log('# ── calibration readout ──');
@@ -262,7 +297,7 @@ async function main(): Promise<void> {
     });
   const adversaryCalWeight = calWeight(adversaryCalRec.passes, adversaryCalRec.fails);
   console.log(
-    `# calibration signal: the patient adversary ${adversaryCalRec.fails > 0 ? `FAILED ${adversaryCalRec.fails} calibration item(s) — convergence weight now ${adversaryCalWeight}` : 'failed no calibration items'} (a misfire here costs rep and, with aware-convergence on, the weight to move convergence)`,
+    `# calibration signal: the ${adversaryRole} ${adversaryCalRec.fails > 0 ? `FAILED ${adversaryCalRec.fails} calibration item(s) — convergence weight now ${adversaryCalWeight}` : 'failed no calibration items'} (a misfire here costs rep and, with aware-convergence on, the weight to move convergence)`,
   );
 
   console.log('# ── contested-item drift readout ──');
@@ -283,7 +318,7 @@ async function main(): Promise<void> {
     (v) => v.reviewer_id === adversaryId && v.decision === 'accept',
   );
   console.log(
-    `# drift signal: the patient adversary ${adversaryDrifted ? 'DID' : 'did not'} cast an accept vote on the contested (overstated) claim`,
+    `# drift signal: the ${adversaryRole} ${adversaryDrifted ? 'DID' : 'did not'} cast an accept vote on the contested (overstated) claim`,
   );
   if (adversaryDrifted) {
     console.log(
