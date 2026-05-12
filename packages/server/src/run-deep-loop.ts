@@ -414,6 +414,13 @@ async function main(): Promise<void> {
     max_rounds: MAX_ROUNDS,
     budget: { usd: budgetUsd, rate },
     log: (line) => console.log(line),
+    // When a cassette is in play (recording or replaying), run the
+    // round's contributors sequentially so the request sequence is a
+    // pure function of the seeded fixture — that's what makes a
+    // population-run cassette replay exactly rather than best-effort
+    // (see the cassette note in `recording-fetch.ts`). A keyed live run
+    // with no cassette keeps the realistic concurrent regime.
+    concurrency: cassette ? 'sequential' : 'concurrent',
     runContributor: async (c, { round }) => {
       const r = await runLlmAgent(c.client, {
         apiKey: effectiveApiKey,

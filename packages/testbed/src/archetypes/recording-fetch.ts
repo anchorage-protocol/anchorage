@@ -18,12 +18,18 @@ import type { FetchLike } from './llm-agent.js';
 // What this is good for, and what it isn't:
 //   - Single-agent runs (`run-live.ts`) replay exactly: no other agent,
 //     so the request sequence is fully determined.
-//   - Population runs are best-effort: an agent's turn-N request depends
-//     on the tool results it saw, which depend on what other agents did
-//     first, which during recording depended on real network latency —
-//     so a replay run's interleaving differs and some requests miss the
-//     cassette. Partial hits still cut cost; a miss in `replay` mode
-//     throws (re-record, or use `auto`).
+//   - Population runs replay exactly *only if recorded against a
+//     sequential round* (`runPopulationRounds` with
+//     `concurrency: 'sequential'`, which `run-population.ts` and
+//     `run-deep-loop.ts` switch to whenever a cassette is in play): an
+//     agent's turn-N request depends on the tool results it saw, which
+//     depend on what other agents did first — under concurrent execution
+//     that ordering is latency-dependent and a replay run's interleaving
+//     differs, so some requests miss the cassette (partial hits still
+//     cut cost; a miss in `replay` mode throws — re-record, or use
+//     `auto`). Sequential execution makes the request sequence a pure
+//     function of the seeded fixture, so the recording is exactly
+//     reproducible.
 //   - Replaying against a changed *server* or changed *prompts* is
 //     invalid by construction — the recorded responses were to a
 //     different surface; the hashes won't match (prompt change) or the

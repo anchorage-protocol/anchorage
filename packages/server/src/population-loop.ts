@@ -166,6 +166,22 @@ export interface PopulationRoundsConfig<C extends PopulationContributor> {
   budget?: { usd: number; rate: { input: number; output: number } };
   // Per-line logger. Omit for a quiet run (tests).
   log?: (line: string) => void;
+  // How the round's contributors run relative to each other:
+  //   - 'concurrent' (default): all contributors' loops run at once
+  //     (`Promise.all`) — the realistic regime (contributors race for
+  //     frontier tasks) and the fast one when each loop is blocked on a
+  //     real API call.
+  //   - 'sequential': contributors run one at a time, in array order,
+  //     each finishing its whole round before the next starts. Pick this
+  //     when the run must be deterministic — notably when recording a
+  //     cassette: with concurrent execution an agent's turn-N request
+  //     depends on which other agents' writes had landed by then, which
+  //     during recording is latency-dependent, so the recording can't be
+  //     replayed exactly; sequential makes the request sequence a pure
+  //     function of the seeded fixture, so a cassette recorded against a
+  //     sequential run replays exactly (the same discipline `run-live.ts`
+  //     gets for free by having only one agent).
+  concurrency?: 'concurrent' | 'sequential';
 }
 
 export type PopulationStopReason = 'frontier_drained' | 'budget' | 'rounds_exhausted';
@@ -205,11 +221,15 @@ export async function runPopulationRounds<C extends PopulationContributor>(
 
     log(`# ── round ${round} ──`);
     const preRoundCounts = stagedVoteCounts(config.server);
-    const results = await Promise.all(
-      config.contributors.map((c) =>
-        config.runContributor(c, { round }).then((r) => ({ contributor: c, result: r })),
-      ),
-    );
+    const runOne = (c: C) =>
+      config.runContributor(c, { round }).then((r) => ({ contributor: c, result: r }));
+    let results: { contributor: C; result: ContributorRoundResult }[];
+    if (config.concurrency === 'sequential') {
+      results = [];
+      for (const c of config.contributors) results.push(await runOne(c));
+    } else {
+      results = await Promise.all(config.contributors.map(runOne));
+    }
     roundsRun = round;
 
     for (const { contributor, result } of results) {

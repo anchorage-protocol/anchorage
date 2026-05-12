@@ -258,6 +258,10 @@ async function main(): Promise<void> {
     max_rounds: MAX_ROUNDS,
     budget: { usd: budgetUsd, rate },
     log: (line) => console.log(line),
+    // Sequential when a cassette is in play so the recording replays
+    // exactly; concurrent otherwise (see the cassette note in
+    // `recording-fetch.ts` and the matching wiring in `run-deep-loop.ts`).
+    concurrency: cassette ? 'sequential' : 'concurrent',
     runContributor: async (c, { round }) => {
       const r = await runLlmAgent(c.client, {
         apiKey: effectiveApiKey,

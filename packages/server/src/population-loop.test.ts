@@ -27,7 +27,11 @@ import { FakeVerifier } from './verifier.js';
 // adversary scenarios) over the in-memory MCP transport: contributors
 // run *concurrently* per round (the regime `testbed.test.ts`'s
 // sequential reviewer runs don't exercise), and the test asserts the
-// run drains a seeded orphan-anchor frontier to a clean graph.
+// run drains a seeded orphan-anchor frontier to a clean graph. A second
+// test pins the `concurrency: 'sequential'` regime — the one a cassette
+// recording uses so the request sequence is reproducible — proving the
+// round's contributors really do run one at a time in array order and
+// still drain to the same end state.
 //
 // What this pins, and what it doesn't: it pins the *harness plumbing*
 // (round loop, frontier accounting, curator escalation, the
@@ -240,6 +244,58 @@ describe('population-loop honest baseline', () => {
       expect(e.accepts).toBe(1);
       expect(e.rejects).toBe(1);
     }
+    expect(excerptNodeCount(server)).toBe(SEED_ANCHORS.length);
+    expect(stagedCount(server)).toBe(0);
+  });
+
+  it("sequential mode runs a round's contributors one at a time in array order", async () => {
+    // `concurrency: 'sequential'` is the regime a cassette recording
+    // runs in (run-population.ts / run-deep-loop.ts switch to it when a
+    // cassette is in play): each contributor's loop finishes before the
+    // next starts, so the request sequence is a pure function of the
+    // seeded fixture and the recording replays exactly. This pins that
+    // serialization — no two contributor loops are ever in flight at
+    // once, they fire in population-array order each round, and the run
+    // still drains to the same clean graph the concurrent baseline does.
+    const { server, cause_id, content } = await seedServer({ votes_to_accept: 3 });
+    const population = await buildPopulation(server, {
+      content,
+      excerptWorkers: 2,
+      reviewers: [acceptAllDecider, acceptAllDecider, acceptAllDecider],
+    });
+    const base = runContributorFor(cause_id);
+    const fireOrder: { round: number; name: string }[] = [];
+    let inFlight = 0;
+
+    const result = await runPopulationRounds<PopContributor>({
+      server,
+      contributors: population,
+      runContributor: async (c, ctx) => {
+        inFlight += 1;
+        // If execution were concurrent this would be > 1 for some call.
+        expect(inFlight).toBe(1);
+        fireOrder.push({ round: ctx.round, name: c.display_name });
+        // Yield to the event loop a few times — the window a concurrent
+        // sibling would interleave through.
+        await Promise.resolve();
+        await Promise.resolve();
+        const r = await base(c);
+        inFlight -= 1;
+        return r;
+      },
+      max_rounds: 6,
+      concurrency: 'sequential',
+    });
+
+    expect(result.stop_reason).toBe('frontier_drained');
+    // Each round invoked every contributor, in array order.
+    const roundsSeen = [...new Set(fireOrder.map((e) => e.round))];
+    expect(roundsSeen.length).toBeGreaterThan(0);
+    for (const round of roundsSeen) {
+      const namesThisRound = fireOrder.filter((e) => e.round === round).map((e) => e.name);
+      expect(namesThisRound).toEqual(population.map((c) => c.display_name));
+    }
+    // Same end state as the concurrent baseline.
     expect(excerptNodeCount(server)).toBe(SEED_ANCHORS.length);
     expect(stagedCount(server)).toBe(0);
   });
