@@ -19,9 +19,12 @@
 //
 // The role (honest-strong by default, patient-adversary if set) is
 // resolved from the shared `LlmRole` definitions in the testbed
-// package — the same prompts the scripted-model integration test
-// exercises in CI — so this script and CI run the literal same role
-// configs, just with a real model behind the loop here.
+// package — its *system* prompt (the experimental treatment) is the
+// same one the scripted-model integration test exercises in CI. The
+// kickoff task is `buildLiveTask` (live-scenario.ts), not the role's
+// own `buildTask`: the same explicit-task split `run-deep-loop.ts`
+// uses (`deepLoopTask`), and shared with the golden-cassette test so a
+// recorded run replays deterministically.
 //
 // Without a key it prints how to set one and exits 0 (so it is safe to
 // invoke unconditionally).
@@ -32,16 +35,16 @@ import {
   patientAdversaryRole,
   runLlmAgent,
 } from '@anchorage/testbed';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { resolveCassetteFetch } from './cassette-file.js';
-import { FakeClock } from './clock.js';
-import { SeededIdGen } from './id-gen.js';
-import { buildMcpServer } from './mcp.js';
-import { Server } from './server.js';
-import { FakeVerifier } from './verifier.js';
+import {
+  buildLiveScenario,
+  buildLiveTask,
+  LIVE_AGENT_MAX_TURNS,
+  LIVE_ANCHORS,
+  LIVE_DEFAULT_MODEL,
+} from './live-scenario.js';
 
-const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
+const DEFAULT_MODEL = LIVE_DEFAULT_MODEL;
 
 // A concrete hidden objective for the patient-adversary live run. The
 // role config takes the objective as a parameter (the deep loop sweeps
@@ -94,45 +97,12 @@ async function main(): Promise<void> {
   const model = process.env['ANCHORAGE_TESTBED_MODEL'] ?? DEFAULT_MODEL;
   const role = resolveRole();
 
-  // Stand up a server with a tiny seeded graph: one cause, one
-  // sub-topic, three orphan anchors waiting for excerpts.
-  const server = new Server({
-    clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
-    idGen: new SeededIdGen('live'),
-    verifier: new FakeVerifier(),
-  });
-  const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
-  const cause = server.bootstrap.createCause({
-    name: 'CRC',
-    description: 'colon cancer',
-  });
-  const subTopic = server.bootstrap.seedSubTopic({
-    cause_id: cause.id,
-    name: 'ctDNA-MRD',
-    description: 'ctDNA minimal residual disease in resected CRC',
-    scope_query: 'ctDNA MRD CRC',
-  });
-  for (let i = 1; i <= 3; i++) {
-    const proposal = await server.tools.proposeAnchor(
-      { identity_id: seeder.id },
-      {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        content: `seed anchor ${i}`,
-        external_ref: { kind: 'pmid', value: String(10_000_000 + i) },
-      },
-    );
-    server.curator.acceptProposal(proposal.proposal_id);
-  }
-
-  const agentIdentity = server.bootstrap.mintIdentity({ display_name: 'live-agent' });
-  const mcp = buildMcpServer(server, { caller: { identity_id: agentIdentity.id as never } });
-  const client = new Client({ name: 'live-agent', version: '0.0.0' });
-  const [ct, st] = InMemoryTransport.createLinkedPair();
-  await Promise.all([mcp.connect(st), client.connect(ct)]);
+  // Stand up the shared live fixture: one cause, one sub-topic, the
+  // orphan anchors carrying real source passages (see live-scenario.ts).
+  const { server, client, cause_id } = await buildLiveScenario();
 
   console.log(`# live llm-agent run — model=${model} role=${role.id}`);
-  console.log(`# cause=${cause.id} sub_topic=${subTopic.id} (3 orphan anchors seeded)`);
+  console.log(`# cause=${cause_id} (${LIVE_ANCHORS.length} orphan anchors seeded)`);
   if (cassette) console.log(`# cassette: ${cassette.path} (mode ${cassette.mode})`);
   console.log('');
 
@@ -140,8 +110,8 @@ async function main(): Promise<void> {
     apiKey: effectiveApiKey,
     model,
     system: role.system,
-    task: role.buildTask(cause.id),
-    max_turns: 24,
+    task: buildLiveTask(cause_id),
+    max_turns: LIVE_AGENT_MAX_TURNS,
     ...(cassette ? { fetch: cassette.fetch } : {}),
     on_turn: (turn, index) => {
       if (turn.text.trim()) console.log(`[turn ${index}] ${turn.text.trim()}`);
