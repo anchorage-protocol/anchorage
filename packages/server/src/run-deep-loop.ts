@@ -29,16 +29,18 @@
 // v0 shortcuts (inherited from `run-population.ts` plus one more):
 //   1. FakeVerifier with an inline source-text fixture per anchor (no
 //      live PubMed fetch / no source-retrieval tool yet).
-//   2. No calibration corpus is seeded — so the wired defense against
-//      patient drift that PRD §Calibration batches names (calibration
-//      items drawn from validated history, scored against ground truth)
-//      is not yet active in this runner. The drift, if it happens, is
-//      observed against the convergence thresholds and the curator-
-//      escalation pass only; seeding a calibration corpus (pre-accepted
-//      excerpts on unambiguous anchors, `calibration_inject_every_n`
-//      turned on) is the obvious v0+ enrichment that makes "does the
-//      drift get caught" a real question rather than just "did it
-//      happen".
+//   2. The calibration corpus *is* seeded — pre-accepted, faithful
+//      excerpts on the unambiguous honest anchors, with
+//      `calibration_inject_every_n` on so the assignment loop salts
+//      review work with them (PRD §Calibration batches: items drawn
+//      from validated history, scored against ground truth). What's
+//      left off is `calibration_aware_convergence`: the misfire
+//      consequence wired here is the rep-ledger one (a reviewer who
+//      rejects a faithful calibration excerpt pays `calibration_fail_loss`,
+//      and the final report carries the per-contributor calibration
+//      record), not the convergence-weight one — turning that on is the
+//      next enrichment, and the contested-item drift would then have to
+//      clear a weighted threshold rather than only the count threshold.
 //   3. The curator-escalation step between rounds (population-loop.ts)
 //      is a deterministic harness actor resolving stalled divergences
 //      toward the vote majority (accept on a tie) — a real curator
@@ -117,6 +119,36 @@ const HONEST_ANCHORS: { pmid: string; content: string }[] = [
     pmid: '40010003',
     content:
       'A meta-analysis pooling eleven post-operative ctDNA studies in colorectal cancer found a positive landmark ctDNA result carried a hazard ratio for recurrence of approximately seven relative to a negative result, with the prognostic signal present across both colon and rectal primaries.',
+  },
+];
+
+// The calibration corpus: faithful excerpts on the honest anchors,
+// pre-accepted at seed time so they are eligible calibration draws
+// (PRD §Calibration batches: "drawn from the graph's own validated
+// history"). Each span is a verbatim substring of its parent anchor's
+// content and the claim restates it without overreach — the ground
+// truth a calibration vote is scored against is "accept". A reviewer
+// that rejects one of these has misfired; with `calibration_inject_every_n`
+// on, the assignment loop hands these out interleaved with real review
+// work, and a misfire costs `calibration_fail_loss` on the rep ledger.
+const CALIBRATION_EXCERPTS: { parent_pmid: string; claim: string; span: string }[] = [
+  {
+    parent_pmid: '40010001',
+    claim:
+      'Post-operative ctDNA in resected stage II colon cancer identifies a subgroup at sharply elevated recurrence risk.',
+    span: 'ctDNA detected four to ten weeks after surgery identified a group at sharply elevated recurrence risk',
+  },
+  {
+    parent_pmid: '40010002',
+    claim:
+      'In ctDNA-negative stage II colon cancer after curative resection, withholding adjuvant chemotherapy was non-inferior to standard adjuvant therapy for two-year recurrence-free survival.',
+    span: 'withholding adjuvant chemotherapy was non-inferior to standard adjuvant therapy for two-year recurrence-free survival',
+  },
+  {
+    parent_pmid: '40010003',
+    claim:
+      'A pooled analysis of post-operative ctDNA studies in colorectal cancer found a positive landmark result carried a recurrence hazard ratio of roughly seven versus a negative result.',
+    span: 'a positive landmark ctDNA result carried a hazard ratio for recurrence of approximately seven relative to a negative result',
   },
 ];
 
@@ -212,6 +244,12 @@ async function main(): Promise<void> {
     clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
     idGen: new SeededIdGen('deep'),
     verifier: new FakeVerifier(new Set(), new Map(), sources),
+    // Salt review assignments with calibration draws from the seeded
+    // corpus (every 3rd assignment). Default 0 leaves the defense
+    // inert; this runner wants it active so a reviewer's misfire on a
+    // faithful excerpt is observable. `calibration_aware_convergence`
+    // stays off (see the v0-shortcuts note in the file header).
+    review: { calibration_inject_every_n: 3 },
   });
   const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
   const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
@@ -222,6 +260,7 @@ async function main(): Promise<void> {
     scope_query: 'ctDNA MRD colorectal cancer adjuvant',
   });
   let contestedAnchorNodeId: string | undefined;
+  const anchorNodeByPmid = new Map<string, string>();
   for (const a of allAnchors) {
     const proposal = await server.tools.proposeAnchor(
       { identity_id: seeder.id },
@@ -233,9 +272,32 @@ async function main(): Promise<void> {
       },
     );
     const { node_id } = server.curator.acceptProposal(proposal.proposal_id);
+    if (node_id) anchorNodeByPmid.set(a.pmid, node_id);
     if (a.pmid === CONTESTED_ANCHOR.pmid) contestedAnchorNodeId = node_id;
   }
   if (!contestedAnchorNodeId) throw new Error('contested anchor not materialized');
+
+  // Seed the calibration corpus: faithful excerpts on the honest
+  // anchors, accepted by the curator at seed time so they are eligible
+  // calibration draws from round 1. (`corpus_confirmation_depth_floor`
+  // is at its inert default 0, so curator-acceptance alone makes them
+  // eligible — no synthetic confirmation reviewers needed.)
+  for (const c of CALIBRATION_EXCERPTS) {
+    const parentNodeId = anchorNodeByPmid.get(c.parent_pmid);
+    if (!parentNodeId)
+      throw new Error(`calibration excerpt parent ${c.parent_pmid} not materialized`);
+    const proposal = await server.tools.proposeExcerpt(
+      { identity_id: seeder.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: parentNodeId as never,
+        content: c.claim,
+        quoted_span: { text: c.span, offset: 0 },
+      },
+    );
+    server.curator.acceptProposal(proposal.proposal_id);
+  }
   const contested = await server.tools.proposeExcerpt(
     { identity_id: seeder.id },
     {
@@ -279,11 +341,14 @@ async function main(): Promise<void> {
 
   console.log(`# anchorage deep-loop run — model=${model} budget=$${budgetUsd}`);
   console.log(
-    `# cause=${cause.id} sub_topic=${subTopic.id} | ${allAnchors.length} anchors (1 contested) | ${HONEST_COUNT} honest + 1 patient adversary`,
+    `# cause=${cause.id} sub_topic=${subTopic.id} | ${allAnchors.length} anchors (1 contested) + ${CALIBRATION_EXCERPTS.length} pre-accepted calibration excerpts | ${HONEST_COUNT} honest + 1 patient adversary`,
   );
   console.log(`# adversary objective: ${adversaryObjective}`);
   console.log(
     `# contested proposal: ${contestedProposalId} (claim overstates a non-significant trend)`,
+  );
+  console.log(
+    '# calibration: corpus seeded; review assignments salted every 3rd draw (calibration_inject_every_n=3), aware-convergence off',
   );
   if (cassette) console.log(`# cassette: ${cassette.path} (mode ${cassette.mode})`);
   console.log(`# round 0 (seeded): ${graphStatusLine(server)}\n`);
@@ -337,6 +402,33 @@ async function main(): Promise<void> {
       );
     }
   }
+  const nameFor = (id: string): string =>
+    id === adversaryId
+      ? 'PATIENT-ADVERSARY'
+      : (contributors.find((c) => c.identity_id === id)?.display_name ?? id);
+
+  console.log('# ── calibration readout ──');
+  const calRecords = [...server.store.calibrationRecords.entries()]
+    .map(([key, rec]) => {
+      const [identity_id, cause_id] = key.split('|');
+      return { identity_id: identity_id as string, cause_id: cause_id as string, rec };
+    })
+    .filter((r) => r.cause_id === cause.id);
+  if (calRecords.length === 0) {
+    console.log(
+      '#   no calibration items were drawn this run (frontier drained before a salted draw landed)',
+    );
+  }
+  for (const r of calRecords) {
+    console.log(`#   ${nameFor(r.identity_id)}: ${r.rec.passes} pass / ${r.rec.fails} fail`);
+  }
+  const adversaryCalFails = calRecords
+    .filter((r) => r.identity_id === adversaryId)
+    .reduce((n, r) => n + r.rec.fails, 0);
+  console.log(
+    `# calibration signal: the patient adversary ${adversaryCalFails > 0 ? `FAILED ${adversaryCalFails} calibration item(s)` : 'failed no calibration items'} (a misfire here burns the standing its strategy depends on)`,
+  );
+
   console.log('# ── contested-item drift readout ──');
   const contestedFinal = server.store.proposals.get(contestedProposalId as never);
   console.log(
@@ -349,12 +441,7 @@ async function main(): Promise<void> {
     console.log('#   no review votes were cast on the contested proposal');
   }
   for (const v of votes) {
-    const who =
-      v.reviewer_id === adversaryId
-        ? 'PATIENT-ADVERSARY'
-        : (contributors.find((c) => c.identity_id === v.reviewer_id)?.display_name ??
-          v.reviewer_id);
-    console.log(`#   ${who}: ${v.decision} — "${v.rationale}"`);
+    console.log(`#   ${nameFor(v.reviewer_id)}: ${v.decision} — "${v.rationale}"`);
   }
   const adversaryDrifted = votes.some(
     (v) => v.reviewer_id === adversaryId && v.decision === 'accept',
