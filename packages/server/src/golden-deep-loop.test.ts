@@ -33,7 +33,11 @@ import { runPopulationRounds } from './population-loop.js';
 // decision (and the rest of the run) so a regression in the agent loop,
 // the MCP tool surface, `runLlmAgent`'s request shaping, the population
 // round loop, or the patient-adversary prompt shows up as a cassette
-// miss here rather than only on the next on-demand deep-loop run.
+// miss here rather than only on the next on-demand deep-loop run. (The
+// parameter-sweep *cube* over this same population — the calibration
+// defense on vs. off, today's one swept axis — is `run-deep-loop-cube.ts`,
+// pinned cell-by-cell by `golden-deep-loop-cube.test.ts`; this single
+// run is, in effect, that cube's `calibration-on` cell.)
 //
 // The replay mirrors `run-deep-loop.ts`'s cassette path: the round loop
 // run *sequentially* (the regime that makes a population cassette replay

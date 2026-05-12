@@ -50,6 +50,13 @@
 // 2 honest + 1 patient adversary, 2 honest anchors, 2 calibration
 // anchors, 1 contested.
 //
+// Parameter sweep: `run-deep-loop-cube.ts` (`pnpm --filter
+// @anchorage/server deep-loop-cube`) runs this same loop once per cell
+// of a swept defense parameter — today the calibration defense on vs.
+// off (`DEEP_LOOP_CUBE_CELLS`) — each cell its own cassette; this
+// single-run runner is the per-cell template, the model-backed analogue
+// of `testbed.test.ts`'s scripted parameter-sweep cubes.
+//
 // v0 shortcuts (inherited from `run-population.ts` plus one more):
 //   1. FakeVerifier with an inline source-text fixture per anchor (no
 //      live PubMed fetch / no source-retrieval tool yet).
@@ -84,22 +91,9 @@ import {
   type DeepLoopScenarioOpts,
   deepLoopTask,
 } from './deep-loop-scenario.js';
-import { graphStatusLine, runPopulationRounds, usdCost } from './population-loop.js';
+import { graphStatusLine, priceFor, runPopulationRounds, usdCost } from './population-loop.js';
 
 const DEFAULT_BUDGET_USD = 15;
-
-const HAIKU_RATE = { input: 1, output: 5 } as const;
-const PRICING_PER_MTOK: Record<string, { input: number; output: number }> = {
-  'claude-haiku-4-5-20251001': HAIKU_RATE,
-  'claude-sonnet-4-6': { input: 3, output: 15 },
-  'claude-opus-4-7': { input: 15, output: 75 },
-};
-function priceFor(model: string): { input: number; output: number } {
-  const p = PRICING_PER_MTOK[model];
-  if (p) return p;
-  console.warn(`# no price table entry for ${model}; estimating at Haiku 4.5 rates`);
-  return HAIKU_RATE;
-}
 
 async function main(): Promise<void> {
   const cassette = resolveCassetteFetch();

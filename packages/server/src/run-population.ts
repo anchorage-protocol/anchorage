@@ -68,7 +68,7 @@ import { resolveCassetteFetch } from './cassette-file.js';
 import { FakeClock } from './clock.js';
 import { SeededIdGen } from './id-gen.js';
 import { buildMcpServer } from './mcp.js';
-import { graphStatusLine, runPopulationRounds, usdCost } from './population-loop.js';
+import { graphStatusLine, priceFor, runPopulationRounds, usdCost } from './population-loop.js';
 import { Server } from './server.js';
 import { FakeVerifier } from './verifier.js';
 
@@ -77,25 +77,6 @@ const DEFAULT_BUDGET_USD = 15;
 const CONTRIBUTOR_COUNT = 5;
 const MAX_ROUNDS = 6;
 const MAX_TURNS_PER_ROUND = 16;
-
-// Approximate Anthropic list pricing, USD per million tokens. Only the
-// default model (Haiku 4.5) and the obvious overrides are tabled; an
-// unknown model falls back to the Haiku rate with a warning, which is
-// fine for a coarse spend guard. Update if prices move — this is a
-// safety estimate, not billing.
-const HAIKU_RATE = { input: 1, output: 5 } as const;
-const PRICING_PER_MTOK: Record<string, { input: number; output: number }> = {
-  'claude-haiku-4-5-20251001': HAIKU_RATE,
-  'claude-sonnet-4-6': { input: 3, output: 15 },
-  'claude-opus-4-7': { input: 15, output: 75 },
-};
-
-function priceFor(model: string): { input: number; output: number } {
-  const p = PRICING_PER_MTOK[model];
-  if (p) return p;
-  console.warn(`# no price table entry for ${model}; estimating at Haiku 4.5 rates`);
-  return HAIKU_RATE;
-}
 
 // Seeded orphan anchors. Each carries its source passage inline as
 // `content` (see seam note in the file header): the FakeVerifier

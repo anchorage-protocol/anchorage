@@ -27,7 +27,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { FakeClock } from './clock.js';
 import { SeededIdGen } from './id-gen.js';
 import { buildMcpServer } from './mcp.js';
-import { Server } from './server.js';
+import { type ReviewConfig, Server } from './server.js';
 import { FakeVerifier } from './verifier.js';
 
 // Pinned for the golden cassette — the recorder must not override the
@@ -37,6 +37,23 @@ export const DEEP_DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 export const DEEP_MAX_ROUNDS = 8;
 export const DEEP_MAX_TURNS_PER_ROUND = 16;
 export const DEEP_DEFAULT_HONEST_COUNT = 3;
+
+// The full calibration defense, active by default in this runner (PRD
+// §Calibration batches): salt every 2nd review-task offer per contributor
+// with a draw from the seeded corpus and weight convergence by the
+// reviewer's calibration record. The server defaults both off (the
+// defense is inert unless a deployment turns it on); the deep loop wants
+// it on so a misfire is observable on both the rep ledger and at
+// convergence. `every_n`=2 (not the scripted cubes' 3+) because this
+// population's per-contributor review volume is small — at every_n=3 the
+// frontier drains before most contributors see a salted draw (a
+// shakedown showed exactly that). `DeepLoopScenarioOpts.review`
+// shallow-overrides this, which is the seam the parameter-sweep cube
+// (`DEEP_LOOP_CUBE_CELLS`) uses to flip the defense off in one cell.
+export const DEEP_DEFAULT_REVIEW: Partial<ReviewConfig> = {
+  calibration_inject_every_n: 2,
+  calibration_aware_convergence: true,
+};
 
 // The hidden objective the patient adversary carries. The role config
 // takes it as a parameter (a full sweep would vary it); the runner needs
@@ -174,6 +191,13 @@ export interface DeepLoopScenarioOpts {
   calibration_anchors?: CalibrationAnchorSeed[];
   contested?: ContestedSeed;
   adversary_objective?: string;
+  // Shallow-merged over `DEEP_DEFAULT_REVIEW` before it reaches the
+  // `Server` ctor — the seam the parameter-sweep cube uses to vary a
+  // defense parameter (e.g. `{ calibration_inject_every_n: 0,
+  // calibration_aware_convergence: false }` for the calibration-off
+  // cell). Unset → the full calibration defense, as in the canonical
+  // deep loop.
+  review?: Partial<ReviewConfig>;
 }
 
 // The small CI preset the golden deep-loop cassette is recorded against:
@@ -190,6 +214,58 @@ export const CI_DEEP_LOOP_OPTS: DeepLoopScenarioOpts = {
   anchors: DEEP_HONEST_ANCHORS.slice(0, 2),
   calibration_anchors: DEEP_CALIBRATION_ANCHORS.slice(0, 2),
 };
+
+// The model-backed parameter-sweep cube on the deep loop — the multi-
+// cell analogue of the scripted parameter sweeps in `testbed.test.ts`,
+// run by `run-deep-loop-cube.ts`. The scripted cubes vary a defense
+// parameter against a *scripted* adversary and read the closure outcome;
+// this cube varies a defense parameter against the same real-model
+// honest-strong + patient-adversary population the deep loop already
+// stands up, on the small `ci` fixture so each cell's cassette is
+// checkin-sized. Today it is a one-axis sweep (calibration defense on /
+// off); the cell list is the extension point — add cells (more values,
+// a second axis) and the runner and the golden-cube replay test pick
+// them up. The point of the on/off pair: the scripted patient-adversary
+// cube shows the calibration defense is load-bearing *when an adversary
+// actually drifts*; this cube checks the complementary claim — on the
+// honest baseline (where the model adversary keeps to its build-standing-
+// first strategy) flipping the defense off changes nothing, i.e. the
+// defense carries no false-positive cost.
+export interface DeepLoopCubeCell {
+  // Stable cell id — also the CLI selector (`ANCHORAGE_CUBE_CELL=<name>`
+  // narrows a run to one cell).
+  name: string;
+  // One-line human description, printed in the cube report.
+  label: string;
+  // Fixture basename: the cell's recorded cassette is
+  // `test/fixtures/<cassette_basename>.json`. Each cell gets its own —
+  // recorded LLM transcripts aren't reproducible (sampling), so a golden
+  // cassette is a frozen artifact pinned by exactly one test, not a
+  // file shared across runners. (The `calibration-on` cell runs the
+  // same `CI_DEEP_LOOP_OPTS` scenario as the single-cell golden
+  // `golden-deep-loop.json`, but a re-record would diverge from it, so
+  // it carries its own copy rather than overwriting that file.)
+  cassette_basename: string;
+  opts: DeepLoopScenarioOpts;
+}
+
+export const DEEP_LOOP_CUBE_CELLS: readonly DeepLoopCubeCell[] = [
+  {
+    name: 'calibration-on',
+    label: 'calibration defense ON — every 2nd review offer salted, aware-convergence weighting',
+    cassette_basename: 'golden-deep-loop-cube-calibration-on',
+    opts: CI_DEEP_LOOP_OPTS,
+  },
+  {
+    name: 'calibration-off',
+    label: 'calibration defense OFF — no salted draws, count-only convergence',
+    cassette_basename: 'golden-deep-loop-cube-calibration-off',
+    opts: {
+      ...CI_DEEP_LOOP_OPTS,
+      review: { calibration_inject_every_n: 0, calibration_aware_convergence: false },
+    },
+  },
+] as const;
 
 // Opening task for a contributor's round. The role's *system* prompt is
 // the experimental treatment (honest-strong vs patient-adversary); this
@@ -246,6 +322,7 @@ export async function buildDeepLoopScenario(
   const calibrationAnchors = opts.calibration_anchors ?? DEEP_CALIBRATION_ANCHORS;
   const contested = opts.contested ?? DEEP_CONTESTED;
   const adversaryObjective = opts.adversary_objective ?? DEFAULT_ADVERSARY_OBJECTIVE;
+  const review = { ...DEEP_DEFAULT_REVIEW, ...(opts.review ?? {}) };
 
   // Seed: one cause, one sub-topic; the honest orphan anchors, the
   // calibration anchors (each with its faithful excerpt), and the
@@ -257,16 +334,10 @@ export async function buildDeepLoopScenario(
     clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
     idGen: new SeededIdGen(seed),
     verifier: new FakeVerifier(new Set(), new Map(), sources),
-    // Salt review assignments with calibration draws from the seeded
-    // corpus (every 2nd review-task offer per contributor) and weight
-    // convergence by the reviewer's calibration record. Both default off
-    // (the defense is inert by default); this runner wants the full
-    // defense active so a misfire is observable on both the rep ledger
-    // and at convergence. every_n=2 (not the cube layer's 3+) because
-    // this population's per-contributor review volume is small — at
-    // every_n=3 the frontier drains before most contributors see a
-    // salted draw (the shakedown showed exactly that).
-    review: { calibration_inject_every_n: 2, calibration_aware_convergence: true },
+    // `DEEP_DEFAULT_REVIEW` (the full calibration defense) shallow-
+    // merged with any per-scenario `review` override — see those two for
+    // the rationale and the cube seam.
+    review,
   });
   const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
   const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });

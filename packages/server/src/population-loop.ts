@@ -38,8 +38,30 @@ export interface EscalationOutcome {
 
 // Approximate Anthropic-style USD cost from token usage and a per-
 // million-token rate. Coarse: a spend guard, not billing.
-export function usdCost(usage: TokenUsage, rate: { input: number; output: number }): number {
+export interface ModelRate {
+  input: number;
+  output: number;
+}
+export function usdCost(usage: TokenUsage, rate: ModelRate): number {
   return (usage.input_tokens * rate.input + usage.output_tokens * rate.output) / 1_000_000;
+}
+
+// Per-million-token USD rates for the models the model-backed runners
+// (`run-live`, `run-population`, `run-deep-loop`, `run-deep-loop-cube`)
+// can be pointed at — only used to feed the coarse spend guard, so an
+// unknown model falls back to Haiku rates with a warning rather than
+// failing the run.
+export const HAIKU_RATE: ModelRate = { input: 1, output: 5 };
+const PRICING_PER_MTOK: Record<string, ModelRate> = {
+  'claude-haiku-4-5-20251001': HAIKU_RATE,
+  'claude-sonnet-4-6': { input: 3, output: 15 },
+  'claude-opus-4-7': { input: 15, output: 75 },
+};
+export function priceFor(model: string): ModelRate {
+  const p = PRICING_PER_MTOK[model];
+  if (p) return p;
+  console.warn(`# no price table entry for ${model}; estimating at Haiku 4.5 rates`);
+  return HAIKU_RATE;
 }
 
 export function graphStatusLine(server: Server): string {
