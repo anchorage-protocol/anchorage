@@ -9,20 +9,40 @@ name: deep-loop
 # provisioned in repo secrets. Without that secret the runner prints how
 # to set a key and exits 0, so this workflow is safe even before the key
 # exists — it just does nothing useful.
+#
+# The `runner` input picks between the single deep-loop run
+# (`deep-loop`) and the model-backed parameter-sweep cube
+# (`deep-loop-cube` — runs the loop once per cell of a swept defense
+# parameter; the budget ceiling applies per cell, and `cube_cell`
+# narrows to one cell). Neither writes cassettes here: re-baselining the
+# checked-in golden fixtures is a local task that commits the result,
+# not a CI side effect, so `ANCHORAGE_CASSETTE_MODE` stays unset and
+# both runs hit the API live.
 
 on:
   workflow_dispatch:
     inputs:
+      runner:
+        description: 'single deep-loop run or the parameter-sweep cube'
+        type: choice
+        options:
+          - deep-loop
+          - deep-loop-cube
+        default: deep-loop
       model:
         description: 'Anthropic model id'
         required: false
         default: 'claude-haiku-4-5-20251001'
       budget_usd:
-        description: 'USD spend ceiling for the run'
+        description: 'USD spend ceiling (per run; per cell for the cube)'
         required: false
         default: '15'
       adversary_objective:
-        description: "Patient adversary's hidden objective (blank = runner default)"
+        description: "Patient adversary's hidden objective (blank = runner default; ignored by the cube)"
+        required: false
+        default: ''
+      cube_cell:
+        description: 'cube only: run just this one cell (blank = all cells)'
         required: false
         default: ''
 
@@ -43,4 +63,5 @@ jobs:
           ANCHORAGE_TESTBED_MODEL: ${{ inputs.model }}
           ANCHORAGE_POPULATION_BUDGET_USD: ${{ inputs.budget_usd }}
           ANCHORAGE_ADVERSARY_OBJECTIVE: ${{ inputs.adversary_objective }}
-        run: pnpm --filter @anchorage/server deep-loop
+          ANCHORAGE_CUBE_CELL: ${{ inputs.cube_cell }}
+        run: pnpm --filter @anchorage/server ${{ inputs.runner }}
