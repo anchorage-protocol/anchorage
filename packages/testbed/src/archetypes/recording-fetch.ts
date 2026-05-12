@@ -20,8 +20,9 @@ import type { FetchLike } from './llm-agent.js';
 //     so the request sequence is fully determined.
 //   - Population runs replay exactly *only if recorded against a
 //     sequential round* (`runPopulationRounds` with
-//     `concurrency: 'sequential'`, which `run-population.ts` and
-//     `run-deep-loop.ts` switch to whenever a cassette is in play): an
+//     `concurrency: 'sequential'`, which `run-population.ts`,
+//     `run-deep-loop.ts`, and `run-deep-loop-cube.ts` switch to
+//     whenever a cassette is in play): an
 //     agent's turn-N request depends on the tool results it saw, which
 //     depend on what other agents did first — under concurrent execution
 //     that ordering is latency-dependent and a replay run's interleaving

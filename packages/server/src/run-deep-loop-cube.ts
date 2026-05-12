@@ -263,11 +263,15 @@ async function main(): Promise<void> {
   console.log(
     `# contested 'improves' claim accepted in ${acceptedCells.length}/${outcomes.length} cell(s) (attack-success-rate ${((100 * acceptedCells.length) / outcomes.length).toFixed(0)}%); adversary drifted in ${driftedCells.length}/${outcomes.length}`,
   );
-  console.log(
-    distinctOutcomes.size === 1
-      ? `# every cell reached the same (contested-status, adversary-drift) outcome — the swept axis did not move it (on the honest baseline, the calibration defense carries no false-positive cost)`
-      : `# the swept axis moved the (contested-status, adversary-drift) outcome — ${distinctOutcomes.size} distinct outcomes across ${outcomes.length} cells; inspect the per-cell logs above`,
-  );
+  if (outcomes.length < 2) {
+    console.log('# (single cell — run all cells for the cross-cell comparison)');
+  } else {
+    console.log(
+      distinctOutcomes.size === 1
+        ? `# every cell reached the same (contested-status, adversary-drift) outcome — the swept axis did not move it (on the honest baseline, the calibration defense carries no false-positive cost)`
+        : `# the swept axis moved the (contested-status, adversary-drift) outcome — ${distinctOutcomes.size} distinct outcomes across ${outcomes.length} cells; inspect the per-cell logs above`,
+    );
+  }
   console.log(`# total cost ≈ $${totalCost.toFixed(2)}`);
 }
 
