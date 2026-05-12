@@ -248,6 +248,40 @@ describe('population-loop honest baseline', () => {
     expect(stagedCount(server)).toBe(0);
   });
 
+  it('stops with no_progress when a round moves nothing and there is nothing to escalate', async () => {
+    // Seeded orphan anchors remain (frontier never structurally empties),
+    // but the contributors no-op every round and nothing is staged for
+    // the curator to escalate — so the first round leaves the store
+    // fingerprint unchanged and the loop stops immediately rather than
+    // burning all `max_rounds` on dead air.
+    const { server } = await seedServer({ votes_to_accept: 3 });
+    const idleContributors: PopContributor[] = [
+      {
+        display_name: 'idle-1',
+        client: undefined as never,
+        role: { kind: 'review', decide: acceptAllDecider },
+      },
+      {
+        display_name: 'idle-2',
+        client: undefined as never,
+        role: { kind: 'review', decide: acceptAllDecider },
+      },
+    ];
+
+    const result = await runPopulationRounds<PopContributor>({
+      server,
+      contributors: idleContributors,
+      runContributor: async () => ({ usage: { input_tokens: 0, output_tokens: 0 } }),
+      max_rounds: 6,
+    });
+
+    expect(result.stop_reason).toBe('no_progress');
+    expect(result.rounds_run).toBe(1);
+    expect(result.escalations).toEqual([]);
+    // The frontier is untouched — every seeded anchor is still an orphan.
+    expect(excerptNodeCount(server)).toBe(0);
+  });
+
   it("sequential mode runs a round's contributors one at a time in array order", async () => {
     // `concurrency: 'sequential'` is the regime a cassette recording
     // runs in (run-population.ts / run-deep-loop.ts switch to it when a

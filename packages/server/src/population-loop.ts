@@ -81,6 +81,40 @@ export function frontierEmpty(server: Server): boolean {
   return true;
 }
 
+// A coarse fingerprint of all population-reachable store state: node /
+// edge / review-vote / assignment counts, the per-proposal status
+// multiset, and the calibration tallies. A round that leaves this
+// unchanged moved nothing — every contributor found no task or no-op'd,
+// and the curator had nothing stuck to escalate — and the next round
+// would be the same, so the loop can stop with `no_progress` rather
+// than burning the rest of `max_rounds` on dead air. (Model agents
+// aren't perfectly deterministic, so in principle a round-N no-op could
+// be followed by a round-N+1 action; in practice once the frontier is
+// exhausted and every proposal has converged or been escalated the
+// agents have nothing to act on and stay quiet — the steady state every
+// real deep-loop run settles into. The honest scripted baseline drains
+// via `frontier_drained` at a round boundary before this can trip, and
+// a between-rounds escalation changes a proposal's status so the round
+// it fires in is never seen as a no-op.)
+export function storeFingerprint(server: Server): string {
+  const proposalStatuses = [...server.store.proposals.values()]
+    .map((p) => `${p.id}=${p.status}`)
+    .sort()
+    .join(',');
+  const calTally = [...server.store.calibrationRecords.values()].reduce(
+    (sum, r) => sum + r.passes + r.fails,
+    0,
+  );
+  return [
+    server.store.nodes.size,
+    server.store.edges.size,
+    server.store.reviewVotes.size,
+    server.store.assignments.size,
+    calTally,
+    proposalStatuses,
+  ].join('|');
+}
+
 // Vote counts per currently-staged proposal — the pre-round snapshot
 // `escalateStuckProposals` diffs against to tell "progressing" from
 // "stuck".
@@ -184,7 +218,11 @@ export interface PopulationRoundsConfig<C extends PopulationContributor> {
   concurrency?: 'concurrent' | 'sequential';
 }
 
-export type PopulationStopReason = 'frontier_drained' | 'budget' | 'rounds_exhausted';
+export type PopulationStopReason =
+  | 'frontier_drained'
+  | 'no_progress'
+  | 'budget'
+  | 'rounds_exhausted';
 
 export interface PopulationRoundsResult {
   stop_reason: PopulationStopReason;
@@ -221,6 +259,7 @@ export async function runPopulationRounds<C extends PopulationContributor>(
 
     log(`# ── round ${round} ──`);
     const preRoundCounts = stagedVoteCounts(config.server);
+    const preRoundFingerprint = storeFingerprint(config.server);
     const runOne = (c: C) =>
       config.runContributor(c, { round }).then((r) => ({ contributor: c, result: r }));
     let results: { contributor: C; result: ContributorRoundResult }[];
@@ -252,6 +291,12 @@ export async function runPopulationRounds<C extends PopulationContributor>(
       ? ` | spent ~$${usdCost(totalUsage, config.budget.rate).toFixed(2)}`
       : '';
     log(`# after round ${round}: ${graphStatusLine(config.server)}${spentSuffix}\n`);
+
+    if (storeFingerprint(config.server) === preRoundFingerprint) {
+      stopReason = 'no_progress';
+      log(`# no progress in round ${round} — population has nothing left to act on; stopping`);
+      break;
+    }
   }
 
   return { stop_reason: stopReason, rounds_run: roundsRun, total_usage: totalUsage, escalations };
