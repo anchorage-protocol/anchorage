@@ -47,12 +47,13 @@ export {
   runLlmAgent,
 } from './archetypes/llm-agent.js';
 export {
+  type AdversaryRoleOptions,
   honestStrongRole,
   type LlmRole,
   type LlmRoleId,
   llmRole,
-  type PatientAdversaryOptions,
   patientAdversaryRole,
+  strategicAdversaryRole,
 } from './archetypes/llm-roles.js';
 export {
   type CassetteEntry,

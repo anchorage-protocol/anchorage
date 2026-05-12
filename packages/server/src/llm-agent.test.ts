@@ -4,6 +4,7 @@ import {
   type LlmRole,
   patientAdversaryRole,
   runLlmAgent,
+  strategicAdversaryRole,
 } from '@anchorage/testbed';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -253,35 +254,43 @@ describe('testbed: llm-agent archetype against the wired surface', () => {
 
 describe('testbed: llm-agent role configs against the wired surface', () => {
   // The named deep-loop populations PRD §Adversary taxonomy commits —
-  // honest-strong and patient adversary — are `LlmRole` configs in the
-  // testbed package: a system prompt plus a cause-keyed task message,
-  // nothing more (the agent loop is role-blind by construction). The
-  // prompts are the *experimental treatment* in the deep loop, so they
-  // are pinned in one place and CI-exercised here with a scripted
-  // model. The scripted model ignores the system prompt — it cannot
-  // exhibit a role's distinguishing behavior, which needs a real model
-  // and a richer scenario than a one-anchor frontier — so what this
-  // pins is that each role config plugs into `runLlmAgent` and drives
-  // the governance write path. The real-model smoke below is the manual
-  // "does the prompt actually steer a frontier model" check.
+  // honest-strong, strategic adversary, patient adversary — are
+  // `LlmRole` configs in the testbed package: a system prompt plus a
+  // cause-keyed task message, nothing more (the agent loop is role-blind
+  // by construction). The prompts are the *experimental treatment* in
+  // the deep loop, so they are pinned in one place and CI-exercised here
+  // with a scripted model. The scripted model ignores the system prompt
+  // — it cannot exhibit a role's distinguishing behavior, which needs a
+  // real model and a richer scenario than a one-anchor frontier — so
+  // what this pins is that each role config plugs into `runLlmAgent` and
+  // drives the governance write path. The real-model smoke below is the
+  // manual "does the prompt actually steer a frontier model" check.
   //
-  // For the patient adversary specifically: during its reputation-build
-  // phase — which is *all* it can do against a frontier with no
-  // contested items — it is behaviorally indistinguishable from
-  // honest-strong at the write path, which is exactly PRD §Adversary
-  // taxonomy's "builds reputation honestly for months before drift
-  // attempts". The drift half (a misaligned vote on a contested
-  // assigned proposal once standing is established) is the deep-loop
-  // scenario this slice does not yet stand up; the gates that close it
-  // (per-(cause, sub-topic) recent-activity gating, review-as-staking,
-  // calibration injection) are the same ones cubes #2/#5/#15/#17
-  // already pin against the *scripted* patient-adversary archetype.
+  // For the adversary roles specifically: on a frontier with no
+  // contested items there is nothing for either to drift on, so both are
+  // behaviorally indistinguishable from honest-strong at the write path
+  // — which is exactly the patient adversary's "builds reputation
+  // honestly for months" (PRD §Adversary taxonomy) and the strategic
+  // adversary's "indistinguishable on routine work". The drift halves (a
+  // misaligned vote on a contested assigned proposal — at once for the
+  // strategic adversary, once standing is established for the patient
+  // one) are the deep-loop scenario `deep-loop-scenario.ts` stands up
+  // and `golden-deep-loop-cube.test.ts` pins; the gates that close them
+  // (redundant honest review, per-(cause, sub-topic) recent-activity
+  // gating, review-as-staking, calibration injection) are the same ones
+  // the scripted cubes pin against the scripted adversary archetypes.
 
   const roles: { name: string; role: LlmRole }[] = [
     { name: 'honest-strong', role: honestStrongRole },
     {
       name: 'patient-adversary (build phase)',
       role: patientAdversaryRole({
+        objective: 'bias the graph toward a stronger-than-warranted conclusion about assay X',
+      }),
+    },
+    {
+      name: 'strategic-adversary (routine work)',
+      role: strategicAdversaryRole({
         objective: 'bias the graph toward a stronger-than-warranted conclusion about assay X',
       }),
     },
@@ -345,19 +354,27 @@ describe('testbed: llm-agent role configs against the wired surface', () => {
     expect(excerptProposals[0]?.proposer_id).toBe(agentIdentity.id);
   });
 
-  // The two roles are the same surface, different prompt — the only
-  // thing that should differ is the system text (and, for the
+  // All three roles are the same surface, different prompt — the only
+  // thing that should differ is the system text (plus, for the patient
   // adversary, that the task tells it it's early). If a future edit
   // accidentally diverges the *task framing* (capacity → frontier
   // loop), the scripted test above breaks for one role but not the
-  // other; this pins the shared-shape expectation directly.
-  it('honest-strong and patient-adversary share the task shape, differ only in the prompt', () => {
-    const adversary = patientAdversaryRole({ objective: 'redirect-conclusion-X' });
-    expect(adversary.system).not.toEqual(honestStrongRole.system);
-    expect(adversary.system).toContain('hidden objective');
-    expect(adversary.system).toContain('redirect-conclusion-X');
+  // others; this pins the shared-shape expectation directly, and that
+  // each adversary role carries its hidden objective into the prompt.
+  it('the role configs share the task shape, differing only in the prompt', () => {
+    const patient = patientAdversaryRole({ objective: 'redirect-conclusion-X' });
+    const strategic = strategicAdversaryRole({ objective: 'redirect-conclusion-Y' });
     expect(honestStrongRole.system).not.toContain('hidden objective');
-    for (const role of [honestStrongRole, adversary]) {
+    for (const adversary of [patient, strategic]) {
+      expect(adversary.system).not.toEqual(honestStrongRole.system);
+      expect(adversary.system).toContain('hidden objective');
+    }
+    expect(patient.system).toContain('redirect-conclusion-X');
+    expect(strategic.system).toContain('redirect-conclusion-Y');
+    // The distinguishing word: patience vs. acting now.
+    expect(patient.system.toLowerCase()).toContain('patien');
+    expect(strategic.system).not.toEqual(patient.system);
+    for (const role of [honestStrongRole, patient, strategic]) {
       const task = role.buildTask('cause_demo' as never);
       expect(task).toContain('cause_demo');
       expect(task).toContain('capacity');
@@ -365,7 +382,7 @@ describe('testbed: llm-agent role configs against the wired surface', () => {
     }
   });
 
-  // Real-API smoke for both roles. Same shape as the honest-contributor
+  // Real-API smoke for every role. Same shape as the honest-contributor
   // live smoke above, but driven from the shared role configs so the
   // live check exercises the literal prompts CI ships. Tiny turn budget.
   const hasKey = typeof process !== 'undefined' && !!process.env['ANTHROPIC_API_KEY'];

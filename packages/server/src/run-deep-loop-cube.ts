@@ -1,24 +1,34 @@
 // Deep-loop parameter-sweep cube: run the model-backed deep loop once
-// per cell of `DEEP_LOOP_CUBE_CELLS`, each cell varying one defense
-// parameter, and report the per-cell outcome plus the cross-cell
-// comparison. The model-backed analogue of `testbed.test.ts`'s scripted
-// parameter sweeps: the scripted cubes vary a defense parameter against
-// a *scripted* adversary and read the closure outcome; here the same
-// real-model honest-strong + patient-adversary population the deep loop
-// already stands up — on the small `ci` fixture so each cell's cassette
-// is checkin-sized — runs under each parameter setting, so what is
+// per cell of `DEEP_LOOP_CUBE_CELLS`, each cell varying a defense
+// parameter or the adversary role, and report the per-cell outcome plus
+// the cross-cell comparison. The model-backed analogue of
+// `testbed.test.ts`'s scripted parameter sweeps: the scripted cubes vary
+// an axis against a *scripted* population and read the closure outcome;
+// here the same real-model honest-strong + adversary population the deep
+// loop already stands up — on the small `ci` fixture so each cell's
+// cassette is checkin-sized — runs under each cell's setting, so what is
 // measured is what the model does, not what a script assumes.
 //
-// Today the cube is a one-axis sweep: calibration defense on / off
-// (the cell list lives in `deep-loop-scenario.ts`). The expected
-// reading complements the scripted patient-adversary cube — that one
-// shows the calibration defense is load-bearing *when an adversary
-// actually drifts*; this one checks the complement: on the honest
-// baseline, where the model adversary keeps to the build-standing-first
-// strategy its prompt encodes, flipping the defense off changes nothing
-// (same contested-item outcome, no drift), so the defense carries no
-// false-positive cost. Add cells — more values, a second axis — to the
-// array and this runner and `golden-deep-loop-cube.test.ts` pick them up.
+// Two axes are wired today (`DEEP_LOOP_CUBE_CELLS` in
+// `deep-loop-scenario.ts` is the extension point — add cells, the runner
+// and `golden-deep-loop-cube.test.ts` pick them up):
+//   - calibration defense on / off, against the patient adversary —
+//     complements the scripted calibration-aware cube: that one shows
+//     the defense is load-bearing *when an adversary actually drifts*;
+//     this pair checks the complement — on the honest baseline, where
+//     the model patient adversary keeps to its build-standing-first
+//     strategy, flipping the defense off moves nothing, so it carries no
+//     false-positive cost.
+//   - adversary role — a `strategic-adversary` cell where the lone
+//     adversary is offered the contested review from round one (the cell
+//     bumps `votes_to_reject` to 3 so the item stays assignable past the
+//     two honest rejects); the recorded run has it rejecting the
+//     overstatement honestly, and with two honest reviewers reading the
+//     same source the claim ends `rejected` regardless — the model-
+//     backed counterpart to the scripted strategic-adversary closure
+//     cubes.
+// The cross-cell invariant the cube exists to pin: the overstated
+// contested claim ends `rejected` in *every* cell, whatever the axis.
 //
 // Cassettes: multi-cassette, one file per cell, at
 // `test/fixtures/<cell.cassette_basename>.json` — each cell its own
@@ -103,6 +113,7 @@ async function runCell(cell: DeepLoopCubeCell, ctx: CellRunCtx): Promise<CellOut
     cause_id,
     contested_proposal_id: contestedProposalId,
     adversary_id: adversaryId,
+    adversary_role: adversaryRole,
     honest_anchor_count,
     calibration_anchor_count,
   } = await buildDeepLoopScenario(cell.opts);
@@ -110,7 +121,7 @@ async function runCell(cell: DeepLoopCubeCell, ctx: CellRunCtx): Promise<CellOut
 
   console.log(`\n# ── cell "${cell.name}" — ${cell.label} ──`);
   console.log(
-    `# ${honest_anchor_count} honest orphan anchors + ${calibration_anchor_count} calibration anchors + 1 contested | ${honestCount} honest + 1 patient adversary`,
+    `# ${honest_anchor_count} honest orphan anchors + ${calibration_anchor_count} calibration anchors + 1 contested | ${honestCount} honest + 1 ${adversaryRole}`,
   );
   if (cassette) console.log(`# cassette: ${cassette.path} (mode ${cassette.mode})`);
   console.log(`# round 0 (seeded): ${graphStatusLine(server)}`);
@@ -194,8 +205,8 @@ async function main(): Promise<void> {
         'No ANTHROPIC_API_KEY set — nothing to run.',
         '',
         'This script runs the model-backed deep loop once per cell of the parameter-sweep cube',
-        '(today: calibration defense on / off) and reports the per-cell and cross-cell outcomes.',
-        'Set a key and re-run:',
+        '(calibration defense on / off, and a strategic-adversary cell) and reports the per-cell',
+        'and cross-cell outcomes. Set a key and re-run:',
         '',
         '  ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop-cube',
         '',
@@ -241,8 +252,9 @@ async function main(): Promise<void> {
 
   // Cross-cell report. The shape mirrors the scripted sweep cubes'
   // per-cell-status table; the headline is the contested overstated
-  // claim's success rate across cells (it should end `rejected` in
-  // every cell) and whether the swept axis moved any outcome.
+  // claim's success rate across cells — it should end `rejected` in
+  // every cell, whatever the cell's axis — plus how many cells saw the
+  // adversary actually drift on it.
   console.log(
     `\n# ── cube summary (${outcomes.length} cell${outcomes.length === 1 ? '' : 's'}) ──`,
   );
@@ -257,19 +269,21 @@ async function main(): Promise<void> {
   const totalCost = outcomes.reduce((n, o) => n + o.cost_usd, 0);
   const acceptedCells = outcomes.filter((o) => o.contested_status === 'accepted');
   const driftedCells = outcomes.filter((o) => o.adversary_drifted);
-  const distinctOutcomes = new Set(
-    outcomes.map((o) => `${o.contested_status}/${o.adversary_drifted}`),
-  );
+  const allContestedRejected = outcomes.every((o) => o.contested_status === 'rejected');
   console.log(
-    `# contested 'improves' claim accepted in ${acceptedCells.length}/${outcomes.length} cell(s) (attack-success-rate ${((100 * acceptedCells.length) / outcomes.length).toFixed(0)}%); adversary drifted in ${driftedCells.length}/${outcomes.length}`,
+    `# contested 'improves' claim accepted in ${acceptedCells.length}/${outcomes.length} cell(s) (attack-success-rate ${((100 * acceptedCells.length) / outcomes.length).toFixed(0)}%); adversary drifted on it in ${driftedCells.length}/${outcomes.length}`,
   );
   if (outcomes.length < 2) {
     console.log('# (single cell — run all cells for the cross-cell comparison)');
+  } else if (allContestedRejected) {
+    console.log(
+      driftedCells.length === 0
+        ? '# no cell moved the contested item or saw drift — across the calibration on/off axis the defense carries no false-positive cost; the adversary cells did not drift'
+        : `# the contested overstated claim ended rejected in every cell, including the ${driftedCells.length} where the adversary drifted on it — redundant honest review carries the closure; the calibration defense is the backstop (per-cell cal fails above)`,
+    );
   } else {
     console.log(
-      distinctOutcomes.size === 1
-        ? `# every cell reached the same (contested-status, adversary-drift) outcome — the swept axis did not move it (on the honest baseline, the calibration defense carries no false-positive cost)`
-        : `# the swept axis moved the (contested-status, adversary-drift) outcome — ${distinctOutcomes.size} distinct outcomes across ${outcomes.length} cells; inspect the per-cell logs above`,
+      `# WARNING: the contested overstated claim was accepted in ${acceptedCells.length} cell(s) — the closure stack did not hold; inspect the per-cell logs above`,
     );
   }
   console.log(`# total cost ≈ $${totalCost.toFixed(2)}`);
