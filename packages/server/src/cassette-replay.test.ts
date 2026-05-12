@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { FakeClock } from './clock.js';
 import { SeededIdGen } from './id-gen.js';
 import { buildMcpServer } from './mcp.js';
+import { runPopulationRounds } from './population-loop.js';
 import { Server } from './server.js';
 import { FakeVerifier } from './verifier.js';
 
@@ -179,6 +180,133 @@ describe('cassette record/replay through runLlmAgent', () => {
     );
     expect([...rep.server.store.capacities.values()].length).toBe(
       [...rec.server.store.capacities.values()].length,
+    );
+  });
+
+  it('a sequential population round replays exactly from one shared cassette', async () => {
+    // The population analogue of the single-agent round-trip above, and
+    // the regression handle for `runPopulationRounds`' `concurrency`
+    // knob: when a round runs *sequentially* (the regime
+    // `run-population.ts` / `run-deep-loop.ts` switch to whenever a
+    // cassette is in play) the whole multi-agent run's request sequence
+    // is a pure function of the seeded fixture — each agent finishes
+    // before the next starts, so the ids the server mints, and therefore
+    // the request bodies that thread them, fall in a fixed order. One
+    // shared cassette recorded that way replays every agent's every turn
+    // exactly, transport untouched — which is what makes a deep-loop
+    // golden cassette viable the same way the single-agent round-trip
+    // makes `run-live`'s viable. (A *concurrent* recording would not:
+    // the agents' mints would interleave latency-dependently, so a
+    // replay's request bodies would diverge and miss — hence the
+    // `concurrency: 'sequential'` wiring this pins.)
+    interface PopAgent {
+      display_name: string;
+      client: Client;
+    }
+    async function seededPopulation(
+      seed: string,
+      size: number,
+    ): Promise<{ server: Server; causeId: string; agents: PopAgent[] }> {
+      const server = new Server({
+        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+        idGen: new SeededIdGen(seed),
+        verifier: new FakeVerifier(),
+      });
+      const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
+      const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
+      const subTopic = server.bootstrap.seedSubTopic({
+        cause_id: cause.id,
+        name: 'ctDNA-MRD',
+        description: 'mrd',
+        scope_query: 'ctDNA',
+      });
+      const anchor = await server.tools.proposeAnchor(
+        { identity_id: seeder.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: subTopic.id,
+          content: 'landmark trial',
+          external_ref: { kind: 'pmid', value: '1' },
+        },
+      );
+      server.curator.acceptProposal(anchor.proposal_id);
+      const agents: PopAgent[] = [];
+      for (let i = 1; i <= size; i++) {
+        const identity = server.bootstrap.mintIdentity({ display_name: `agent-${i}` });
+        agents.push({
+          display_name: `agent-${i}`,
+          client: await wireMcpClient(server, identity.id),
+        });
+      }
+      return { server, causeId: cause.id, agents };
+    }
+
+    // Record pass: a one-round sequential population. The shared scripted
+    // model is the same set_capacity → request_assignment → stop walk
+    // the single-agent test uses; with one orphan anchor and two agents,
+    // agent-1 (running first) gets the assignment, agent-2's request
+    // comes back not_found — so the two agents' turn-3 request bodies
+    // differ, which is exactly the per-agent divergence the cassette has
+    // to key on.
+    const rec = await seededPopulation('pop-cassette', 2);
+    const entries: CassetteEntry[] = [];
+    const recTranscripts: Record<string, string[]> = {};
+    const recResult = await runPopulationRounds<PopAgent>({
+      server: rec.server,
+      contributors: rec.agents,
+      max_rounds: 1,
+      concurrency: 'sequential',
+      runContributor: async (a) => {
+        const r = await runLlmAgent(
+          a.client,
+          runConfig(
+            rec.causeId,
+            recordingFetch({ mode: 'record', entries, fetch: scriptedFetch(rec.causeId) }),
+          ),
+        );
+        recTranscripts[a.display_name] = transcriptShape(r.turns);
+        return { usage: r.usage };
+      },
+    });
+    expect(recResult.rounds_run).toBe(1);
+    expect(recTranscripts['agent-1']).toEqual(['set_capacity:ok', 'request_assignment:ok']);
+    expect(recTranscripts['agent-2']).toEqual(['set_capacity:ok', 'request_assignment:err']);
+
+    // Replay pass: fresh population, *same seed* → the same ids minted in
+    // the same order → byte-identical request bodies → every request
+    // hits the cassette. The transport throws if consulted.
+    const rep = await seededPopulation('pop-cassette', 2);
+    let transportCalled = false;
+    const wouldThrow: FetchLike = async () => {
+      transportCalled = true;
+      throw new Error('transport must not be called in replay mode');
+    };
+    const repTranscripts: Record<string, string[]> = {};
+    const repResult = await runPopulationRounds<PopAgent>({
+      server: rep.server,
+      contributors: rep.agents,
+      max_rounds: 1,
+      concurrency: 'sequential',
+      runContributor: async (a) => {
+        const r = await runLlmAgent(
+          a.client,
+          runConfig(rep.causeId, recordingFetch({ mode: 'replay', entries, fetch: wouldThrow })),
+        );
+        repTranscripts[a.display_name] = transcriptShape(r.turns);
+        return { usage: r.usage };
+      },
+    });
+
+    expect(transportCalled).toBe(false);
+    expect(repResult.rounds_run).toBe(recResult.rounds_run);
+    expect(repTranscripts).toEqual(recTranscripts);
+    // Server state reached the same place: both agents declared capacity,
+    // one assignment was handed out.
+    expect([...rep.server.store.capacities.values()].length).toBe(
+      [...rec.server.store.capacities.values()].length,
+    );
+    expect([...rep.server.store.assignments.values()].length).toBe(
+      [...rec.server.store.assignments.values()].length,
     );
   });
 
