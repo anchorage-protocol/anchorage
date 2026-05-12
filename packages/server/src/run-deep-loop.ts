@@ -26,22 +26,27 @@
 // real client would, and nothing tells them which one of them is the
 // adversary.
 //
+// The full calibration defense PRD §Calibration batches names is wired
+// here: the corpus is seeded — pre-accepted, faithful excerpts on the
+// unambiguous honest anchors, joined by any proposal that converges
+// accepted during the run — `calibration_inject_every_n` salts review
+// assignments with calibration draws, and `calibration_aware_convergence`
+// is on, so both misfire consequences bite: a reviewer that rejects a
+// faithful calibration excerpt pays `calibration_fail_loss` on the rep
+// ledger *and* drops its convergence weight, so the contested-item
+// drift must clear a calibration-weighted threshold, not just the count
+// one (a calibration-burned vote counts toward the distinct-reviewer
+// floor but contributes 0 to the weighted sum). The final report
+// carries the per-contributor calibration record next to the drift
+// readout. `corpus_confirmation_depth_floor` stays at its inert default
+// (0), so a bias-aligned excerpt that converges accepted mid-run joins
+// the corpus immediately — the contamination dynamic the standalone
+// scenario pins; a deployment that wants the confirmation gate sets it.
+//
 // v0 shortcuts (inherited from `run-population.ts` plus one more):
 //   1. FakeVerifier with an inline source-text fixture per anchor (no
 //      live PubMed fetch / no source-retrieval tool yet).
-//   2. The calibration corpus *is* seeded — pre-accepted, faithful
-//      excerpts on the unambiguous honest anchors, with
-//      `calibration_inject_every_n` on so the assignment loop salts
-//      review work with them (PRD §Calibration batches: items drawn
-//      from validated history, scored against ground truth). What's
-//      left off is `calibration_aware_convergence`: the misfire
-//      consequence wired here is the rep-ledger one (a reviewer who
-//      rejects a faithful calibration excerpt pays `calibration_fail_loss`,
-//      and the final report carries the per-contributor calibration
-//      record), not the convergence-weight one — turning that on is the
-//      next enrichment, and the contested-item drift would then have to
-//      clear a weighted threshold rather than only the count threshold.
-//   3. The curator-escalation step between rounds (population-loop.ts)
+//   2. The curator-escalation step between rounds (population-loop.ts)
 //      is a deterministic harness actor resolving stalled divergences
 //      toward the vote majority (accept on a tie) — a real curator
 //      reads the proposal; the harness exercises the path, not the
@@ -245,11 +250,12 @@ async function main(): Promise<void> {
     idGen: new SeededIdGen('deep'),
     verifier: new FakeVerifier(new Set(), new Map(), sources),
     // Salt review assignments with calibration draws from the seeded
-    // corpus (every 3rd assignment). Default 0 leaves the defense
-    // inert; this runner wants it active so a reviewer's misfire on a
-    // faithful excerpt is observable. `calibration_aware_convergence`
-    // stays off (see the v0-shortcuts note in the file header).
-    review: { calibration_inject_every_n: 3 },
+    // corpus (every 3rd assignment) and weight convergence by the
+    // reviewer's calibration record. Both default off (the defense is
+    // inert by default); this runner wants the full defense active so
+    // a misfire is observable on both the rep ledger and at
+    // convergence. See the calibration note in the file header.
+    review: { calibration_inject_every_n: 3, calibration_aware_convergence: true },
   });
   const seeder = server.bootstrap.mintIdentity({ display_name: 'seeder' });
   const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
@@ -348,7 +354,7 @@ async function main(): Promise<void> {
     `# contested proposal: ${contestedProposalId} (claim overstates a non-significant trend)`,
   );
   console.log(
-    '# calibration: corpus seeded; review assignments salted every 3rd draw (calibration_inject_every_n=3), aware-convergence off',
+    '# calibration: corpus seeded; assignments salted every 3rd draw (calibration_inject_every_n=3), aware-convergence on (calibration-weighted thresholds)',
   );
   if (cassette) console.log(`# cassette: ${cassette.path} (mode ${cassette.mode})`);
   console.log(`# round 0 (seeded): ${graphStatusLine(server)}\n`);
@@ -408,6 +414,11 @@ async function main(): Promise<void> {
       : (contributors.find((c) => c.identity_id === id)?.display_name ?? id);
 
   console.log('# ── calibration readout ──');
+  // weight = max(0, 1 + passes - fails) — the same calibration-aware
+  // convergence weight `cast_review_vote` applies; surfaced here so the
+  // drift readout below can say whether the adversary's contested vote
+  // (if any) still carried weight.
+  const calWeight = (passes: number, fails: number): number => Math.max(0, 1 + passes - fails);
   const calRecords = [...server.store.calibrationRecords.entries()]
     .map(([key, rec]) => {
       const [identity_id, cause_id] = key.split('|');
@@ -420,13 +431,19 @@ async function main(): Promise<void> {
     );
   }
   for (const r of calRecords) {
-    console.log(`#   ${nameFor(r.identity_id)}: ${r.rec.passes} pass / ${r.rec.fails} fail`);
+    console.log(
+      `#   ${nameFor(r.identity_id)}: ${r.rec.passes} pass / ${r.rec.fails} fail → convergence weight ${calWeight(r.rec.passes, r.rec.fails)}`,
+    );
   }
-  const adversaryCalFails = calRecords
+  const adversaryCalRec = calRecords
     .filter((r) => r.identity_id === adversaryId)
-    .reduce((n, r) => n + r.rec.fails, 0);
+    .reduce((acc, r) => ({ passes: acc.passes + r.rec.passes, fails: acc.fails + r.rec.fails }), {
+      passes: 0,
+      fails: 0,
+    });
+  const adversaryCalWeight = calWeight(adversaryCalRec.passes, adversaryCalRec.fails);
   console.log(
-    `# calibration signal: the patient adversary ${adversaryCalFails > 0 ? `FAILED ${adversaryCalFails} calibration item(s)` : 'failed no calibration items'} (a misfire here burns the standing its strategy depends on)`,
+    `# calibration signal: the patient adversary ${adversaryCalRec.fails > 0 ? `FAILED ${adversaryCalRec.fails} calibration item(s) — convergence weight now ${adversaryCalWeight}` : 'failed no calibration items'} (a misfire here costs rep and, with aware-convergence on, the weight to move convergence)`,
   );
 
   console.log('# ── contested-item drift readout ──');
@@ -449,6 +466,13 @@ async function main(): Promise<void> {
   console.log(
     `# drift signal: the patient adversary ${adversaryDrifted ? 'DID' : 'did not'} cast an accept vote on the contested (overstated) claim`,
   );
+  if (adversaryDrifted) {
+    console.log(
+      adversaryCalWeight === 0
+        ? '#   ...and that drift vote carried 0 convergence weight (calibration record went sour) — it counts toward the distinct-reviewer floor but cannot move the convergence'
+        : `#   ...and that drift vote carried full convergence weight ${adversaryCalWeight} (the calibration draws, if any, did not catch it)`,
+    );
+  }
   console.log('# nodes in the graph:');
   for (const n of server.store.nodes.values()) {
     const span =
