@@ -32,8 +32,6 @@ import {
   RequestAssignmentOutput,
   SetCapacityInput,
   SetCapacityOutput,
-  SubmitAssignedProposalInput,
-  SubmitAssignedProposalOutput,
 } from '@anchorage/contracts';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -153,22 +151,17 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
     wrap(server.tools.declineAssignment),
   );
 
-  mcp.registerTool(
-    'submit_assigned_proposal',
-    {
-      description:
-        'Fulfill an accepted propose-kind assignment. `payload` is the proposal-body object — its `kind` plus the same fields the matching `propose_*` tool takes (e.g. an excerpt task: { kind: "excerpt", cause_id, home_sub_topic_id, parent_anchor_id, content, quoted_span }). Pass it as a JSON object, not a JSON-encoded string. Review-kind assignments are fulfilled via `cast_review_vote` with `assignment_id`, not this tool.',
-      inputSchema: SubmitAssignedProposalInput.shape,
-      outputSchema: SubmitAssignedProposalOutput.shape,
-    },
-    wrap(server.tools.submitAssignedProposal),
-  );
-
-  // ── Contributor-initiated proposals ─────────────────────────────
+  // ── Proposals (assignment-fulfilling or contributor-initiated) ──
+  // Each propose_* tool takes an optional `assignment_id`: present, it
+  // fulfills the named accepted propose-kind assignment (full
+  // assigned-work reputation, assignment → `submitted`); absent, the
+  // proposal is contributor-initiated and weighted lower. Same shape as
+  // `cast_review_vote` for review work — one tool per node kind.
   mcp.registerTool(
     'propose_anchor',
     {
-      description: 'Stage an anchor proposal (PMID/DOI/URL must resolve).',
+      description:
+        'Stage an anchor proposal (PMID/DOI/URL must resolve). Pass assignment_id to fulfill an accepted anchor-kind assignment.',
       inputSchema: ProposeAnchorInput.shape,
       outputSchema: ProposeAnchorOutput.shape,
     },
@@ -178,7 +171,8 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
   mcp.registerTool(
     'propose_excerpt',
     {
-      description: 'Stage an excerpt proposal under an active anchor parent.',
+      description:
+        'Stage an excerpt proposal under an active anchor parent. Pass assignment_id to fulfill an accepted excerpt-kind assignment for that anchor.',
       inputSchema: ProposeExcerptInput.shape,
       outputSchema: ProposeExcerptOutput.shape,
     },
@@ -188,7 +182,8 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
   mcp.registerTool(
     'propose_synthesis',
     {
-      description: 'Stage a synthesis or open_question over multiple parents.',
+      description:
+        'Stage a synthesis or open_question over multiple parents. Pass assignment_id to fulfill an accepted synthesis/open_question-kind assignment.',
       inputSchema: ProposeSynthesisInput.shape,
       outputSchema: ProposeSynthesisOutput.shape,
     },
@@ -198,7 +193,8 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
   mcp.registerTool(
     'propose_supersedes',
     {
-      description: 'Stage a supersedes edge between two active nodes.',
+      description:
+        'Stage a supersedes edge between two active nodes. Pass assignment_id to fulfill an accepted supersedes-kind assignment.',
       inputSchema: ProposeSupersedesInput.shape,
       outputSchema: ProposeSupersedesOutput.shape,
     },
@@ -208,7 +204,8 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
   mcp.registerTool(
     'propose_membership',
     {
-      description: 'Stage a scope-membership claim for an existing node.',
+      description:
+        'Stage a scope-membership claim for an existing node. Pass assignment_id to fulfill an accepted membership-kind assignment.',
       inputSchema: ProposeMembershipInput.shape,
       outputSchema: ProposeMembershipOutput.shape,
     },

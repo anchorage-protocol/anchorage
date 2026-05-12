@@ -133,16 +133,13 @@ export async function runHallucinator(
     const fabricated = config.fabricator.fabricateForAnchor(offered.task.parent_anchor_id);
 
     try {
-      await client.submitAssignedProposal({
+      await client.proposeExcerpt({
+        cause_id: offered.task.cause_id,
+        home_sub_topic_id: offered.task.sub_topic_id,
+        parent_anchor_id: offered.task.parent_anchor_id,
+        content: fabricated.content,
+        quoted_span: fabricated.quoted_span,
         assignment_id: offered.assignment_id,
-        payload: {
-          kind: 'excerpt',
-          cause_id: offered.task.cause_id,
-          home_sub_topic_id: offered.task.sub_topic_id,
-          parent_anchor_id: offered.task.parent_anchor_id,
-          content: fabricated.content,
-          quoted_span: fabricated.quoted_span,
-        },
       });
       // If we got here the verifier let a fabricated span through —
       // a verifier failure, not the archetype's. The scenario test

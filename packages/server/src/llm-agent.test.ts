@@ -103,16 +103,13 @@ function scriptedHonestContributorFetch(cause_id: string): FetchLike {
         sub_topic_id: string;
         parent_anchor_id: string;
       };
-      return toolUse('submit_assigned_proposal', {
+      return toolUse('propose_excerpt', {
+        cause_id: task.cause_id,
+        home_sub_topic_id: task.sub_topic_id,
+        parent_anchor_id: task.parent_anchor_id,
+        content: 'claim the agent derived from the anchor',
+        quoted_span: { text: 'fixture span', offset: 0 },
         assignment_id: offered['assignment_id'],
-        payload: {
-          kind: 'excerpt',
-          cause_id: task.cause_id,
-          home_sub_topic_id: task.sub_topic_id,
-          parent_anchor_id: task.parent_anchor_id,
-          content: 'claim the agent derived from the anchor',
-          quoted_span: { text: 'fixture span', offset: 0 },
-        },
       });
     }
     if (turn === 5) {
@@ -174,7 +171,7 @@ describe('testbed: llm-agent archetype against the wired surface', () => {
       'set_capacity',
       'request_assignment',
       'accept_assignment',
-      'submit_assigned_proposal',
+      'propose_excerpt',
       'request_assignment',
     ]);
     expect(calls.slice(0, 4).every((c) => !c.is_error)).toBe(true);
@@ -199,7 +196,9 @@ describe('testbed: llm-agent archetype against the wired surface', () => {
     // hand-maintained list) — the wired server exposes the full
     // write+read tool surface, and the agent saw it.
     const listed = await mcpClient.listTools();
-    expect(listed.tools.map((t) => t.name)).toContain('submit_assigned_proposal');
+    const listedNames = listed.tools.map((t) => t.name);
+    expect(listedNames).toContain('propose_excerpt');
+    expect(listedNames).not.toContain('submit_assigned_proposal');
   });
 
   // Real-API smoke: only runs when an Anthropic key is present. This
@@ -333,7 +332,7 @@ describe('testbed: llm-agent role configs against the wired surface', () => {
       'set_capacity',
       'request_assignment',
       'accept_assignment',
-      'submit_assigned_proposal',
+      'propose_excerpt',
       'request_assignment',
     ]);
     expect(calls.slice(0, 4).every((c) => !c.is_error)).toBe(true);

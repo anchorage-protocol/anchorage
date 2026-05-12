@@ -1,4 +1,4 @@
-import type { ExternalRef, ProposalPayload, QuotedSpan } from '@anchorage/contracts';
+import type { ExternalRef, QuotedSpan } from '@anchorage/contracts';
 import {
   AcceptAssignmentOutput,
   type AssignmentId,
@@ -21,7 +21,6 @@ import {
   type ReviewDecision,
   type ServerErrorCode,
   SetCapacityOutput,
-  SubmitAssignedProposalOutput,
   type SubTopicId,
   type ToolName,
   type WorkKind,
@@ -119,19 +118,13 @@ export class AnchorageClient {
     return this.call('decline_assignment', input, DeclineAssignmentOutput);
   }
 
-  async submitAssignedProposal(input: {
-    assignment_id: AssignmentId;
-    payload: ProposalPayload;
-  }): Promise<SubmitAssignedProposalOutput> {
-    return this.call('submit_assigned_proposal', input, SubmitAssignedProposalOutput);
-  }
-
   async proposeAnchor(input: {
     cause_id: CauseId;
     home_sub_topic_id: SubTopicId;
     memberships?: SubTopicId[];
     content: string;
     external_ref: ExternalRef;
+    assignment_id?: AssignmentId;
   }): Promise<ProposeAnchorOutput> {
     return this.call('propose_anchor', input, ProposeAnchorOutput);
   }
@@ -143,6 +136,7 @@ export class AnchorageClient {
     parent_anchor_id: NodeId;
     content: string;
     quoted_span: QuotedSpan;
+    assignment_id?: AssignmentId;
   }): Promise<ProposeExcerptOutput> {
     return this.call('propose_excerpt', input, ProposeExcerptOutput);
   }
@@ -154,6 +148,7 @@ export class AnchorageClient {
     parent_ids: NodeId[];
     content: string;
     kind: 'synthesis' | 'open_question';
+    assignment_id?: AssignmentId;
   }): Promise<ProposeSynthesisOutput> {
     return this.call('propose_synthesis', input, ProposeSynthesisOutput);
   }
@@ -162,6 +157,7 @@ export class AnchorageClient {
     from_node_id: NodeId;
     to_node_id: NodeId;
     rationale: string;
+    assignment_id?: AssignmentId;
   }): Promise<ProposeSupersedesOutput> {
     return this.call('propose_supersedes', input, ProposeSupersedesOutput);
   }
@@ -169,6 +165,7 @@ export class AnchorageClient {
   async proposeMembership(input: {
     node_id: NodeId;
     sub_topic_id: SubTopicId;
+    assignment_id?: AssignmentId;
   }): Promise<ProposeMembershipOutput> {
     return this.call('propose_membership', input, ProposeMembershipOutput);
   }

@@ -127,16 +127,13 @@ export async function runHonestWeak(
     actions.push({ kind: 'accepted', assignment_id: offered.assignment_id });
 
     try {
-      const submitted = await client.submitAssignedProposal({
+      const submitted = await client.proposeExcerpt({
+        cause_id: offered.task.cause_id,
+        home_sub_topic_id: offered.task.sub_topic_id,
+        parent_anchor_id: offered.task.parent_anchor_id,
+        content: excerpt.content,
+        quoted_span: excerpt.quoted_span,
         assignment_id: offered.assignment_id,
-        payload: {
-          kind: 'excerpt',
-          cause_id: offered.task.cause_id,
-          home_sub_topic_id: offered.task.sub_topic_id,
-          parent_anchor_id: offered.task.parent_anchor_id,
-          content: excerpt.content,
-          quoted_span: excerpt.quoted_span,
-        },
       });
       actions.push({
         kind: 'submitted',

@@ -55,8 +55,6 @@ import {
   type ReviewVote,
   SetCapacityInput,
   type SetCapacityOutput,
-  SubmitAssignedProposalInput,
-  type SubmitAssignedProposalOutput,
   type SubTopic,
   type SubTopicId,
   type SupersedesEdge,
@@ -431,13 +429,13 @@ export interface ReviewConfig {
   // what the level *means*). The gate fires at every tool that
   // resolves a caller for write — `set_capacity`,
   // `request_assignment`, `accept_assignment`, `decline_assignment`,
-  // `submit_assigned_proposal`, all `propose_*` tools, and
-  // `cast_review_vote` — refusing with `unauthorized` mode rather
-  // than the rep gates' `not_found` opacity, because the
-  // binding-cost mismatch is identity-level (a stable property of
-  // the IdP-issued credential) and there's no opaque-refusal value
-  // to protect: the adversary already knows their own attestation
-  // level. The first of the four sybil-resistance layers PRD
+  // all `propose_*` tools, and `cast_review_vote` — refusing with
+  // `unauthorized` mode rather than the rep gates' `not_found`
+  // opacity, because the binding-cost mismatch is identity-level (a
+  // stable property of the IdP-issued credential) and there's no
+  // opaque-refusal value to protect: the adversary already knows
+  // their own attestation level. The first of the four
+  // sybil-resistance layers PRD
   // §Identity specs; the cost-multiplier on the population axis
   // the testbed harness's adversary-budget model reads against.
   // Default 0 leaves the gate inert and preserves existing-scenario
@@ -449,12 +447,12 @@ export interface ReviewConfig {
   // accounting): the third of the four sybil-resistance layers.
   // The cap is on observable write actions across all write tools
   // (`set_capacity`, `request_assignment`, `accept_assignment`,
-  // `decline_assignment`, `submit_assigned_proposal`, all
-  // `propose_*` tools, `cast_review_vote`) — single bucket rather
-  // than per-tool, so the cap measures total throughput per
-  // identity per epoch directly. The cost-multiplier reads as the
-  // per-sybil-throughput axis: at K sybils with per-sybil cap T,
-  // the coalition's per-epoch action budget is K × T. Refusal
+  // `decline_assignment`, all `propose_*` tools, `cast_review_vote`)
+  // — single bucket rather than per-tool, so the cap measures total
+  // throughput per identity per epoch directly. The cost-multiplier
+  // reads as the per-sybil-throughput axis: at K sybils with
+  // per-sybil cap T, the coalition's per-epoch action budget is
+  // K × T. Refusal
   // mode is `rate_limited` (a new ServerErrorCode parallel to
   // `not_found` and `unauthorized`) — distinct from the
   // attestation gate's `unauthorized` and the rep gates'
@@ -1025,79 +1023,58 @@ export class Server {
       }
       return;
     }
-    // sub_topic and change_of_home are curator-only and excluded from
-    // WorkKind; they shouldn't appear here. Review is filtered
-    // earlier in submit_assigned_proposal.
+    // sub_topic and change_of_home are curator-only, excluded from
+    // WorkKind, and carry no `assignment_id` on their propose tools, so
+    // they never reach here. Review-kind tasks are filtered out by the
+    // caller (`resolveProposalAssignment`) before this is called.
     throw new ServerError(
       'invalid_input',
       `unsupported payload/task pair: ${payload.kind} / ${task.kind}`,
     );
   }
 
-  // Route a propose-kind payload through the matching propose_*
-  // tool method. Returns the staged proposal_id. Centralizes the
-  // payload-to-tool mapping so submit_assigned_proposal doesn't
-  // duplicate per-kind logic.
-  private async routePayloadToProposeTool(
-    caller: Caller,
+  // Validate the optional `assignment_id` on a `propose_*` call: when
+  // set, it must name an assignment that belongs to `identityId`, is in
+  // `accepted` state, carries a propose-kind task whose kind matches the
+  // proposal about to be staged, and whose pinned context (sub-topic,
+  // parent anchor, parent set — via `assertPayloadMatchesTask`) matches
+  // the proposal's claim. Returns the assignment to fulfill, or
+  // undefined for a contributor-initiated proposal. Mirrors the
+  // optional-`assignment_id` shape `cast_review_vote` has for review
+  // work: one tool per node kind, with or without an assignment.
+  private resolveProposalAssignment(
+    identityId: IdentityId,
+    assignmentId: AssignmentId | undefined,
     payload: ProposalPayload,
-  ): Promise<ProposalId> {
-    switch (payload.kind) {
-      case 'anchor': {
-        const out = await this.tools.proposeAnchor(caller, {
-          cause_id: payload.cause_id,
-          home_sub_topic_id: payload.home_sub_topic_id,
-          ...(payload.memberships ? { memberships: payload.memberships } : {}),
-          content: payload.content,
-          external_ref: payload.external_ref,
-        });
-        return out.proposal_id;
-      }
-      case 'excerpt': {
-        const out = await this.tools.proposeExcerpt(caller, {
-          cause_id: payload.cause_id,
-          home_sub_topic_id: payload.home_sub_topic_id,
-          ...(payload.memberships ? { memberships: payload.memberships } : {}),
-          parent_anchor_id: payload.parent_anchor_id,
-          content: payload.content,
-          quoted_span: payload.quoted_span,
-        });
-        return out.proposal_id;
-      }
-      case 'synthesis':
-      case 'open_question': {
-        const out = await this.tools.proposeSynthesis(caller, {
-          cause_id: payload.cause_id,
-          home_sub_topic_id: payload.home_sub_topic_id,
-          ...(payload.memberships ? { memberships: payload.memberships } : {}),
-          parent_ids: payload.parent_ids,
-          content: payload.content,
-          kind: payload.kind,
-        });
-        return out.proposal_id;
-      }
-      case 'supersedes': {
-        const out = await this.tools.proposeSupersedes(caller, {
-          from_node_id: payload.from_node_id,
-          to_node_id: payload.to_node_id,
-          rationale: payload.rationale,
-        });
-        return out.proposal_id;
-      }
-      case 'membership': {
-        const out = await this.tools.proposeMembership(caller, {
-          node_id: payload.node_id,
-          sub_topic_id: payload.sub_topic_id,
-        });
-        return out.proposal_id;
-      }
-      case 'change_of_home':
-      case 'sub_topic':
-        throw new ServerError(
-          'invalid_input',
-          `${payload.kind} is curator-only and not assignment-driven`,
-        );
+  ): Assignment | undefined {
+    if (assignmentId === undefined) return undefined;
+    const a = this.requireOwnedAssignment(assignmentId, identityId, ['accepted']);
+    if (a.task.kind === 'review') {
+      throw new ServerError(
+        'invalid_input',
+        'review-kind assignments are fulfilled via cast_review_vote, not a propose_* tool',
+      );
     }
+    if (a.task.kind !== payload.kind) {
+      throw new ServerError(
+        'invalid_input',
+        `assignment ${a.id} task kind ${a.task.kind} cannot be fulfilled by a ${payload.kind} proposal`,
+      );
+    }
+    this.assertPayloadMatchesTask(payload, a.task);
+    return a;
+  }
+
+  // Transition an assignment to `submitted`, pointing `fulfilled_by` at
+  // the proposal that just fulfilled it. The caller has already staged
+  // the proposal and stamped its `assignment_id`.
+  private fulfillAssignment(assignment: Assignment, proposalId: ProposalId): void {
+    this.store.assignments.set(assignment.id, {
+      ...assignment,
+      status: 'submitted',
+      fulfilled_by: proposalId,
+      updated_at: this.clock.now(),
+    });
   }
 
   // The cause an assignment task is scoped to. Most task variants
@@ -1810,99 +1787,13 @@ export class Server {
       return { ok: true };
     },
 
-    // PRD §Capacity and assignment (submit_assigned_proposal): submit_assigned_
-    // proposal fulfills an *accepted* propose-kind assignment by
-    // staging the proposal under it. Review-kind assignments are
-    // fulfilled via cast_review_vote with assignment_id set, not
-    // through this tool — that's the explicit PRD branch.
-    //
-    // The shape of this tool is delegation: it validates that the
-    // payload matches the task (kind, sub-topic, pinned parents/
-    // anchor), routes through the existing propose_* tool method
-    // for the matching kind so verification/staging logic stays in
-    // one place, and then transitions the assignment to `submitted`
-    // with `fulfilled_by` pointing at the new proposal.
-    //
-    // The propose_* tools don't carry assignment_id today; we patch
-    // it onto the persisted Proposal post-stage. The alternative —
-    // threading assignment_id through every propose_* signature —
-    // is cleaner long-term but adds a parameter to seven tools for
-    // one consumer, so the patch-after stays for now. Marked here
-    // so the next refactor pass finds it.
-    submitAssignedProposal: async (
-      caller: Caller,
-      input: SubmitAssignedProposalInput,
-    ): Promise<SubmitAssignedProposalOutput> => {
-      const parsed = SubmitAssignedProposalInput.parse(input);
-      const { identity } = resolveCaller(this.store, caller);
-      this.requireMinAttestation(identity);
-      this.accountWriteAction(identity);
-
-      const a = this.store.assignments.get(parsed.assignment_id);
-      if (!a) {
-        throw new ServerError('not_found', `assignment not found: ${parsed.assignment_id}`);
-      }
-      if (a.contributor_id !== identity.id) {
-        throw new ServerError(
-          'unauthorized',
-          `assignment ${a.id} does not belong to ${identity.id}`,
-        );
-      }
-      if (a.status !== 'accepted') {
-        throw new ServerError('invalid_state', `assignment ${a.id} is ${a.status}`);
-      }
-      if (a.task.kind === 'review') {
-        throw new ServerError(
-          'invalid_input',
-          'review-kind assignments are fulfilled via cast_review_vote, not submit_assigned_proposal',
-        );
-      }
-
-      // Payload-task consistency. Each kind cross-checks the task's
-      // pinned context against the payload's claim. The wider rep-
-      // laundering vector this closes: a contributor can't accept an
-      // excerpt assignment then submit an anchor (or an excerpt
-      // against a different parent) to satisfy capacity.
-      const { payload } = parsed;
-      if (payload.kind !== a.task.kind) {
-        throw new ServerError(
-          'invalid_input',
-          `payload kind ${payload.kind} does not match task kind ${a.task.kind}`,
-        );
-      }
-      this.assertPayloadMatchesTask(payload, a.task);
-
-      // Route through the matching propose_* tool. The propose_*
-      // methods own all per-kind verification and staging, so we
-      // don't re-implement it here.
-      const proposalId = await this.routePayloadToProposeTool(caller, payload);
-
-      // Patch assignment_id onto the staged proposal record so
-      // downstream consumers (reputation settlement, query_proposals
-      // assigned_to_me filter) can see the assignment-fulfillment
-      // attribution. See top-of-method comment for the refactor
-      // direction.
-      const proposal = this.store.proposals.get(proposalId);
-      if (proposal) {
-        this.store.proposals.set(proposalId, { ...proposal, assignment_id: a.id });
-      }
-
-      const now = this.clock.now();
-      this.store.assignments.set(a.id, {
-        ...a,
-        status: 'submitted',
-        fulfilled_by: proposalId,
-        updated_at: now,
-      });
-
-      return { proposal_id: proposalId };
-    },
-
     // PRD §Write-path tools: propose_anchor stages an anchor proposal.
     // Synchronous verification at the tool boundary: external_ref must
     // resolve. If verification fails, no proposal record is created
     // (ProposalStatus comment: `rejected` means review-rejected, not
-    // verification-rejected).
+    // verification-rejected). An optional `assignment_id` fulfills an
+    // accepted anchor-kind assignment (full assigned-work reputation);
+    // without it the proposal is contributor-initiated.
     proposeAnchor: async (
       caller: Caller,
       input: ProposeAnchorInput,
@@ -1918,6 +1809,17 @@ export class Server {
       for (const m of memberships) {
         this.requireActiveSubTopicInCause(m, cause.id, 'membership');
       }
+      const payload: ProposalPayload = {
+        kind: 'anchor',
+        cause_id: cause.id,
+        home_sub_topic_id: parsed.home_sub_topic_id,
+        ...(memberships.length > 0 ? { memberships } : {}),
+        content: parsed.content,
+        external_ref: parsed.external_ref,
+      };
+      // Assignment check before the (possibly external) verifier call,
+      // so a misdirected fulfillment fails fast without a wasted fetch.
+      const assignment = this.resolveProposalAssignment(identity.id, parsed.assignment_id, payload);
 
       const verified = await this.verifier.verifyExternalRef(parsed.external_ref);
 
@@ -1926,19 +1828,14 @@ export class Server {
         id: this.idGen.proposalId(),
         proposer_id: identity.id,
         status: 'staged',
-        payload: {
-          kind: 'anchor',
-          cause_id: cause.id,
-          home_sub_topic_id: parsed.home_sub_topic_id,
-          ...(memberships.length > 0 ? { memberships } : {}),
-          content: parsed.content,
-          external_ref: parsed.external_ref,
-        },
+        payload,
+        ...(assignment ? { assignment_id: assignment.id } : {}),
         created_at: now,
         updated_at: now,
       };
       this.store.proposals.set(proposal.id, proposal);
       this.store.verifiedRefs.set(proposal.id, verified);
+      if (assignment) this.fulfillAssignment(assignment, proposal.id);
       return { proposal_id: proposal.id };
     },
 
@@ -1949,7 +1846,11 @@ export class Server {
     // The verifier owns the source-fetching boundary; the test
     // FakeVerifier holds source fixtures, the production verifier
     // will fetch. Schema-level checks (non-empty `text`,
-    // non-negative `offset`) are necessary but not sufficient.
+    // non-negative `offset`) are necessary but not sufficient. An
+    // optional `assignment_id` fulfills an accepted excerpt-kind
+    // assignment whose task pins this same parent anchor (full
+    // assigned-work reputation); without it the excerpt is
+    // contributor-initiated and weighted lower.
     proposeExcerpt: async (
       caller: Caller,
       input: ProposeExcerptInput,
@@ -1966,6 +1867,18 @@ export class Server {
         this.requireActiveSubTopicInCause(m, cause.id, 'membership');
       }
       const parentAnchor = this.requireActiveAnchorInCause(parsed.parent_anchor_id, cause.id);
+      const payload: ProposalPayload = {
+        kind: 'excerpt',
+        cause_id: cause.id,
+        home_sub_topic_id: parsed.home_sub_topic_id,
+        ...(memberships.length > 0 ? { memberships } : {}),
+        parent_anchor_id: parsed.parent_anchor_id,
+        content: parsed.content,
+        quoted_span: parsed.quoted_span,
+      };
+      // Assignment check before the span verifier, so a misdirected
+      // fulfillment fails fast without a wasted source fetch.
+      const assignment = this.resolveProposalAssignment(identity.id, parsed.assignment_id, payload);
       // Span must appear in the parent anchor's source. Failure here
       // throws — the proposal is never staged, never assigned, never
       // shown to a reviewer.
@@ -1976,19 +1889,13 @@ export class Server {
         id: this.idGen.proposalId(),
         proposer_id: identity.id,
         status: 'staged',
-        payload: {
-          kind: 'excerpt',
-          cause_id: cause.id,
-          home_sub_topic_id: parsed.home_sub_topic_id,
-          ...(memberships.length > 0 ? { memberships } : {}),
-          parent_anchor_id: parsed.parent_anchor_id,
-          content: parsed.content,
-          quoted_span: parsed.quoted_span,
-        },
+        payload,
+        ...(assignment ? { assignment_id: assignment.id } : {}),
         created_at: now,
         updated_at: now,
       };
       this.store.proposals.set(proposal.id, proposal);
+      if (assignment) this.fulfillAssignment(assignment, proposal.id);
       return { proposal_id: proposal.id };
     },
 
@@ -1999,7 +1906,10 @@ export class Server {
     // payload variant. Parents may be any active node kind in the
     // same cause — anchors, excerpts, prior syntheses, or open
     // questions — because syntheses pull together evidence across
-    // node kinds (PRD §Nodes: synthesis nodes connect 2+ parents).
+    // node kinds (PRD §Nodes: synthesis nodes connect 2+ parents). An
+    // optional `assignment_id` fulfills an accepted synthesis- or
+    // open_question-kind assignment whose pinned parent set matches the
+    // proposal's; without it the proposal is contributor-initiated.
     proposeSynthesis: async (
       caller: Caller,
       input: ProposeSynthesisInput,
@@ -2027,7 +1937,6 @@ export class Server {
         this.requireActiveNodeInCause(p, cause.id);
       }
 
-      const now = this.clock.now();
       const common = {
         cause_id: cause.id,
         home_sub_topic_id: parsed.home_sub_topic_id,
@@ -2035,18 +1944,24 @@ export class Server {
         parent_ids,
         content: parsed.content,
       };
+      const payload: ProposalPayload =
+        parsed.kind === 'synthesis'
+          ? { kind: 'synthesis', ...common }
+          : { kind: 'open_question', ...common };
+      const assignment = this.resolveProposalAssignment(identity.id, parsed.assignment_id, payload);
+
+      const now = this.clock.now();
       const proposal: Proposal = {
         id: this.idGen.proposalId(),
         proposer_id: identity.id,
         status: 'staged',
-        payload:
-          parsed.kind === 'synthesis'
-            ? { kind: 'synthesis', ...common }
-            : { kind: 'open_question', ...common },
+        payload,
+        ...(assignment ? { assignment_id: assignment.id } : {}),
         created_at: now,
         updated_at: now,
       };
       this.store.proposals.set(proposal.id, proposal);
+      if (assignment) this.fulfillAssignment(assignment, proposal.id);
       return { proposal_id: proposal.id };
     },
 
@@ -2059,7 +1974,9 @@ export class Server {
     // require the `from` end to be active because superseding an
     // already-superseded node is meaningless). Cycle prevention runs
     // here so contributors get a synchronous error rather than a delayed
-    // acceptance failure.
+    // acceptance failure. An optional `assignment_id` fulfills an
+    // accepted supersedes-kind assignment pinning the same `from` node;
+    // without it the proposal is contributor-initiated.
     proposeSupersedes: async (
       caller: Caller,
       input: ProposeSupersedesInput,
@@ -2104,21 +2021,26 @@ export class Server {
         );
       }
 
+      const payload: ProposalPayload = {
+        kind: 'supersedes',
+        from_node_id: fromNode.id,
+        to_node_id: toNode.id,
+        rationale: parsed.rationale,
+      };
+      const assignment = this.resolveProposalAssignment(identity.id, parsed.assignment_id, payload);
+
       const now = this.clock.now();
       const proposal: Proposal = {
         id: this.idGen.proposalId(),
         proposer_id: identity.id,
         status: 'staged',
-        payload: {
-          kind: 'supersedes',
-          from_node_id: fromNode.id,
-          to_node_id: toNode.id,
-          rationale: parsed.rationale,
-        },
+        payload,
+        ...(assignment ? { assignment_id: assignment.id } : {}),
         created_at: now,
         updated_at: now,
       };
       this.store.proposals.set(proposal.id, proposal);
+      if (assignment) this.fulfillAssignment(assignment, proposal.id);
       return { proposal_id: proposal.id };
     },
 
@@ -2129,7 +2051,9 @@ export class Server {
     // smuggling lineage (PRD §Edges). Reviewed by the *target* sub-
     // topic's reviewer pool — that's the pool with the expertise to
     // judge the scope claim — but reviewer assignment lives downstream
-    // of this tool.
+    // of this tool. An optional `assignment_id` fulfills an accepted
+    // membership-kind assignment pinning the same node and target
+    // sub-topic; without it the proposal is contributor-initiated.
     proposeMembership: async (
       caller: Caller,
       input: ProposeMembershipInput,
@@ -2170,20 +2094,25 @@ export class Server {
         );
       }
 
+      const payload: ProposalPayload = {
+        kind: 'membership',
+        node_id: node.id,
+        sub_topic_id: parsed.sub_topic_id,
+      };
+      const assignment = this.resolveProposalAssignment(identity.id, parsed.assignment_id, payload);
+
       const now = this.clock.now();
       const proposal: Proposal = {
         id: this.idGen.proposalId(),
         proposer_id: identity.id,
         status: 'staged',
-        payload: {
-          kind: 'membership',
-          node_id: node.id,
-          sub_topic_id: parsed.sub_topic_id,
-        },
+        payload,
+        ...(assignment ? { assignment_id: assignment.id } : {}),
         created_at: now,
         updated_at: now,
       };
       this.store.proposals.set(proposal.id, proposal);
+      if (assignment) this.fulfillAssignment(assignment, proposal.id);
       return { proposal_id: proposal.id };
     },
 

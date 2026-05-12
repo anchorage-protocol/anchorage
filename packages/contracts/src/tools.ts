@@ -52,34 +52,19 @@ export type DeclineAssignmentInput = z.infer<typeof DeclineAssignmentInput>;
 export const DeclineAssignmentOutput = ok;
 export type DeclineAssignmentOutput = z.infer<typeof DeclineAssignmentOutput>;
 
-// `payload` is a nested object with a generic name, and a recurring
-// failure mode of model clients (smaller models especially) is to send
-// it as a JSON-*encoded string* rather than an object — the client knows
-// the shape but stringifies the value. Rather than refuse a well-formed
-// proposal over an encoding slip, accept a string here and parse it
-// before validating against `ProposalPayload`; a non-string passes
-// straight through, and a string that isn't valid JSON falls through to
-// the `ProposalPayload` error unchanged (the parse failure isn't the
-// useful message). The advertised input schema is unaffected — it still
-// shows the object shape, so a correct client has no reason to stringify.
-const jsonObjectLenient = <T extends z.ZodTypeAny>(schema: T) =>
-  z.preprocess((v) => {
-    if (typeof v !== 'string') return v;
-    try {
-      return JSON.parse(v);
-    } catch {
-      return v;
-    }
-  }, schema);
-
-export const SubmitAssignedProposalInput = z
-  .object({ assignment_id: AssignmentId, payload: jsonObjectLenient(ProposalPayload) })
-  .strict();
-export type SubmitAssignedProposalInput = z.infer<typeof SubmitAssignedProposalInput>;
-export const SubmitAssignedProposalOutput = proposalIdResult;
-export type SubmitAssignedProposalOutput = z.infer<typeof SubmitAssignedProposalOutput>;
-
-// ──── Contributor-initiated proposals ────
+// ──── Proposals (assignment-fulfilling or contributor-initiated) ────
+//
+// Each `propose_*` tool below takes an optional `assignment_id`. When
+// present, the call fulfills an accepted propose-kind assignment (the
+// task kind must match the proposal kind and the task's pinned context
+// — sub-topic, parent anchor, parent set — must match what the proposal
+// claims) and accrues full assigned-work reputation; the assignment
+// transitions to `submitted` with this proposal as `fulfilled_by`.
+// Without it, the proposal is contributor-initiated and weighted lower
+// for reputation (see PRD §Reputation). This mirrors `cast_review_vote`,
+// which carries the same optional `assignment_id` for review work — so
+// there is one tool per node kind whether or not an assignment is being
+// fulfilled, rather than a separate assignment-only entry point.
 
 export const ProposeAnchorInput = z
   .object({
@@ -88,6 +73,7 @@ export const ProposeAnchorInput = z
     memberships: z.array(SubTopicId).optional(),
     content: z.string().min(1),
     external_ref: ExternalRef,
+    assignment_id: AssignmentId.optional(),
   })
   .strict();
 export type ProposeAnchorInput = z.infer<typeof ProposeAnchorInput>;
@@ -102,6 +88,7 @@ export const ProposeExcerptInput = z
     parent_anchor_id: NodeId,
     content: z.string().min(1),
     quoted_span: QuotedSpan,
+    assignment_id: AssignmentId.optional(),
   })
   .strict();
 export type ProposeExcerptInput = z.infer<typeof ProposeExcerptInput>;
@@ -119,6 +106,7 @@ export const ProposeSynthesisInput = z
     parent_ids: z.array(NodeId).min(1),
     content: z.string().min(1),
     kind: z.enum(['synthesis', 'open_question']),
+    assignment_id: AssignmentId.optional(),
   })
   .strict();
 export type ProposeSynthesisInput = z.infer<typeof ProposeSynthesisInput>;
@@ -130,6 +118,7 @@ export const ProposeSupersedesInput = z
     from_node_id: NodeId,
     to_node_id: NodeId,
     rationale: z.string().min(1),
+    assignment_id: AssignmentId.optional(),
   })
   .strict();
 export type ProposeSupersedesInput = z.infer<typeof ProposeSupersedesInput>;
@@ -137,7 +126,7 @@ export const ProposeSupersedesOutput = proposalIdResult;
 export type ProposeSupersedesOutput = z.infer<typeof ProposeSupersedesOutput>;
 
 export const ProposeMembershipInput = z
-  .object({ node_id: NodeId, sub_topic_id: SubTopicId })
+  .object({ node_id: NodeId, sub_topic_id: SubTopicId, assignment_id: AssignmentId.optional() })
   .strict();
 export type ProposeMembershipInput = z.infer<typeof ProposeMembershipInput>;
 export const ProposeMembershipOutput = proposalIdResult;
@@ -259,7 +248,6 @@ export const ToolName = z.enum([
   'request_assignment',
   'accept_assignment',
   'decline_assignment',
-  'submit_assigned_proposal',
   'propose_anchor',
   'propose_excerpt',
   'propose_synthesis',

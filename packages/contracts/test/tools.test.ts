@@ -17,7 +17,6 @@ import {
   RequestAssignmentOutput,
   ReviewBatchItem,
   SetCapacityInput,
-  SubmitAssignedProposalInput,
   ToolName,
 } from '../src/index.js';
 
@@ -60,36 +59,9 @@ describe('Capacity & assignment tool I/O', () => {
   it('rejects decline with empty reason', () => {
     expect(() => DeclineAssignmentInput.parse({ assignment_id: 'assn_1', reason: '' })).toThrow();
   });
-
-  it('parses submit_assigned_proposal input with a payload', () => {
-    const i = SubmitAssignedProposalInput.parse({
-      assignment_id: 'assn_1',
-      payload: {
-        kind: 'membership',
-        node_id: 'n_def',
-        sub_topic_id: 'st_lynch',
-      },
-    });
-    expect(i.payload.kind).toBe('membership');
-  });
-
-  it('accepts a JSON-string-encoded payload (a model client that stringifies the nested value)', () => {
-    const i = SubmitAssignedProposalInput.parse({
-      assignment_id: 'assn_1',
-      payload: JSON.stringify({ kind: 'membership', node_id: 'n_def', sub_topic_id: 'st_lynch' }),
-    });
-    expect(i.payload.kind).toBe('membership');
-    if (i.payload.kind === 'membership') expect(i.payload.node_id).toBe('n_def');
-  });
-
-  it('rejects a string payload that is not valid JSON', () => {
-    expect(() =>
-      SubmitAssignedProposalInput.parse({ assignment_id: 'assn_1', payload: 'not json at all' }),
-    ).toThrow();
-  });
 });
 
-describe('Contributor-initiated propose_* inputs', () => {
+describe('Proposal tool inputs (propose_*)', () => {
   it('parses propose_anchor', () => {
     const i = ProposeAnchorInput.parse({
       cause_id: 'cause_crc',
@@ -98,17 +70,29 @@ describe('Contributor-initiated propose_* inputs', () => {
       external_ref: { kind: 'pmid', value: '12345' },
     });
     expect(i.external_ref.kind).toBe('pmid');
+    expect(i.assignment_id).toBeUndefined();
   });
 
-  it('parses propose_excerpt with quoted_span', () => {
-    const i = ProposeExcerptInput.parse({
+  it('parses propose_excerpt with quoted_span and an optional assignment_id', () => {
+    const contributorInitiated = ProposeExcerptInput.parse({
       cause_id: 'cause_crc',
       home_sub_topic_id: 'st_ctdna_mrd',
       parent_anchor_id: 'n_anchor_1',
       content: 'rfs differed by ctDNA status',
       quoted_span: { text: 'recurrence-free survival differed', offset: 200 },
     });
-    expect(i.quoted_span.offset).toBe(200);
+    expect(contributorInitiated.quoted_span.offset).toBe(200);
+    expect(contributorInitiated.assignment_id).toBeUndefined();
+
+    const assignmentDriven = ProposeExcerptInput.parse({
+      cause_id: 'cause_crc',
+      home_sub_topic_id: 'st_ctdna_mrd',
+      parent_anchor_id: 'n_anchor_1',
+      content: 'rfs differed by ctDNA status',
+      quoted_span: { text: 'recurrence-free survival differed', offset: 200 },
+      assignment_id: 'assn_1',
+    });
+    expect(assignmentDriven.assignment_id).toBe('assn_1');
   });
 
   it('parses propose_synthesis with kind=synthesis or open_question', () => {
@@ -257,7 +241,6 @@ describe('ToolName registry', () => {
     'request_assignment',
     'accept_assignment',
     'decline_assignment',
-    'submit_assigned_proposal',
     'propose_anchor',
     'propose_excerpt',
     'propose_synthesis',

@@ -1203,8 +1203,9 @@ describe('tools.acceptAssignment / declineAssignment', () => {
   });
 });
 
-describe('tools.submitAssignedProposal', () => {
-  // End-to-end happy path of the assignment loop.
+describe('propose_* assignment fulfillment (the `assignment_id` argument)', () => {
+  // An accepted excerpt-kind assignment for a freshly-staged anchor —
+  // the loop state a `propose_excerpt` with `assignment_id` fulfills.
   async function withAcceptedExcerptAssignment() {
     const f = fixture();
     const a = await f.server.tools.proposeAnchor(f.caller, {
@@ -1227,18 +1228,15 @@ describe('tools.submitAssignedProposal', () => {
     return { f, bobCaller, anchor_id: aId, assignment_id: offered.assignment_id };
   }
 
-  it('stages a proposal, attributes the assignment, and marks it submitted', async () => {
+  it('attributes the assignment on the proposal and marks the assignment submitted', async () => {
     const { f, bobCaller, anchor_id, assignment_id } = await withAcceptedExcerptAssignment();
-    const { proposal_id } = await f.server.tools.submitAssignedProposal(bobCaller, {
+    const { proposal_id } = await f.server.tools.proposeExcerpt(bobCaller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_anchor_id: anchor_id,
+      content: 'span content',
+      quoted_span: { text: 'span', offset: 0 },
       assignment_id,
-      payload: {
-        kind: 'excerpt',
-        cause_id: f.cause_id,
-        home_sub_topic_id: f.sub_topic_id,
-        parent_anchor_id: anchor_id,
-        content: 'span content',
-        quoted_span: { text: 'span', offset: 0 },
-      },
     });
 
     const proposal = f.server.store.proposals.get(proposal_id);
@@ -1248,6 +1246,18 @@ describe('tools.submitAssignedProposal', () => {
     const updatedAssignment = f.server.store.assignments.get(assignment_id);
     expect(updatedAssignment?.status).toBe('submitted');
     expect(updatedAssignment?.fulfilled_by).toBe(proposal_id);
+  });
+
+  it('leaves the proposal unattributed when no assignment_id is given (contributor-initiated)', async () => {
+    const { f, bobCaller, anchor_id } = await withAcceptedExcerptAssignment();
+    const { proposal_id } = await f.server.tools.proposeExcerpt(bobCaller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_anchor_id: anchor_id,
+      content: 'span content',
+      quoted_span: { text: 'span', offset: 0 },
+    });
+    expect(f.server.store.proposals.get(proposal_id)?.assignment_id).toBeUndefined();
   });
 
   it('rejects when the assignment is not yet accepted', async () => {
@@ -1270,39 +1280,35 @@ describe('tools.submitAssignedProposal', () => {
     const offered = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
     // No accept call.
     await expect(
-      f.server.tools.submitAssignedProposal(bobCaller, {
+      f.server.tools.proposeExcerpt(bobCaller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        parent_anchor_id: aId,
+        content: 'x',
+        quoted_span: { text: 'x', offset: 0 },
         assignment_id: offered.assignment_id,
-        payload: {
-          kind: 'excerpt',
-          cause_id: f.cause_id,
-          home_sub_topic_id: f.sub_topic_id,
-          parent_anchor_id: aId,
-          content: 'x',
-          quoted_span: { text: 'x', offset: 0 },
-        },
       }),
     ).rejects.toMatchObject({ code: 'invalid_state' });
   });
 
-  it('rejects when payload kind does not match task kind', async () => {
+  it('rejects when the proposal kind does not match the task kind', async () => {
     const { f, bobCaller, assignment_id } = await withAcceptedExcerptAssignment();
+    // An excerpt-kind assignment can't be fulfilled by an anchor
+    // proposal — closes the rep-laundering vector where a contributor
+    // accepts a hard task and satisfies it with an easy one.
     await expect(
-      f.server.tools.submitAssignedProposal(bobCaller, {
+      f.server.tools.proposeAnchor(bobCaller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: 'rep-laundering attempt',
+        external_ref: { kind: 'pmid', value: '99' },
         assignment_id,
-        payload: {
-          kind: 'anchor',
-          cause_id: f.cause_id,
-          home_sub_topic_id: f.sub_topic_id,
-          content: 'rep-laundering attempt',
-          external_ref: { kind: 'pmid', value: '99' },
-        },
       }),
     ).rejects.toMatchObject({ code: 'invalid_input' });
   });
 
-  it('rejects when payload pins a different parent anchor than the task', async () => {
+  it('rejects when the proposal pins a different parent anchor than the task', async () => {
     const { f, bobCaller, assignment_id } = await withAcceptedExcerptAssignment();
-    // Stage a second anchor and use its id in the payload.
     const a2 = await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
       home_sub_topic_id: f.sub_topic_id,
@@ -1312,21 +1318,18 @@ describe('tools.submitAssignedProposal', () => {
     const a2Id = f.server.curator.acceptProposal(a2.proposal_id).node_id;
     if (!a2Id) throw new Error('expected second anchor');
     await expect(
-      f.server.tools.submitAssignedProposal(bobCaller, {
+      f.server.tools.proposeExcerpt(bobCaller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        parent_anchor_id: a2Id,
+        content: 'x',
+        quoted_span: { text: 'x', offset: 0 },
         assignment_id,
-        payload: {
-          kind: 'excerpt',
-          cause_id: f.cause_id,
-          home_sub_topic_id: f.sub_topic_id,
-          parent_anchor_id: a2Id,
-          content: 'x',
-          quoted_span: { text: 'x', offset: 0 },
-        },
       }),
     ).rejects.toMatchObject({ code: 'invalid_input' });
   });
 
-  it('rejects fulfilling a review assignment via this tool (use cast_review_vote)', async () => {
+  it('rejects fulfilling a review assignment via a propose_* tool (use cast_review_vote)', async () => {
     const f = fixture();
     await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
@@ -1344,20 +1347,13 @@ describe('tools.submitAssignedProposal', () => {
     const offered = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
     await f.server.tools.acceptAssignment(bobCaller, { assignment_id: offered.assignment_id });
     if (offered.task.kind !== 'review') throw new Error('expected review task');
-    // submit_assigned_proposal rejects review-kind tasks before the
-    // payload is even unwrapped — pass a well-formed propose-kind
-    // payload so we exercise the early review-kind guard, not the
-    // payload-kind mismatch.
     await expect(
-      f.server.tools.submitAssignedProposal(bobCaller, {
+      f.server.tools.proposeAnchor(bobCaller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: 'x',
+        external_ref: { kind: 'pmid', value: '2' },
         assignment_id: offered.assignment_id,
-        payload: {
-          kind: 'anchor',
-          cause_id: f.cause_id,
-          home_sub_topic_id: f.sub_topic_id,
-          content: 'x',
-          external_ref: { kind: 'pmid', value: '2' },
-        },
       }),
     ).rejects.toMatchObject({ code: 'invalid_input' });
   });
@@ -2021,16 +2017,13 @@ describe('tools.castReviewVote', () => {
     await f.server.tools.acceptAssignment(bobCaller, {
       assignment_id: offered.assignment_id,
     });
-    const submitted = await f.server.tools.submitAssignedProposal(bobCaller, {
+    const submitted = await f.server.tools.proposeExcerpt(bobCaller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_anchor_id: offered.task.parent_anchor_id,
+      content: 'span',
+      quoted_span: { text: 'span', offset: 0 },
       assignment_id: offered.assignment_id,
-      payload: {
-        kind: 'excerpt',
-        cause_id: f.cause_id,
-        home_sub_topic_id: f.sub_topic_id,
-        parent_anchor_id: offered.task.parent_anchor_id,
-        content: 'span',
-        quoted_span: { text: 'span', offset: 0 },
-      },
     });
     // Two reviewers converge it.
     const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });

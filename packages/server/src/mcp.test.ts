@@ -52,7 +52,6 @@ describe('mcp transport', () => {
     'request_assignment',
     'accept_assignment',
     'decline_assignment',
-    'submit_assigned_proposal',
     'propose_anchor',
     'propose_excerpt',
     'propose_synthesis',
@@ -161,17 +160,14 @@ describe('mcp transport', () => {
       arguments: { assignment_id: offerData.assignment_id },
     });
     const submitted = await bob_client.callTool({
-      name: 'submit_assigned_proposal',
+      name: 'propose_excerpt',
       arguments: {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        parent_anchor_id: offerData.task.parent_anchor_id,
+        content: 'span content',
+        quoted_span: { text: 'span', offset: 0 },
         assignment_id: offerData.assignment_id,
-        payload: {
-          kind: 'excerpt',
-          cause_id: cause.id,
-          home_sub_topic_id: subTopic.id,
-          parent_anchor_id: offerData.task.parent_anchor_id,
-          content: 'span content',
-          quoted_span: { text: 'span', offset: 0 },
-        },
       },
     });
     expect(submitted.isError).toBeFalsy();
@@ -179,63 +175,5 @@ describe('mcp transport', () => {
     const assignment = server.store.assignments.get(offerData.assignment_id as never);
     expect(assignment?.status).toBe('submitted');
     expect(assignment?.fulfilled_by).toBe(proposalId);
-  });
-
-  it('accepts submit_assigned_proposal with a JSON-string-encoded payload', async () => {
-    // A model client that stringifies the nested `payload` value (a
-    // recurring slip with smaller models — observed thrashing real
-    // deep-loop runs) is not refused over the encoding: the contract
-    // schema parses a string payload before validating the object.
-    const { server, identity, cause, subTopic } = await fixtureWithClient();
-    const a = await server.tools.proposeAnchor(
-      { identity_id: identity.id },
-      {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        content: 'orphan',
-        external_ref: { kind: 'pmid', value: '1' },
-      },
-    );
-    server.curator.acceptProposal(a.proposal_id);
-    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
-    const bobMcp = buildMcpServer(server, { caller: { identity_id: bob.id } });
-    const bob_client = new Client({ name: 'bob-client', version: '0.0.0' });
-    const [ct, st] = InMemoryTransport.createLinkedPair();
-    await Promise.all([bobMcp.connect(st), bob_client.connect(ct)]);
-    await bob_client.callTool({
-      name: 'set_capacity',
-      arguments: { cause_id: cause.id, rate: 3, kinds: ['excerpt'] },
-    });
-    const offered = await bob_client.callTool({
-      name: 'request_assignment',
-      arguments: { cause_id: cause.id },
-    });
-    const offerData = offered.structuredContent as {
-      assignment_id: string;
-      task: { parent_anchor_id?: string };
-    };
-    await bob_client.callTool({
-      name: 'accept_assignment',
-      arguments: { assignment_id: offerData.assignment_id },
-    });
-    const submitted = await bob_client.callTool({
-      name: 'submit_assigned_proposal',
-      arguments: {
-        assignment_id: offerData.assignment_id,
-        payload: JSON.stringify({
-          kind: 'excerpt',
-          cause_id: cause.id,
-          home_sub_topic_id: subTopic.id,
-          parent_anchor_id: offerData.task.parent_anchor_id,
-          content: 'span content',
-          quoted_span: { text: 'span', offset: 0 },
-        }),
-      },
-    });
-    expect(submitted.isError).toBeFalsy();
-    const proposalId = (submitted.structuredContent as { proposal_id: string }).proposal_id;
-    expect(server.store.assignments.get(offerData.assignment_id as never)?.fulfilled_by).toBe(
-      proposalId,
-    );
   });
 });
