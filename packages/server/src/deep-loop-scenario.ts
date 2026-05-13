@@ -413,6 +413,41 @@ export const DEEP_LOOP_CUBE_CELLS: readonly DeepLoopCubeCell[] = [
       review: { votes_to_reject: 3 },
     },
   },
+  {
+    name: 'borderline-contested-v1',
+    label:
+      'v1 closure stack on the same borderline item: escalation_revise_counts_as_reject ON — the curator escalation tally counts revise toward reject so a 1-accept-1-reject-1-revise tally closes reject rather than slipping through on accept-on-tie; recorded baseline is a different rollout (sampling noise) that didn\'t hit the 1-1-1 case, so the v1 cell is the real-model regression baseline and the harness pair in population-loop.test.ts is the load-bearing v0/v1 delta',
+    cassette_basename: 'golden-deep-loop-cube-borderline-contested-v1',
+    // Same scenario as `borderline-contested` — strategic adversary on
+    // the borderline ctDNA-MRD overstatement, `votes_to_reject: 3` so
+    // the lone adversary is offered the contested review — but with
+    // the v1 closure-stack knob `escalation_revise_counts_as_reject`
+    // ON. The load-bearing v0/v1 delta is on the 1-accept-1-reject-1-revise
+    // tally: under v0 the curator closes that toward accept (revise
+    // ignored, accept-on-tie); under v1 toward reject (revise counted,
+    // 1 vs 1+1=2). That delta is pinned byte-for-byte in
+    // `population-loop.test.ts` against scripted deciders. The cube
+    // cell is what the *real model* does under the v1 stack on the
+    // borderline scenario — a different rollout than the v0 cassette's
+    // (LLM sampling is non-deterministic, every re-record is a fresh
+    // draw, not a re-run of the v0 trial with the knob flipped). The
+    // recorded v1 run landed 1 accept (one honest reviewer missed the
+    // framing) + 2 reject (the other honest reviewer + the strategic
+    // adversary, which opted for strategic discipline rather than
+    // drift this rollout — its calibration-cover instinct beat its
+    // pick-the-borderline-cases instinct) + 0 revise; the curator
+    // escalates that to reject under both rules. The cell is therefore
+    // a real-model regression baseline for v1 — it confirms the v1
+    // closure stack doesn't break the realistic borderline run — rather
+    // than a head-to-head reproduction of the v0 cassette's exact
+    // tally; the harness pair is the load-bearing proof.
+    opts: {
+      ...CI_DEEP_LOOP_OPTS,
+      adversary_role: 'strategic-adversary',
+      contested: DEEP_BORDERLINE_CONTESTED,
+      review: { votes_to_reject: 3, escalation_revise_counts_as_reject: true },
+    },
+  },
 ] as const;
 
 // Opening task for a contributor's round. The role's *system* prompt is

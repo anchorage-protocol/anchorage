@@ -4,6 +4,7 @@ import {
   type ContentProvider,
   type ReviewDecider,
   rejectAllDecider,
+  reviseAllDecider,
   runHonestReviewer,
   runHonestStrong,
 } from '@anchorage/testbed';
@@ -243,8 +244,89 @@ describe('population-loop honest baseline', () => {
       expect(e.decision).toBe('accept');
       expect(e.accepts).toBe(1);
       expect(e.rejects).toBe(1);
+      expect(e.revises).toBe(0);
     }
     expect(excerptNodeCount(server)).toBe(SEED_ANCHORS.length);
+    expect(stagedCount(server)).toBe(0);
+  });
+
+  it('curator escalation on 1-accept-1-reject-1-revise resolves accept under v0 (knob off, default)', async () => {
+    // The v0 escalation rule ignores revise votes. Three reviewers,
+    // one each of accept/reject/revise: every staged excerpt lands
+    // 1+1+1, the auto-thresholds (votes_to_accept=2, votes_to_reject=2)
+    // never trip, the population stalls, the curator pass escalates
+    // toward the accept side (1 accept > 0 *counted-against*, with
+    // revise not counted). This is the closure-failure shape the cube's
+    // `borderline-contested` cell recorded against a model adversary —
+    // pinned here in the harness too so the v0 baseline is unambiguous
+    // and the v1 cell below reads as a one-knob delta.
+    const { server, cause_id, content } = await seedServer({
+      votes_to_accept: 2,
+      votes_to_reject: 2,
+      // escalation_revise_counts_as_reject left at v0 default (false).
+    });
+    const population = await buildPopulation(server, {
+      content,
+      excerptWorkers: 2,
+      reviewers: [acceptAllDecider, rejectAllDecider, reviseAllDecider],
+    });
+
+    const result = await runPopulationRounds<PopContributor>({
+      server,
+      contributors: population,
+      runContributor: runContributorFor(cause_id),
+      max_rounds: 6,
+    });
+
+    expect(result.stop_reason).toBe('frontier_drained');
+    expect(result.escalations.length).toBe(SEED_ANCHORS.length);
+    for (const e of result.escalations) {
+      expect(e.decision).toBe('accept');
+      expect(e.accepts).toBe(1);
+      expect(e.rejects).toBe(1);
+      expect(e.revises).toBe(1);
+    }
+    expect(excerptNodeCount(server)).toBe(SEED_ANCHORS.length);
+    expect(stagedCount(server)).toBe(0);
+  });
+
+  it('curator escalation on 1-accept-1-reject-1-revise resolves reject under v1 (knob on)', async () => {
+    // v1: `escalation_revise_counts_as_reject` on. Same 1+1+1 tally as
+    // the v0 case above; the decision rule is now
+    // `r + revise > a ? reject : accept`, so 1 accept vs 1 reject + 1
+    // revise = 2 → reject. The closure-failure shape the cube
+    // `borderline-contested` cell recorded is contained here at the
+    // harness level — exactly the one-knob delta the cube's
+    // `borderline-contested-v1` cell exercises against a model
+    // adversary on the borderline ctDNA-MRD overstatement.
+    const { server, cause_id, content } = await seedServer({
+      votes_to_accept: 2,
+      votes_to_reject: 2,
+      escalation_revise_counts_as_reject: true,
+    });
+    const population = await buildPopulation(server, {
+      content,
+      excerptWorkers: 2,
+      reviewers: [acceptAllDecider, rejectAllDecider, reviseAllDecider],
+    });
+
+    const result = await runPopulationRounds<PopContributor>({
+      server,
+      contributors: population,
+      runContributor: runContributorFor(cause_id),
+      max_rounds: 6,
+    });
+
+    expect(result.stop_reason).toBe('frontier_drained');
+    expect(result.escalations.length).toBe(SEED_ANCHORS.length);
+    for (const e of result.escalations) {
+      expect(e.decision).toBe('reject');
+      expect(e.accepts).toBe(1);
+      expect(e.rejects).toBe(1);
+      expect(e.revises).toBe(1);
+    }
+    // No excerpt nodes — every escalated proposal was rejected.
+    expect(excerptNodeCount(server)).toBe(0);
     expect(stagedCount(server)).toBe(0);
   });
 

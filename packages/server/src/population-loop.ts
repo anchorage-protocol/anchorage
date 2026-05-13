@@ -34,6 +34,13 @@ export interface EscalationOutcome {
   decision: 'accept' | 'reject';
   accepts: number;
   rejects: number;
+  // Count of `revise` votes on the proposal at escalation time. Whether
+  // they tipped the decision is governed by the v1 knob
+  // `ReviewConfig.escalation_revise_counts_as_reject` — see that field
+  // and the decision rule in `escalateStuckProposals`. Reported
+  // unconditionally for diagnostics: every escalation report can show
+  // the full 3-way tally, so a v0/v1 sweep reads as a one-knob delta.
+  revises: number;
 }
 
 // Approximate Anthropic-style USD cost from token usage and a per-
@@ -170,6 +177,17 @@ export function stagedVoteCounts(server: Server): Map<string, number> {
 // and so gets a full subsequent round of review opportunity before it
 // can be escalated; a proposal that gained any vote this round counts
 // as still progressing and is left alone.
+//
+// How `revise` votes count in the tiebreak is governed by the v1 knob
+// `ReviewConfig.escalation_revise_counts_as_reject` — see the field's
+// docstring. v0 (default): ignored, decision is `r > a ? reject :
+// accept`. v1 (the knob on): counted toward reject, decision is
+// `r + revise > a ? reject : accept`, so a careful reviewer voting
+// "revise" on a borderline overstatement no longer slips through on the
+// accept-on-tie default (the closure failure the cube's
+// `borderline-contested` cell recorded — PRD §Continuous integration).
+// The full 3-way tally is reported on `EscalationOutcome` unconditionally
+// so v0/v1 reads cleanly as a one-knob delta.
 export function escalateStuckProposals(
   server: Server,
   preRoundCounts: Map<string, number>,
@@ -177,13 +195,17 @@ export function escalateStuckProposals(
 ): EscalationOutcome[] {
   const accepts = new Map<string, number>();
   const rejects = new Map<string, number>();
+  const revises = new Map<string, number>();
   const total = new Map<string, number>();
   for (const v of server.store.reviewVotes.values()) {
     total.set(v.proposal_id, (total.get(v.proposal_id) ?? 0) + 1);
     if (v.decision === 'accept') accepts.set(v.proposal_id, (accepts.get(v.proposal_id) ?? 0) + 1);
     else if (v.decision === 'reject')
       rejects.set(v.proposal_id, (rejects.get(v.proposal_id) ?? 0) + 1);
+    else if (v.decision === 'revise')
+      revises.set(v.proposal_id, (revises.get(v.proposal_id) ?? 0) + 1);
   }
+  const reviseCountsAsReject = server.review.escalation_revise_counts_as_reject;
   const escalated: EscalationOutcome[] = [];
   for (const p of server.store.proposals.values()) {
     if (p.status !== 'staged') continue;
@@ -191,10 +213,12 @@ export function escalateStuckProposals(
     if ((total.get(p.id) ?? 0) !== preRoundCounts.get(p.id)) continue; // still progressing
     const a = accepts.get(p.id) ?? 0;
     const r = rejects.get(p.id) ?? 0;
-    const decision: 'accept' | 'reject' = r > a ? 'reject' : 'accept';
+    const v = revises.get(p.id) ?? 0;
+    const rejectSide = reviseCountsAsReject ? r + v : r;
+    const decision: 'accept' | 'reject' = rejectSide > a ? 'reject' : 'accept';
     if (decision === 'accept') server.curator.acceptProposal(p.id);
     else server.curator.rejectProposal(p.id);
-    escalated.push({ round, proposal_id: p.id, decision, accepts: a, rejects: r });
+    escalated.push({ round, proposal_id: p.id, decision, accepts: a, rejects: r, revises: v });
   }
   return escalated;
 }
@@ -306,7 +330,7 @@ export async function runPopulationRounds<C extends PopulationContributor>(
     for (const e of roundEscalations) {
       escalations.push(e);
       log(
-        `# curator escalated ${e.proposal_id}: ${e.decision} (accepts=${e.accepts} rejects=${e.rejects})`,
+        `# curator escalated ${e.proposal_id}: ${e.decision} (accepts=${e.accepts} rejects=${e.rejects} revises=${e.revises})`,
       );
     }
     const spentSuffix = config.budget

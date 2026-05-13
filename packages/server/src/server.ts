@@ -144,6 +144,34 @@ export interface ReviewConfig {
   // §Reputation: "Contributor-initiated work earns sub-topic rep at
   // a substantially reduced weight." 0 ≤ factor ≤ 1; defaults to 0.5.
   contributor_initiated_factor: number;
+  // Curator escalation tiebreak rule: how the between-rounds curator
+  // pass (`escalateStuckProposals` in `population-loop.ts`) interprets a
+  // `revise` vote when resolving a stuck proposal. v0 default (false):
+  // `revise` is ignored in the escalation tally — only `accept` and
+  // `reject` votes count, and the rule is `r > a ? reject : accept`
+  // (accept on a tie, including the no-votes case where every excerpt
+  // here already passed span verification at write time so accept is
+  // the productive default). v1 (true): `revise` is counted toward the
+  // reject side — `r + revise > a ? reject : accept` — capturing the
+  // load-bearing fact that a careful reviewer voting "revise" is not
+  // endorsing the proposal. The cube's `borderline-contested` cell
+  // recorded the v0 closure failure that motivated this knob (PRD
+  // §Continuous integration): a strategic adversary's drift accept + an
+  // honest reviewer's careful revise + another honest reviewer's reject
+  // resolved to accept under v0 because revise didn't count; the
+  // `borderline-contested-v1` cell flips this knob on, the same
+  // 1-accept-1-reject-1-revise tally now resolves to reject. The knob
+  // only governs the *escalation* tiebreak — the auto-closure
+  // thresholds (`votes_to_accept` / `votes_to_reject`) are unchanged,
+  // so the load-bearing distinction (revise-as-non-endorsement) lands
+  // only where it matters for closure (when no affirmative majority
+  // formed in the round, a stuck proposal with revise votes resolves
+  // to reject rather than slipping through on the accept-on-tie
+  // default). Defaults false so every existing scenario, golden
+  // cassette, and scripted-cube cell preserves its v0 outcome; the cube
+  // sweeps v0 vs v1 on the borderline-contested item to read the
+  // closure delta.
+  escalation_revise_counts_as_reject: boolean;
   // Calibration injection cadence. PRD §Calibration batches: reviewer
   // batches mix real proposals with calibration items drawn from
   // validated history; PRD §Why assignment-driven contribution closes several attack surfaces settles that calibration arrives
@@ -514,6 +542,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   reviewer_accurate_gain: 1,
   reviewer_inaccurate_loss: 1,
   contributor_initiated_factor: 0.5,
+  escalation_revise_counts_as_reject: false,
   calibration_inject_every_n: 0,
   calibration_pass_gain: 1,
   calibration_fail_loss: 1,

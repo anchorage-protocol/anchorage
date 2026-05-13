@@ -69,6 +69,18 @@ export const rejectAllDecider: ReviewDecider = {
   decide: () => ({ decision: 'reject', rationale: 'declined as out of scope' }),
 };
 
+// A common decider: vote `revise` on everything. Not endorsing,
+// not rejecting outright — the careful "this needs work" signal.
+// The v0 escalation tally ignored revise votes; the v1 knob
+// `ReviewConfig.escalation_revise_counts_as_reject` counts them
+// toward reject. Pairing this with `acceptAllDecider` +
+// `rejectAllDecider` in a 3-reviewer scenario is the smallest
+// fixture that reads the load-bearing v0/v1 delta (1 accept + 1
+// reject + 1 revise → accept under v0, reject under v1).
+export const reviseAllDecider: ReviewDecider = {
+  decide: () => ({ decision: 'revise', rationale: 'needs work but not outright wrong' }),
+};
+
 // Payload-biased decider: votes accept when `acceptIf(payload)` is
 // true, reject otherwise. The strategic-adversary archetype (PRD
 // §Adversary taxonomy, Strategic adversary — "hidden-objective

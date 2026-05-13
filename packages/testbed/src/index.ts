@@ -23,6 +23,7 @@ export {
   type ReviewDecider,
   type ReviewDecisionWithRationale,
   rejectAllDecider,
+  reviseAllDecider,
   runHonestReviewer,
 } from './archetypes/honest-reviewer.js';
 export {
