@@ -248,7 +248,7 @@ async function main(): Promise<void> {
         'recording the v0 closure-failure mode on the escalation path, a borderline-contested-v1',
         'cell where the v1 closure-stack knob contains the escalation failure, and a',
         'borderline-contested-v2 cell that records a second closure failure at the auto-close',
-        'path the v1 knobs don\'t reach) and reports the per-cell and cross-cell outcomes. Set a',
+        "path the v1 knobs don't reach) and reports the per-cell and cross-cell outcomes. Set a",
         'key and re-run:',
         '',
         '  ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop-cube',
@@ -337,8 +337,12 @@ async function main(): Promise<void> {
     // §Status walk through both. Anything beyond that pair is a
     // regression worth a closer look.
     const KNOWN_FAILURE_CELLS = new Set(['borderline-contested', 'borderline-contested-v2']);
-    const expectedAccepted = acceptedCells.map((o) => o.name).filter((n) => KNOWN_FAILURE_CELLS.has(n));
-    const unexpectedAccepted = acceptedCells.map((o) => o.name).filter((n) => !KNOWN_FAILURE_CELLS.has(n));
+    const expectedAccepted = acceptedCells
+      .map((o) => o.name)
+      .filter((n) => KNOWN_FAILURE_CELLS.has(n));
+    const unexpectedAccepted = acceptedCells
+      .map((o) => o.name)
+      .filter((n) => !KNOWN_FAILURE_CELLS.has(n));
     if (unexpectedAccepted.length === 0) {
       console.log(
         `# the contested claim ended accepted in the expected cells only (${expectedAccepted.join(', ')}) — the v0 closure stack and the v1 strict escalation stack both leave a path the borderline overstatement closes through; PRD §Continuous integration / ROADMAP §Status flag both as open governance questions`,

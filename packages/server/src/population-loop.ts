@@ -178,21 +178,33 @@ export function stagedVoteCounts(server: Server): Map<string, number> {
 // can be escalated; a proposal that gained any vote this round counts
 // as still progressing and is left alone.
 //
-// Two orthogonal v1 knobs govern the tiebreak — see their docstrings on
-// `ReviewConfig`. (1) `escalation_revise_counts_as_reject`: v0 off →
-// revise ignored, rule is `r > a ? reject : accept`; on → revise counts
-// toward reject, rule is `r + revise > a ? reject : accept`. Catches
-// the 1-accept-1-reject-1-revise case the cube's `borderline-contested`
-// cell recorded. (2) `escalation_requires_votes_to_accept`: v0 off →
-// escalation-to-accept happens whenever the reject side doesn't win;
-// on → additionally requires `accepts >= votes_to_accept`, the same
-// affirmative-supermajority floor the auto-closure path enforces
-// during normal voting. Catches the 1-1-0 case (plain tie, no revise)
-// the first knob alone doesn't. They compose: the rule is
-// `(reject_side > a) OR (knob2 AND a < votes_to_accept) ? reject :
-// accept`, with `reject_side = knob1 ? r + revise : r`. The full 3-way
-// tally is reported on `EscalationOutcome` unconditionally so v0/v1/v2
-// reads cleanly as a knob delta.
+// Three orthogonal closure-stack knobs govern the tiebreak — see their
+// docstrings on `ReviewConfig`. (1) `escalation_revise_counts_as_reject`
+// (v1): v0 off → revise ignored, rule is `r > a ? reject : accept`; on →
+// revise counts toward reject, rule is `r + revise > a ? reject :
+// accept`. Catches the 1-accept-1-reject-1-revise case the cube's
+// `borderline-contested` cell recorded. (2)
+// `escalation_requires_votes_to_accept` (v2): v0 off → escalation-to-
+// accept happens whenever the reject side doesn't win; on → additionally
+// requires `accepts >= votes_to_accept`, the same affirmative-
+// supermajority floor the auto-closure path enforces during normal
+// voting. Catches the 1-1-0 case (plain tie, no revise) the first knob
+// alone doesn't. (3) `contested_votes_to_accept` (v3): 0 off → no
+// contested floor; > 0 on → when the tally has any reject or revise
+// vote, escalation-to-accept additionally requires
+// `accepts >= contested_votes_to_accept`. The escalation-side mirror of
+// the same knob's auto-close-path role (see
+// `ReviewConfig.contested_votes_to_accept` and `resolveByConvergence`),
+// closing the path the cube's `borderline-contested-v2` cell recorded:
+// 2-accept-1-revise hits `votes_to_accept=2` on the auto-close path
+// before escalation runs at all. v3 holds the proposal on the
+// auto-close side, then this branch rejects it on the escalation side
+// when the contested floor isn't met. The three compose: the rule is
+// `accept iff (reject_side <= a) AND (NOT v2 OR a >= votes_to_accept)
+// AND (v3 inert OR no dissent OR a >= contested_votes_to_accept)`, with
+// `reject_side = v1 ? r + revise : r`. The full 3-way tally is reported
+// on `EscalationOutcome` unconditionally so v0/v1/v2/v3 reads cleanly as
+// a knob delta.
 export function escalateStuckProposals(
   server: Server,
   preRoundCounts: Map<string, number>,
@@ -213,6 +225,15 @@ export function escalateStuckProposals(
   const reviseCountsAsReject = server.review.escalation_revise_counts_as_reject;
   const requiresVotesToAccept = server.review.escalation_requires_votes_to_accept;
   const acceptFloor = server.review.votes_to_accept;
+  // v3 closure-stack knob (see ReviewConfig.contested_votes_to_accept):
+  // when > 0 and the proposal has any reject or revise vote in its
+  // tally, escalation-to-accept additionally requires a >=
+  // contested_votes_to_accept. Self-contained — composes with v1/v2 but
+  // does not require them. Closes the escalation-side mirror of the
+  // auto-close-accept failure the cube's `borderline-contested-v2`
+  // cell recorded: held by v3 on the auto-close path, then rejected
+  // here on the escalation path when the contested floor isn't met.
+  const contestedAcceptFloor = server.review.contested_votes_to_accept;
   const escalated: EscalationOutcome[] = [];
   for (const p of server.store.proposals.values()) {
     if (p.status !== 'staged') continue;
@@ -224,8 +245,11 @@ export function escalateStuckProposals(
     const rejectSide = reviseCountsAsReject ? r + v : r;
     const acceptsBeatRejects = rejectSide <= a;
     const acceptsMeetFloor = !requiresVotesToAccept || a >= acceptFloor;
+    const hasDissent = r > 0 || v > 0;
+    const acceptsMeetContestedFloor =
+      contestedAcceptFloor <= 0 || !hasDissent || a >= contestedAcceptFloor;
     const decision: 'accept' | 'reject' =
-      acceptsBeatRejects && acceptsMeetFloor ? 'accept' : 'reject';
+      acceptsBeatRejects && acceptsMeetFloor && acceptsMeetContestedFloor ? 'accept' : 'reject';
     if (decision === 'accept') server.curator.acceptProposal(p.id);
     else server.curator.rejectProposal(p.id);
     escalated.push({ round, proposal_id: p.id, decision, accepts: a, rejects: r, revises: v });

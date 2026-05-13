@@ -372,6 +372,116 @@ describe('population-loop honest baseline', () => {
     expect(stagedCount(server)).toBe(0);
   });
 
+  it('auto-close-accept fires on 2-accept-1-revise under v0 (contested_votes_to_accept inert)', async () => {
+    // The auto-close-path closure failure the cube's
+    // `borderline-contested-v2` cell recorded, pinned here in the
+    // harness so the v0 baseline reads unambiguously as a one-knob
+    // delta against the v3 case below. Sequential reviewers in array
+    // order — accept, revise, accept — so the third vote arrives with
+    // the revise already in the tally: at that point `acceptCount=2`,
+    // `reviseCount=1`. Under v0 (contested_votes_to_accept default 0,
+    // knob inert) the auto-close-accept threshold is just
+    // `votes_to_accept=2` and revise doesn't count anywhere, so the
+    // second accept fires the auto-close and every excerpt is
+    // accepted before the curator escalation pass even runs. The
+    // 2-accept-1-revise tally — the same shape the v2 cube cell
+    // recorded the strategic adversary + a confused honest reviewer
+    // + a careful honest revise landing — slips through the
+    // auto-close-accept path the v1/v2 escalation knobs don't reach.
+    const { server, cause_id, content } = await seedServer({
+      votes_to_accept: 2,
+      votes_to_reject: 2,
+      // contested_votes_to_accept left at v0 default (0 = inert).
+    });
+    const population = await buildPopulation(server, {
+      content,
+      excerptWorkers: 2,
+      reviewers: [acceptAllDecider, reviseAllDecider, acceptAllDecider],
+    });
+
+    const result = await runPopulationRounds<PopContributor>({
+      server,
+      contributors: population,
+      runContributor: runContributorFor(cause_id),
+      max_rounds: 6,
+      concurrency: 'sequential',
+    });
+
+    expect(result.stop_reason).toBe('frontier_drained');
+    // Every excerpt auto-closed accept on the second accept vote — no
+    // escalation pass ever fired on these.
+    expect(result.escalations).toEqual([]);
+    expect(excerptNodeCount(server)).toBe(SEED_ANCHORS.length);
+    expect(stagedCount(server)).toBe(0);
+    const acceptedExcerpts = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt' && p.status === 'accepted',
+    );
+    expect(acceptedExcerpts.length).toBe(SEED_ANCHORS.length);
+  });
+
+  it('contested_votes_to_accept holds 2-accept-1-revise off the auto-close path under v3, escalates reject', async () => {
+    // v3 closure-stack knob: `contested_votes_to_accept`. When > 0 and
+    // the proposal has any reject or revise vote, the auto-close-accept
+    // threshold is raised from `votes_to_accept` to
+    // `contested_votes_to_accept`. Same scenario as the v0 baseline
+    // above — sequential accept/revise/accept on every excerpt — but
+    // with `contested_votes_to_accept: 3`. At the third reviewer's
+    // accept vote: `acceptCount=2`, `reviseCount=1`, `hasDissent=true`,
+    // so the auto-close path uses the contested floor of 3;
+    // `acceptCount=2 < 3` so the proposal is held. The population is
+    // out of work (every reviewer has voted on every excerpt; both
+    // excerpt-workers ran in round 1 — the first staged all three
+    // excerpts, the second found no orphan anchors and idled). The
+    // between-rounds curator pass runs over the round-2 no-progress
+    // diff and escalates every stuck excerpt: tally `a=2, r=0, v=1`,
+    // `hasDissent=true`, `a=2 < contested_votes_to_accept=3` so the
+    // escalation-to-accept check fails and the proposal escalates
+    // reject. This is the v3 knob's load-bearing role — closing the
+    // 2-accept-1-revise auto-close-path failure on *both* paths
+    // (auto-close holds it; escalation rejects it). The v1/v2
+    // escalation knobs aren't engaged here (both off): v3 is
+    // self-contained — it does not require them. The cube's
+    // `borderline-contested-v2` cell records a model-backed instance
+    // of the same shape; the harness pair is the load-bearing
+    // regression handle.
+    const { server, cause_id, content } = await seedServer({
+      votes_to_accept: 2,
+      votes_to_reject: 2,
+      contested_votes_to_accept: 3,
+    });
+    const population = await buildPopulation(server, {
+      content,
+      excerptWorkers: 2,
+      reviewers: [acceptAllDecider, reviseAllDecider, acceptAllDecider],
+    });
+
+    const result = await runPopulationRounds<PopContributor>({
+      server,
+      contributors: population,
+      runContributor: runContributorFor(cause_id),
+      max_rounds: 6,
+      concurrency: 'sequential',
+    });
+
+    expect(result.stop_reason).toBe('frontier_drained');
+    expect(result.escalations.length).toBe(SEED_ANCHORS.length);
+    for (const e of result.escalations) {
+      expect(e.decision).toBe('reject');
+      expect(e.accepts).toBe(2);
+      expect(e.rejects).toBe(0);
+      expect(e.revises).toBe(1);
+    }
+    // No excerpt nodes — every escalated proposal was rejected. The
+    // v0 baseline above accepted every one of them under the same
+    // 2-accept-1-revise tally.
+    expect(excerptNodeCount(server)).toBe(0);
+    expect(stagedCount(server)).toBe(0);
+    const rejectedExcerpts = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt' && p.status === 'rejected',
+    );
+    expect(rejectedExcerpts.length).toBe(SEED_ANCHORS.length);
+  });
+
   it('stops with no_progress when a round moves nothing and there is nothing to escalate', async () => {
     // Seeded orphan anchors remain (frontier never structurally empties),
     // but the contributors no-op every round and nothing is staged for

@@ -100,12 +100,15 @@ import { runPopulationRounds } from './population-loop.js';
 // the curator escalation tiebreak; they do not touch the auto-close
 // thresholds. So the strict v1 stack still permits an adversary +
 // a confused honest reviewer to push a borderline overstatement
-// through the auto-close-accept path. PRD §Continuous integration and
-// ROADMAP §Status name the next closure-stack candidate this cell
-// opened: an auto-close-side defense (a tighter
-// `contested_votes_to_accept` floor, or auto-close-aware revise
-// counting, or both) — landed under the same parameter-sweep-cube
-// treatment every governance knob gets.
+// through the auto-close-accept path. The v3 closure-stack knob
+// against this finding — `ReviewConfig.contested_votes_to_accept`,
+// the first closure-stack knob to touch the auto-close-accept path
+// — has landed at the harness level (`population-loop.test.ts` pins
+// the v0/v3 delta byte-for-byte against scripted deciders on the
+// 2-accept-1-revise tally). The model-backed
+// `borderline-contested-v3` cube cell is the natural follow-up under
+// the same cassette discipline as the v1/v2 cells. PRD §Continuous
+// integration and ROADMAP §Status carry the full v3 description.
 //
 // Per cell the test also pins the calibration accounting: every cell
 // except `calibration-off` lands salted draws during the run and passes
@@ -241,9 +244,7 @@ describe('golden cassette: the model-backed deep-loop parameter-sweep cube repla
       // closure-stack pass against this finding.
       expect(contestedFinal?.status).toBe('accepted');
       expect(adversaryVotesOnContested.some((v) => v.decision === 'accept')).toBe(true);
-      const escalated = result.escalations.filter(
-        (e) => e.proposal_id === contestedProposalId,
-      );
+      const escalated = result.escalations.filter((e) => e.proposal_id === contestedProposalId);
       expect(escalated.length).toBe(1);
       expect(escalated[0]?.decision).toBe('accept');
       expect(escalated[0]?.accepts).toBe(1);
@@ -276,9 +277,7 @@ describe('golden cassette: the model-backed deep-loop parameter-sweep cube repla
       expect(contestedFinal?.status).toBe('rejected');
       expect(adversaryVotesOnContested.length).toBeGreaterThan(0);
       expect(adversaryVotesOnContested.some((v) => v.decision === 'accept')).toBe(false);
-      const escalated = result.escalations.filter(
-        (e) => e.proposal_id === contestedProposalId,
-      );
+      const escalated = result.escalations.filter((e) => e.proposal_id === contestedProposalId);
       expect(escalated.length).toBe(1);
       expect(escalated[0]?.decision).toBe('reject');
       expect(escalated[0]?.accepts).toBe(1);
@@ -309,9 +308,7 @@ describe('golden cassette: the model-backed deep-loop parameter-sweep cube repla
       expect(adversaryVotesOnContested.some((v) => v.decision === 'accept')).toBe(true);
       // The auto-close path fired before escalation — the curator pass
       // saw an already-accepted proposal and didn't act on it.
-      const escalated = result.escalations.filter(
-        (e) => e.proposal_id === contestedProposalId,
-      );
+      const escalated = result.escalations.filter((e) => e.proposal_id === contestedProposalId);
       expect(escalated.length).toBe(0);
     } else if (cell.name === 'strategic-adversary') {
       // Brazen contested item: `votes_to_reject=3` keeps the review

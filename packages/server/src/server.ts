@@ -196,6 +196,36 @@ export interface ReviewConfig {
   // so every existing scenario, golden cassette, and scripted-cube cell
   // preserves its v0 outcome.
   escalation_requires_votes_to_accept: boolean;
+  // Auto-close-accept and escalation-to-accept threshold for *contested*
+  // proposals — those whose vote tally has accumulated any `reject` or
+  // `revise` vote. 0 (default) leaves the knob inert and both paths fall
+  // back to `votes_to_accept`. When > 0, the auto-close-accept path
+  // (`resolveByConvergence`) uses this value as the affirmative threshold
+  // whenever the proposal has any reject or revise vote — so a
+  // 2-accept-1-revise tally that would auto-close accept under v0 at
+  // `votes_to_accept=2` does not auto-close at
+  // `contested_votes_to_accept=3` because `acceptCount=2 < 3`; the
+  // proposal is held for the curator escalation pass. The escalation
+  // path (`escalateStuckProposals`) applies the same contested floor as
+  // an additional constraint on escalation-to-accept: with dissent
+  // present, `accepts >= contested_votes_to_accept` is required for
+  // accept; otherwise the proposal escalates reject. Self-contained:
+  // composes with v1 (`escalation_revise_counts_as_reject`) and v2
+  // (`escalation_requires_votes_to_accept`) but does not require them —
+  // v3 alone closes the auto-close-path failure the cube's
+  // `borderline-contested-v2` cell recorded (PRD §Continuous
+  // integration), where a strategic adversary's drift accept + a
+  // confused honest accept + a careful honest revise hit
+  // `votes_to_accept=2` on the standard vote path and auto-closed
+  // accepted before the curator escalation pass could see it. The
+  // v1/v2 escalation knobs only govern the curator tiebreak; v3 is the
+  // first knob to touch the auto-close-accept path. Defaults 0 (inert)
+  // so every existing scenario, golden cassette, and scripted-cube cell
+  // preserves its v0 outcome; the harness pair in
+  // `population-loop.test.ts` pins the load-bearing v0/v3 delta
+  // byte-for-byte against scripted deciders on the
+  // 2-accept-1-revise tally.
+  contested_votes_to_accept: number;
   // Calibration injection cadence. PRD §Calibration batches: reviewer
   // batches mix real proposals with calibration items drawn from
   // validated history; PRD §Why assignment-driven contribution closes several attack surfaces settles that calibration arrives
@@ -568,6 +598,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   contributor_initiated_factor: 0.5,
   escalation_revise_counts_as_reject: false,
   escalation_requires_votes_to_accept: false,
+  contested_votes_to_accept: 0,
   calibration_inject_every_n: 0,
   calibration_pass_gain: 1,
   calibration_fail_loss: 1,
@@ -3083,6 +3114,7 @@ export class Server {
     const weighted = this.review.calibration_aware_convergence;
     let acceptCount = 0;
     let rejectCount = 0;
+    let reviseCount = 0;
     let acceptWeight = 0;
     let rejectWeight = 0;
     const causeId = weighted ? this.reputationCauseFor(proposal) : null;
@@ -3101,6 +3133,8 @@ export class Server {
           weighted && causeId && subTopicId
             ? this.calibrationVoteWeight(v.reviewer_id, causeId, subTopicId)
             : 1;
+      } else if (v.decision === 'revise') {
+        reviseCount += 1;
       }
     }
     // Stratification-degraded tightening (PRD §Reviewer assignment).
@@ -3111,8 +3145,22 @@ export class Server {
     // pool can't drive convergence at the standard threshold because
     // the threshold itself moved.
     const degraded = this.isProposalStratificationDegraded(proposal);
-    const acceptThreshold =
-      this.review.votes_to_accept + (degraded ? this.review.stratification_degraded_extra : 0);
+    // v3 closure-stack knob: when contested_votes_to_accept > 0 and the
+    // proposal has accumulated any reject or revise vote, the auto-close
+    // accept threshold is raised from votes_to_accept to
+    // contested_votes_to_accept. Suppresses the auto-close-accept-path
+    // failure the cube's `borderline-contested-v2` cell recorded — a
+    // 2-accept-1-revise tally hitting votes_to_accept=2 on the normal
+    // vote path before the curator escalation pass could see it.
+    // Default 0 leaves the knob inert and the auto-close uses
+    // votes_to_accept (back-compat preserved across every existing
+    // scenario, golden cassette, and scripted-cube cell). Knob field on
+    // ReviewConfig carries the rationale.
+    const contestedFloor = this.review.contested_votes_to_accept;
+    const hasDissent = rejectCount > 0 || reviseCount > 0;
+    const acceptBase =
+      contestedFloor > 0 && hasDissent ? contestedFloor : this.review.votes_to_accept;
+    const acceptThreshold = acceptBase + (degraded ? this.review.stratification_degraded_extra : 0);
     const rejectThreshold =
       this.review.votes_to_reject + (degraded ? this.review.stratification_degraded_extra : 0);
     if (acceptCount >= acceptThreshold && acceptWeight >= acceptThreshold) {
