@@ -317,31 +317,36 @@ export const CI_DEEP_LOOP_OPTS: DeepLoopScenarioOpts = {
 //     careful honest reviewer splits the rejecting side with revise,
 //     and the v0 curator pass closes the 1-1-1 toward accept (its
 //     accept-on-tie rule). See the cell's own comment below.
-//   - closure-stack version: two cells reruning the borderline
-//     scenario under the v1 closure-stack knobs.
+//   - closure-stack version: three cells rerunning the borderline
+//     scenario under v1, v2, v3 closure stacks.
 //     `borderline-contested-v1` flips `escalation_revise_counts_as_reject`;
-//     `borderline-contested-v2` flips both knobs (also requires
-//     `accepts >= votes_to_accept` at escalation). The cube's recording
-//     of v2 surfaced the cube's *second* closure failure, at a
-//     different path the v1 knobs don't address: with `votes_to_accept`
-//     low enough (2 by default), an adversary + a confused honest
-//     reviewer can hit the auto-close-accept threshold on the normal
-//     vote path before the curator escalation pass even runs. See
-//     `borderline-contested-v2`'s comment below.
+//     `borderline-contested-v2` flips both v1 escalation knobs (also
+//     requires `accepts >= votes_to_accept` at escalation); the
+//     cube's recording of v2 surfaced the cube's *second* closure
+//     failure, at a different path the v1 knobs don't address: with
+//     `votes_to_accept` low enough (2 by default), an adversary + a
+//     confused honest reviewer can hit the auto-close-accept threshold
+//     on the normal vote path before the curator escalation pass even
+//     runs. `borderline-contested-v3` adds `contested_votes_to_accept`
+//     on top of the strict v1 escalation stack — the first closure-
+//     stack knob to touch the auto-close-accept path, raising the
+//     affirmative threshold on both the auto-close and escalation
+//     paths when the tally has any dissent. See each cell's own
+//     comment below.
 // Cross-cell readout (what the cube records, not a hard invariant):
-// the overstated contested claim ends `rejected` in four of six cells
-// — the three v0 cells where the adversary doesn't engage or rejects
-// on the merits, plus `borderline-contested-v1` — and `accepted` in
+// the overstated contested claim ends `rejected` in the cells where
+// the adversary doesn't engage, rejects on the merits, or the
+// closure stack contains the drift, and `accepted` in
 // `borderline-contested` (the v0 escalation-path failure) and
-// `borderline-contested-v2` (the auto-close-path failure the v1 stack
-// doesn't reach). The original "rejected in every cell" hypothesis is
-// falsified at both; both are findings, not bugs. The v3 closure-stack
-// knob against the v2 cell's finding —
-// `ReviewConfig.contested_votes_to_accept`, the first knob to touch
-// the auto-close-accept path — has landed at the harness level
-// (`population-loop.test.ts`); a `borderline-contested-v3` cube cell
-// recording the same scenario under the v3 stack is the natural
-// follow-up under the same cassette discipline as the v1/v2 cells.
+// `borderline-contested-v2` (the auto-close-path failure the v1
+// stack doesn't reach). Both `accepted` outcomes are findings, not
+// bugs. The `borderline-contested-v3` cell is the v3 closure
+// stack's real-model regression baseline; what it records is
+// whatever the rollout draws (the per-cell assertion in
+// `golden-deep-loop-cube.test.ts` pins the recorded outcome). The
+// load-bearing v0/v3 delta on the 2-accept-1-revise tally is
+// pinned byte-for-byte in `population-loop.test.ts`, where it is
+// reproducible.
 export interface DeepLoopCubeCell {
   // Stable cell id — also the CLI selector (`ANCHORAGE_CUBE_CELL=<name>`
   // narrows a run to one cell).
@@ -493,14 +498,12 @@ export const DEEP_LOOP_CUBE_CELLS: readonly DeepLoopCubeCell[] = [
     // unfortified. The v3 closure-stack knob against this finding —
     // `ReviewConfig.contested_votes_to_accept` (default `0`, inert),
     // raising the affirmative threshold on both the auto-close and
-    // escalation paths when dissent is present — has landed at the
-    // harness level: the load-bearing v0/v3 delta on the
-    // 2-accept-1-revise tally is pinned byte-for-byte in
-    // `population-loop.test.ts` by a scripted-decider pair. The
-    // model-backed `borderline-contested-v3` cube cell against this
-    // finding is the natural follow-up under the same cassette
-    // discipline as the v1/v2 cells. See PRD §Continuous integration
-    // and ROADMAP §Status.
+    // escalation paths when dissent is present — is wired below as
+    // the `borderline-contested-v3` cell. The load-bearing v0/v3
+    // delta on the 2-accept-1-revise tally is pinned byte-for-byte
+    // in `population-loop.test.ts` by a scripted-decider pair; the
+    // v3 cell here is the v3 closure stack's real-model regression
+    // baseline. See PRD §Continuous integration and ROADMAP §Status.
     opts: {
       ...CI_DEEP_LOOP_OPTS,
       adversary_role: 'strategic-adversary',
@@ -509,6 +512,49 @@ export const DEEP_LOOP_CUBE_CELLS: readonly DeepLoopCubeCell[] = [
         votes_to_reject: 3,
         escalation_revise_counts_as_reject: true,
         escalation_requires_votes_to_accept: true,
+      },
+    },
+  },
+  {
+    name: 'borderline-contested-v3',
+    label:
+      "v3 closure stack on the same borderline item: strict v1 escalation stack + contested_votes_to_accept=3 (the first knob to touch the auto-close-accept path). The harness pair in population-loop.test.ts pins the load-bearing v0/v3 delta on the 2-accept-1-revise tally. The cube cell is the v3 stack's real-model regression baseline — closing the auto-close-path failure the v2 cell recorded.",
+    cassette_basename: 'golden-deep-loop-cube-borderline-contested-v3',
+    // Same scenario as `borderline-contested`, `borderline-contested-v1`,
+    // and `borderline-contested-v2` — strategic adversary on the
+    // borderline ctDNA-MRD overstatement, `votes_to_reject: 3`, both v1
+    // escalation knobs on — and adding `contested_votes_to_accept: 3`,
+    // the v3 closure-stack knob that raises the affirmative threshold
+    // to 3 on both the auto-close and escalation paths whenever the
+    // proposal has any reject or revise vote in its tally. v3 is the
+    // first closure-stack knob to touch the auto-close-accept path
+    // (v1/v2 only govern the curator tiebreak), closing the path the
+    // cube's `borderline-contested-v2` cell recorded: a 2-accept-
+    // 1-revise tally that auto-closed accept on the normal vote path
+    // before escalation could see it. Under v3 that same tally is held
+    // off the auto-close threshold (acceptCount=2 < contested floor=3
+    // with dissent) and rejected at escalation (a=2 < contested floor
+    // when dissent is present). The load-bearing v0/v3 delta is pinned
+    // byte-for-byte at the harness level by a scripted-decider pair in
+    // `population-loop.test.ts`; this cube cell is the v3 stack's
+    // *real-model regression baseline* — sampling is non-deterministic,
+    // so what it actually records is whatever vote pattern this
+    // rollout draws. The robust property the cell asserts is the same
+    // shape as the v1 cell's: the v3 stack doesn't break the realistic
+    // borderline run (the contested overstated claim ends `rejected`)
+    // and, depending on the rollout, may or may not be exercising the
+    // v3 knob's actual contribution (a 2-accept-1-revise tally where
+    // v3 holds and escalates, versus a stronger reject tally where the
+    // existing rules already closed it).
+    opts: {
+      ...CI_DEEP_LOOP_OPTS,
+      adversary_role: 'strategic-adversary',
+      contested: DEEP_BORDERLINE_CONTESTED,
+      review: {
+        votes_to_reject: 3,
+        escalation_revise_counts_as_reject: true,
+        escalation_requires_votes_to_accept: true,
+        contested_votes_to_accept: 3,
       },
     },
   },
