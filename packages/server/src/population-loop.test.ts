@@ -290,6 +290,48 @@ describe('population-loop honest baseline', () => {
     expect(stagedCount(server)).toBe(0);
   });
 
+  it('curator escalation on a plain 1-1 tie resolves reject under v2 (escalation_requires_votes_to_accept on)', async () => {
+    // The second v1 closure-stack knob,
+    // `escalation_requires_votes_to_accept`, addresses the case where a
+    // plain 1-1 tie (no revise vote in the mix) slips through the
+    // accept-on-tie default. With this knob on the curator escalation
+    // additionally requires `accepts >= votes_to_accept` (here 2) to
+    // close accept — a 1-1 escalation has 1 accept < 2, so escalates
+    // reject. The first knob (`escalation_revise_counts_as_reject`) is
+    // off in this case, so revise-aware aggregation isn't what's
+    // doing the work; the affirmative-threshold rule alone catches
+    // the tie that the v1 revise-counting rule can't.
+    const { server, cause_id, content } = await seedServer({
+      votes_to_accept: 2,
+      votes_to_reject: 2,
+      escalation_requires_votes_to_accept: true,
+    });
+    const population = await buildPopulation(server, {
+      content,
+      excerptWorkers: 2,
+      reviewers: [acceptAllDecider, rejectAllDecider],
+    });
+
+    const result = await runPopulationRounds<PopContributor>({
+      server,
+      contributors: population,
+      runContributor: runContributorFor(cause_id),
+      max_rounds: 6,
+    });
+
+    expect(result.stop_reason).toBe('frontier_drained');
+    expect(result.escalations.length).toBe(SEED_ANCHORS.length);
+    for (const e of result.escalations) {
+      expect(e.decision).toBe('reject');
+      expect(e.accepts).toBe(1);
+      expect(e.rejects).toBe(1);
+      expect(e.revises).toBe(0);
+    }
+    // No excerpt nodes — every escalated proposal was rejected.
+    expect(excerptNodeCount(server)).toBe(0);
+    expect(stagedCount(server)).toBe(0);
+  });
+
   it('curator escalation on 1-accept-1-reject-1-revise resolves reject under v1 (knob on)', async () => {
     // v1: `escalation_revise_counts_as_reject` on. Same 1+1+1 tally as
     // the v0 case above; the decision rule is now

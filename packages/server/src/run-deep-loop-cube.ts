@@ -38,27 +38,36 @@
 //     splits the rejecting side with a careful *revise*, and the v0
 //     curator escalation pass closes the resulting 1-1-1 *toward
 //     accept*.
-//   - closure-stack version — a `borderline-contested-v1` cell that
-//     reruns the borderline scenario with the v1 knob
-//     `escalation_revise_counts_as_reject` on, so the curator escalation
-//     tally treats revise as a soft-reject. The load-bearing v0/v1
-//     delta is on the 1-accept-1-reject-1-revise tally specifically
-//     and is pinned byte-for-byte by the harness pair in
-//     `population-loop.test.ts`. The cube cell is the real-model
-//     regression baseline under v1: every re-record is a fresh draw
-//     from the model's distribution (sampling noise), so the recorded
-//     v1 run is a different rollout from the v0 cell's — in this one
-//     the strategic adversary opted for strategic discipline rather
-//     than drift, the tally landed 1 accept + 2 reject + 0 revise,
-//     and the curator escalation closed it toward reject under both
-//     v0 and v1 rules. The cell confirms the v1 stack doesn't break
-//     the realistic borderline run; it isn't a head-to-head reproduction
-//     of the v0 cassette's exact tally.
+//   - closure-stack version — `borderline-contested-v1` and
+//     `borderline-contested-v2` cells that rerun the borderline
+//     scenario under the v1 closure-stack knobs. The v1 cell flips
+//     `escalation_revise_counts_as_reject`; the v2 cell flips both
+//     knobs (the strict escalation stack — also requires `accepts >=
+//     votes_to_accept` for escalation-to-accept). The load-bearing
+//     v0/v1 and v0/v2 deltas on the escalation tiebreak are pinned
+//     byte-for-byte by the harness pair in `population-loop.test.ts`.
+//     The cube cells are real-model regression baselines: each
+//     recording is a fresh draw from the model's distribution
+//     (sampling noise), so what gets recorded depends on the rollout.
+//     The v1 cell happened to land 1 accept + 2 reject + 0 revise,
+//     curator-escalated reject under both rules. The v2 cell surfaced
+//     the cube's **second** closure failure — at a *different* path
+//     than the v1 knobs address: the strategic adversary + at least
+//     one confused honest reviewer both voted accept, hitting
+//     `votes_to_accept=2` on the *normal vote path* and auto-closing
+//     the contested proposal accepted before the curator escalation
+//     pass could even see it. The v1 knobs govern only the curator
+//     escalation tiebreak; the auto-close-accept path is unfortified.
+//     The next closure-stack candidate this cell opened is at the
+//     auto-close-side: a tighter `contested_votes_to_accept` floor,
+//     auto-close-aware revise counting, or both.
 // The cube's recorded outcome: the overstated contested claim ends
-// `rejected` in four of five cells — the three v0 cells where the
+// `rejected` in four of six cells — the three v0 cells where the
 // adversary doesn't engage or rejects on the merits, plus the
-// `borderline-contested-v1` cell — and `accepted` in the lone
-// `borderline-contested` cell recording the v0 failure mode.
+// `borderline-contested-v1` cell — and `accepted` in *two*:
+// `borderline-contested` (the v0 escalation-path failure), and
+// `borderline-contested-v2` (the auto-close-path failure that the v1
+// closure-stack knobs don't reach). Two findings, both pinned.
 //
 // Cassettes: multi-cassette, one file per cell, at
 // `test/fixtures/<cell.cassette_basename>.json` — each cell its own
@@ -236,9 +245,11 @@ async function main(): Promise<void> {
         '',
         'This script runs the model-backed deep loop once per cell of the parameter-sweep cube',
         '(calibration defense on / off, a strategic-adversary cell, a borderline-contested cell',
-        'recording the v0 closure-failure mode, and a borderline-contested-v1 cell where the v1',
-        'closure stack contains it) and reports the per-cell and cross-cell outcomes. Set a key',
-        'and re-run:',
+        'recording the v0 closure-failure mode on the escalation path, a borderline-contested-v1',
+        'cell where the v1 closure-stack knob contains the escalation failure, and a',
+        'borderline-contested-v2 cell that records a second closure failure at the auto-close',
+        'path the v1 knobs don\'t reach) and reports the per-cell and cross-cell outcomes. Set a',
+        'key and re-run:',
         '',
         '  ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop-cube',
         '',
@@ -319,23 +330,22 @@ async function main(): Promise<void> {
         : `# the contested overstated claim ended rejected in every cell, including the ${driftedCells.length} where the adversary drifted on it — redundant honest review carries the closure; the calibration defense is the backstop (per-cell cal fails above)`,
     );
   } else {
-    // Some cell(s) closed `accepted`. The expected baseline is the
-    // `borderline-contested` cell alone — it is the cube's recorded
-    // closure failure (PRD §Continuous integration / ROADMAP §Status).
-    // Anything beyond that is a regression worth a closer look.
-    const expectedAccepted = acceptedCells
-      .map((o) => o.name)
-      .filter((n) => n === 'borderline-contested');
-    const unexpectedAccepted = acceptedCells
-      .map((o) => o.name)
-      .filter((n) => n !== 'borderline-contested');
+    // Some cell(s) closed `accepted`. The expected baseline is two
+    // cells: `borderline-contested` (the v0 escalation-path failure)
+    // and `borderline-contested-v2` (the auto-close-path failure the
+    // v1 knobs don't reach). PRD §Continuous integration / ROADMAP
+    // §Status walk through both. Anything beyond that pair is a
+    // regression worth a closer look.
+    const KNOWN_FAILURE_CELLS = new Set(['borderline-contested', 'borderline-contested-v2']);
+    const expectedAccepted = acceptedCells.map((o) => o.name).filter((n) => KNOWN_FAILURE_CELLS.has(n));
+    const unexpectedAccepted = acceptedCells.map((o) => o.name).filter((n) => !KNOWN_FAILURE_CELLS.has(n));
     if (unexpectedAccepted.length === 0) {
       console.log(
-        `# the contested claim ended accepted in the expected borderline cell only (${expectedAccepted.join(', ')}) — the v0 closure stack does not contain strategic-adversary drift on a borderline item when a careful "revise" splits the rejecting vote; PRD §Continuous integration / ROADMAP §Status flag this as the open governance question`,
+        `# the contested claim ended accepted in the expected cells only (${expectedAccepted.join(', ')}) — the v0 closure stack and the v1 strict escalation stack both leave a path the borderline overstatement closes through; PRD §Continuous integration / ROADMAP §Status flag both as open governance questions`,
       );
     } else {
       console.log(
-        `# WARNING: the contested overstated claim was accepted in ${unexpectedAccepted.length} cell(s) beyond the known borderline closure failure: ${unexpectedAccepted.join(', ')} — inspect the per-cell logs above`,
+        `# WARNING: the contested overstated claim was accepted in ${unexpectedAccepted.length} cell(s) beyond the known closure failures: ${unexpectedAccepted.join(', ')} — inspect the per-cell logs above`,
       );
     }
   }

@@ -172,6 +172,30 @@ export interface ReviewConfig {
   // sweeps v0 vs v1 on the borderline-contested item to read the
   // closure delta.
   escalation_revise_counts_as_reject: boolean;
+  // Curator escalation affirmative-threshold rule. v0 default (false):
+  // the curator escalation closes a stuck proposal accept whenever the
+  // accept side wins (or ties, with `escalation_revise_counts_as_reject`
+  // governing how revise factors in) — so a single accept vote, or a
+  // 1-1 tie with no revise vote, escalates to accept. v1 (true):
+  // escalation-to-accept additionally requires `accepts >= votes_to_accept`
+  // — the same affirmative-supermajority threshold the auto-closure path
+  // already enforces during normal voting (PRD §The contribution flow,
+  // Resolve step). Composes orthogonally with
+  // `escalation_revise_counts_as_reject`: that knob handles the
+  // revise-in-the-tally case; this one handles the case where the
+  // accept side is thin regardless of revise — a single accept or a
+  // plain 1-1 tie on a contested item should not slip through the
+  // escalation pass on the accept-by-default rule. Together they
+  // tighten the escalation rule into "accepts beat all non-accept
+  // votes AND accepts meet the same affirmative-supermajority floor
+  // the auto-closure path uses". The cube's `borderline-contested-v2`
+  // cell records the real-model run under both knobs on (the strict
+  // stack); the harness pair in `population-loop.test.ts` pins the
+  // load-bearing 1-1-0 delta this knob alone catches that
+  // `escalation_revise_counts_as_reject` alone doesn't. Defaults false
+  // so every existing scenario, golden cassette, and scripted-cube cell
+  // preserves its v0 outcome.
+  escalation_requires_votes_to_accept: boolean;
   // Calibration injection cadence. PRD §Calibration batches: reviewer
   // batches mix real proposals with calibration items drawn from
   // validated history; PRD §Why assignment-driven contribution closes several attack surfaces settles that calibration arrives
@@ -543,6 +567,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   reviewer_inaccurate_loss: 1,
   contributor_initiated_factor: 0.5,
   escalation_revise_counts_as_reject: false,
+  escalation_requires_votes_to_accept: false,
   calibration_inject_every_n: 0,
   calibration_pass_gain: 1,
   calibration_fail_loss: 1,

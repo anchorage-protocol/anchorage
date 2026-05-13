@@ -281,7 +281,7 @@ export const CI_DEEP_LOOP_OPTS: DeepLoopScenarioOpts = {
 // stands up, on the small `ci` fixture so each cell's cassette is
 // checkin-sized. The cell list is the extension point — add cells (more
 // values, more axes) and the runner and the golden-cube replay test
-// pick them up. Three axes are wired today:
+// pick them up. Four axes are wired today:
 //   - calibration defense on / off, against the patient adversary: the
 //     scripted calibration-aware cube (#10) shows the defense is load-
 //     bearing *when an adversary actually drifts*; this pair checks the
@@ -317,13 +317,25 @@ export const CI_DEEP_LOOP_OPTS: DeepLoopScenarioOpts = {
 //     careful honest reviewer splits the rejecting side with revise,
 //     and the v0 curator pass closes the 1-1-1 toward accept (its
 //     accept-on-tie rule). See the cell's own comment below.
+//   - closure-stack version: two cells reruning the borderline
+//     scenario under the v1 closure-stack knobs.
+//     `borderline-contested-v1` flips `escalation_revise_counts_as_reject`;
+//     `borderline-contested-v2` flips both knobs (also requires
+//     `accepts >= votes_to_accept` at escalation). The cube's recording
+//     of v2 surfaced the cube's *second* closure failure, at a
+//     different path the v1 knobs don't address: with `votes_to_accept`
+//     low enough (2 by default), an adversary + a confused honest
+//     reviewer can hit the auto-close-accept threshold on the normal
+//     vote path before the curator escalation pass even runs. See
+//     `borderline-contested-v2`'s comment below.
 // Cross-cell readout (what the cube records, not a hard invariant):
-// the overstated contested claim ends `rejected` in the three cells
-// where the adversary either doesn't engage the item (patient cells)
-// or rejects on the merits (strategic-on-brazen), and `accepted` in
-// the borderline cell. The original "rejected in every cell"
-// hypothesis is now falsified at the borderline cell — that is the
-// finding, not a bug.
+// the overstated contested claim ends `rejected` in four of six cells
+// — the three v0 cells where the adversary doesn't engage or rejects
+// on the merits, plus `borderline-contested-v1` — and `accepted` in
+// `borderline-contested` (the v0 escalation-path failure) and
+// `borderline-contested-v2` (the auto-close-path failure the v1 stack
+// doesn't reach). The original "rejected in every cell" hypothesis is
+// falsified at both; both are findings, not bugs.
 export interface DeepLoopCubeCell {
   // Stable cell id — also the CLI selector (`ANCHORAGE_CUBE_CELL=<name>`
   // narrows a run to one cell).
@@ -446,6 +458,45 @@ export const DEEP_LOOP_CUBE_CELLS: readonly DeepLoopCubeCell[] = [
       adversary_role: 'strategic-adversary',
       contested: DEEP_BORDERLINE_CONTESTED,
       review: { votes_to_reject: 3, escalation_revise_counts_as_reject: true },
+    },
+  },
+  {
+    name: 'borderline-contested-v2',
+    label:
+      'strict v1 closure stack on the same borderline item: both knobs on (escalation_revise_counts_as_reject + escalation_requires_votes_to_accept). The harness pair in population-loop.test.ts pins the load-bearing 1-1-0 v0/v2 delta on the *escalation* path. The cube cell records the cube\'s second closure failure: the auto-close-accept path (votes_to_accept=2 hit by adversary + a confused honest reviewer) bypasses the strict escalation stack entirely.',
+    cassette_basename: 'golden-deep-loop-cube-borderline-contested-v2',
+    // Same scenario as `borderline-contested` and
+    // `borderline-contested-v1` — strategic adversary on the
+    // borderline ctDNA-MRD overstatement, `votes_to_reject: 3` — but
+    // with *both* v1 closure-stack knobs on. The strict escalation
+    // stack: escalation rejects if (a) the reject side strictly wins
+    // (revise counted as soft-reject) OR (b) accepts < votes_to_accept
+    // floor. The first rule alone (v1) catches the 1-accept-1-reject-
+    // 1-revise case the cube's `borderline-contested` cell recorded;
+    // the second alone catches the plain 1-accept-1-reject-0-revise
+    // tie case the first rule misses. The harness pair in
+    // `population-loop.test.ts` pins both deltas byte-for-byte against
+    // scripted deciders. The cube cell's recording, however, surfaced
+    // the cube's *second* closure failure — at a *different path* than
+    // the v1 knobs address: in this rollout the strategic adversary
+    // voted accept on the contested item AND at least one honest
+    // reviewer also voted accept, hitting `votes_to_accept=2` and
+    // auto-closing the proposal accepted via the *normal vote path*
+    // — before the curator escalation pass even saw it. The v1 knobs
+    // govern only the escalation tiebreak; the auto-close path is
+    // unfortified. The next closure-stack candidate this cell opened:
+    // an auto-close-side defense (a tighter `contested_votes_to_accept`
+    // floor, auto-close-aware revise counting, or both). See PRD
+    // §Continuous integration and ROADMAP §Status.
+    opts: {
+      ...CI_DEEP_LOOP_OPTS,
+      adversary_role: 'strategic-adversary',
+      contested: DEEP_BORDERLINE_CONTESTED,
+      review: {
+        votes_to_reject: 3,
+        escalation_revise_counts_as_reject: true,
+        escalation_requires_votes_to_accept: true,
+      },
     },
   },
 ] as const;

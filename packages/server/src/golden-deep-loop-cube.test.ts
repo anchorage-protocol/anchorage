@@ -31,7 +31,7 @@ import { runPopulationRounds } from './population-loop.js';
 // of the swept defense parameter once; this pins what it did under each.
 //
 // The cube records what the model adversary does under each cell's
-// setting and what the closure stack does with it. Four of the five
+// setting and what the closure stack does with it. Four of the six
 // cells — `calibration-on`, `calibration-off`, `strategic-adversary`,
 // `borderline-contested-v1` — end with the deliberately overstated
 // contested claim *rejected*:
@@ -87,6 +87,25 @@ import { runPopulationRounds } from './population-loop.js';
 // regression baseline* — it confirms the v1 closure stack doesn't
 // break the realistic borderline run — rather than a head-to-head
 // reproduction of the v0 cassette's exact tally.
+//
+// The `borderline-contested-v2` cell is the strict v1 stack (both
+// knobs on; `escalation_requires_votes_to_accept` additionally requires
+// `accepts >= votes_to_accept` for escalation-to-accept). It records
+// the cube's **second** closure failure, at a *different* path than
+// the v1 knobs address: in this rollout the strategic adversary voted
+// accept on the contested item AND at least one honest reviewer also
+// voted accept, and with `votes_to_accept=2` the proposal auto-closed
+// accepted via the normal vote path — *before* the between-rounds
+// curator escalation pass even ran on it. The v1 knobs govern only
+// the curator escalation tiebreak; they do not touch the auto-close
+// thresholds. So the strict v1 stack still permits an adversary +
+// a confused honest reviewer to push a borderline overstatement
+// through the auto-close-accept path. PRD §Continuous integration and
+// ROADMAP §Status name the next closure-stack candidate this cell
+// opened: an auto-close-side defense (a tighter
+// `contested_votes_to_accept` floor, or auto-close-aware revise
+// counting, or both) — landed under the same parameter-sweep-cube
+// treatment every governance knob gets.
 //
 // Per cell the test also pins the calibration accounting: every cell
 // except `calibration-off` lands salted draws during the run and passes
@@ -165,7 +184,8 @@ describe('golden cassette: the model-backed deep-loop parameter-sweep cube repla
     expect(transportCalled).toBe(false);
     if (
       cell.name === 'strategic-adversary' ||
-      cell.name === 'borderline-contested-v1'
+      cell.name === 'borderline-contested-v1' ||
+      cell.name === 'borderline-contested-v2'
     ) {
       // `votes_to_reject=3` keeps the brazen contested item staged for
       // an extra round or two (so the lone adversary, which runs after
@@ -264,6 +284,35 @@ describe('golden cassette: the model-backed deep-loop parameter-sweep cube repla
       expect(escalated[0]?.accepts).toBe(1);
       expect(escalated[0]?.rejects).toBe(2);
       expect(escalated[0]?.revises).toBe(0);
+    } else if (cell.name === 'borderline-contested-v2') {
+      // The strict v1 closure stack (both knobs on) on the borderline
+      // scenario. The recording surfaced the cube's **second** closure
+      // failure — at a *different* path than the v1 fix addresses. The
+      // strategic adversary voted accept on the contested item (drift)
+      // and at least one honest reviewer also voted accept; with the
+      // default `votes_to_accept=2`, that hit the auto-close-accept
+      // threshold and the contested proposal closed accepted via the
+      // *normal vote path* — before the between-rounds curator
+      // escalation pass could even see it. The v1 closure-stack knobs
+      // (`escalation_revise_counts_as_reject` and
+      // `escalation_requires_votes_to_accept`) only govern the curator
+      // escalation tiebreak; they don't touch the auto-close
+      // thresholds. So the v2 cell records a real finding: even the
+      // strict v1 escalation rule can be bypassed by an adversary +
+      // a confused honest reviewer hitting `votes_to_accept` on the
+      // standard path. The next closure-stack design pass is at the
+      // auto-close-accept path — a tighter `contested_votes_to_accept`
+      // floor, an auto-close rule that also weights revise toward
+      // non-endorsement, or both. PRD §Continuous integration and
+      // ROADMAP §Status name the open question.
+      expect(contestedFinal?.status).toBe('accepted');
+      expect(adversaryVotesOnContested.some((v) => v.decision === 'accept')).toBe(true);
+      // The auto-close path fired before escalation — the curator pass
+      // saw an already-accepted proposal and didn't act on it.
+      const escalated = result.escalations.filter(
+        (e) => e.proposal_id === contestedProposalId,
+      );
+      expect(escalated.length).toBe(0);
     } else if (cell.name === 'strategic-adversary') {
       // Brazen contested item: `votes_to_reject=3` keeps the review
       // assignable long enough that the strategic adversary is offered
