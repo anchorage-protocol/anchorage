@@ -2078,6 +2078,167 @@ describe('tools.castReviewVote', () => {
       }),
     ).rejects.toMatchObject({ code: 'not_found' });
   });
+
+  // v3 closure-stack knob `contested_votes_to_accept` — auto-close-side
+  // semantics pinned at the lowest level (`resolveByConvergence` in
+  // server.ts). The integration-level v0/v3 delta is pinned by a
+  // scripted-decider pair in `population-loop.test.ts` and the model-
+  // backed regression baseline rides in the
+  // `borderline-contested-v3` cube cell; these tests pin the four
+  // canonical cases of the auto-close threshold rule so a regression
+  // in the auto-close branch surfaces here before it can mask itself
+  // in the higher-level harness.
+  describe('contested_votes_to_accept auto-close semantics', () => {
+    // Three reviewer identities — enough to drive a 2-accept-1-X
+    // tally; the proposer (alice) is the base fixture's caller. The
+    // function returns a staged anchor proposal ready for review.
+    async function withThreeReviewers(reviewOverrides: Partial<ReviewConfig>) {
+      const f = fixture({ review: reviewOverrides });
+      const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+      const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+      const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
+      const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: 'x',
+        external_ref: { kind: 'pmid', value: '1' },
+      });
+      return {
+        f,
+        proposal_id,
+        bob: { identity_id: bob.id } as Caller,
+        carol: { identity_id: carol.id } as Caller,
+        dave: { identity_id: dave.id } as Caller,
+      };
+    }
+
+    it('v0 (knob inert, default 0): 2-accept-1-revise hits votes_to_accept and auto-closes accept', async () => {
+      // Back-compat: with the v3 knob at its default 0, the auto-close
+      // accept threshold is `votes_to_accept` regardless of any revise
+      // votes — the v0 behavior every existing scenario relies on.
+      const { f, proposal_id, bob, carol, dave } = await withThreeReviewers({
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+      });
+      await f.server.tools.castReviewVote(bob, { proposal_id, decision: 'accept', rationale: 'a' });
+      await f.server.tools.castReviewVote(carol, {
+        proposal_id,
+        decision: 'revise',
+        rationale: 'a',
+      });
+      // Still staged after 1 accept + 1 revise.
+      expect(f.server.store.proposals.get(proposal_id)?.status).toBe('staged');
+      await f.server.tools.castReviewVote(dave, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'a',
+      });
+      // 2nd accept hits votes_to_accept=2 → auto-closes accept.
+      expect(f.server.store.proposals.get(proposal_id)?.status).toBe('accepted');
+    });
+
+    it('v3 on, dissent present: 2-accept-1-revise stays staged (contested floor blocks auto-close)', async () => {
+      // With `contested_votes_to_accept=3` and any reject or revise
+      // vote in the tally, the auto-close-accept threshold is raised
+      // to 3. 2 accepts < 3 → the proposal is held for the curator
+      // escalation pass rather than auto-closing accept.
+      const { f, proposal_id, bob, carol, dave } = await withThreeReviewers({
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        contested_votes_to_accept: 3,
+      });
+      await f.server.tools.castReviewVote(bob, { proposal_id, decision: 'accept', rationale: 'a' });
+      await f.server.tools.castReviewVote(carol, {
+        proposal_id,
+        decision: 'revise',
+        rationale: 'a',
+      });
+      await f.server.tools.castReviewVote(dave, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'a',
+      });
+      expect(f.server.store.proposals.get(proposal_id)?.status).toBe('staged');
+    });
+
+    it('v3 on, dissent present (reject): 2-accept-1-reject stays staged (contested floor blocks auto-close)', async () => {
+      // Sibling shape: any *reject* vote is dissent too, raising the
+      // accept threshold to the contested floor. This is the exact
+      // tally the borderline-contested-v3 cube cell recorded.
+      const { f, proposal_id, bob, carol, dave } = await withThreeReviewers({
+        votes_to_accept: 2,
+        votes_to_reject: 3,
+        contested_votes_to_accept: 3,
+      });
+      await f.server.tools.castReviewVote(bob, { proposal_id, decision: 'accept', rationale: 'a' });
+      await f.server.tools.castReviewVote(carol, {
+        proposal_id,
+        decision: 'reject',
+        rationale: 'a',
+      });
+      await f.server.tools.castReviewVote(dave, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'a',
+      });
+      expect(f.server.store.proposals.get(proposal_id)?.status).toBe('staged');
+    });
+
+    it('v3 on, no dissent: 2 accepts auto-close at votes_to_accept (contested floor not applied)', async () => {
+      // The contested floor only fires when the tally has a reject
+      // or revise vote. A clean 2-accept tally still uses
+      // `votes_to_accept` — the knob is not a global tightening, it
+      // is a *contested-only* tightening. Auto-close fires at 2
+      // accepts as it would under v0.
+      const { f, proposal_id, bob, dave } = await withThreeReviewers({
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        contested_votes_to_accept: 3,
+      });
+      await f.server.tools.castReviewVote(bob, { proposal_id, decision: 'accept', rationale: 'a' });
+      await f.server.tools.castReviewVote(dave, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'a',
+      });
+      expect(f.server.store.proposals.get(proposal_id)?.status).toBe('accepted');
+    });
+
+    it('v3 on, dissent + contested floor met: 3 accepts + 1 revise auto-closes accept', async () => {
+      // The contested floor is met — the proposal has enough
+      // affirmative weight to override the dissenting revise vote.
+      // Validates that the knob is not a unanimity rule: a single
+      // revise does not block a strong consensus.
+      const { f, proposal_id, bob, carol, dave } = await withThreeReviewers({
+        votes_to_accept: 2,
+        votes_to_reject: 2,
+        contested_votes_to_accept: 3,
+      });
+      const erin = f.server.bootstrap.mintIdentity({ display_name: 'erin' });
+      const erinCaller: Caller = { identity_id: erin.id };
+      await f.server.tools.castReviewVote(bob, { proposal_id, decision: 'accept', rationale: 'a' });
+      await f.server.tools.castReviewVote(carol, {
+        proposal_id,
+        decision: 'revise',
+        rationale: 'a',
+      });
+      await f.server.tools.castReviewVote(dave, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'a',
+      });
+      // Still staged at 2-revise=1 < contested floor 3.
+      expect(f.server.store.proposals.get(proposal_id)?.status).toBe('staged');
+      await f.server.tools.castReviewVote(erinCaller, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'a',
+      });
+      // 3 accepts ≥ contested floor 3 → auto-closes accept even with
+      // the revise in the tally.
+      expect(f.server.store.proposals.get(proposal_id)?.status).toBe('accepted');
+    });
+  });
 });
 
 describe('calibration loop', () => {
