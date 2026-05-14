@@ -90,6 +90,19 @@ const MintIdentityInput = z
     // input — testbed scenarios that don't exercise the gate mint at
     // 0 by default and inherit the inert-gate behavior.
     attestation_level: z.number().nonnegative().optional(),
+    // Slice 3c: the IdP that issued this identity. Defaults to
+    // `'harness'` for admin/testbed mints (the previous behavior).
+    // The `GithubOAuthAuthenticator` mints via this same admin
+    // surface with `identity_provider: 'github'` + a subject; the
+    // entry point is unified by construction so sim and prod produce
+    // structurally identical records.
+    identity_provider: z.enum(['harness', 'github']).optional(),
+    // Required when `identity_provider` is an IdP-driven provider
+    // (anything other than `'harness'`); refused otherwise. Server
+    // validates this conditionally at mint time — the strict schema
+    // can't express the dependency, so the check lives in the
+    // bootstrap method.
+    identity_provider_subject: z.string().min(1).max(200).optional(),
   })
   .strict();
 type MintIdentityInput = z.infer<typeof MintIdentityInput>;
@@ -739,7 +752,18 @@ export class Server {
   readonly store: Store;
   readonly verifier: Verifier;
   readonly review: ReviewConfig;
-  readonly authenticator: Authenticator;
+  // Authenticator is settable post-construction so authenticators
+  // that depend on the Server itself (e.g. `GithubOAuthAuthenticator`,
+  // which needs `server.bootstrap.mintIdentity` and
+  // `bindAgentCredential` to mint on first signin) can be wired in
+  // two steps: construct the Server with the default
+  // `HarnessAuthenticator`, then `setAuthenticator(new
+  // GithubOAuthAuthenticator({ server, ... }))`. The field is
+  // otherwise stable — `buildMcpServer` reads it once at connection
+  // time. PRD §Identity (Authenticator seam): downstream gates see
+  // only the resolved Caller regardless of which authenticator
+  // produced it.
+  authenticator: Authenticator;
 
   constructor(deps: ServerDeps = {}) {
     this.clock = deps.clock ?? new SystemClock();
@@ -748,6 +772,10 @@ export class Server {
     this.verifier = deps.verifier ?? new StructuralVerifier();
     this.review = { ...DEFAULT_REVIEW_CONFIG, ...(deps.review ?? {}) };
     this.authenticator = deps.authenticator ?? new HarnessAuthenticator(this.store);
+  }
+
+  setAuthenticator(authenticator: Authenticator): void {
+    this.authenticator = authenticator;
   }
 
   // Resolve a sub-topic that must exist, be active, and live under the
@@ -1396,14 +1424,58 @@ export class Server {
   readonly bootstrap = {
     mintIdentity: (input: MintIdentityInput): Identity => {
       const parsed = MintIdentityInput.parse(input);
+      const provider = parsed.identity_provider ?? 'harness';
+      // Conditional invariant the strict schema can't express:
+      // IdP-driven providers carry a subject (identity-on-first-
+      // signin pivots on it); `'harness'` mints do not (no external
+      // subject to bind against — admin and testbed identities are
+      // server-internal).
+      if (provider === 'harness' && parsed.identity_provider_subject !== undefined) {
+        throw new ServerError(
+          'invalid_input',
+          'identity_provider_subject is only valid with an IdP-driven identity_provider',
+        );
+      }
+      if (provider !== 'harness' && parsed.identity_provider_subject === undefined) {
+        throw new ServerError(
+          'invalid_input',
+          `identity_provider '${provider}' requires identity_provider_subject`,
+        );
+      }
+      // Identity-on-first-signin: if the (provider, subject) pair
+      // already names an existing identity, the IdP-mint path is a
+      // bug — `GithubOAuthAuthenticator` resolves through
+      // `identityProviderSubjects` *before* reaching here. The
+      // server-side check is the second line of defense; minting
+      // would otherwise silently fork the identity and break the
+      // "one human, one identity" invariant the bounded-identities-
+      // per-real-person commitment depends on (PRD §Identity).
+      if (parsed.identity_provider_subject !== undefined) {
+        const key = `${provider}|${parsed.identity_provider_subject}`;
+        const existing = this.store.identityProviderSubjects.get(key);
+        if (existing !== undefined) {
+          throw new ServerError(
+            'invalid_state',
+            `identity already exists for (${provider}, ${parsed.identity_provider_subject}): ${existing}`,
+          );
+        }
+      }
       const identity: Identity = {
         id: this.idGen.identityId(),
         display_name: parsed.display_name,
         status: 'active',
         created_at: this.clock.now(),
         attestation_level: parsed.attestation_level ?? 0,
+        identity_provider: provider,
+        ...(parsed.identity_provider_subject !== undefined
+          ? { identity_provider_subject: parsed.identity_provider_subject }
+          : {}),
       };
       this.store.identities.set(identity.id, identity);
+      if (parsed.identity_provider_subject !== undefined) {
+        const key = `${provider}|${parsed.identity_provider_subject}`;
+        this.store.identityProviderSubjects.set(key, identity.id);
+      }
       return identity;
     },
 

@@ -94,6 +94,33 @@ export interface Store {
   // when verification ran; copied onto the materialized node at
   // acceptance time.
   readonly verifiedRefs: MapLike<ProposalId, VerifiedRef>;
+  // IdP-side subject → IdentityId index for identity-on-first-signin
+  // (PRD §Identity, Authenticator seam — slice 3c). Keyed by
+  // `${identity_provider}|${identity_provider_subject}` so different
+  // IdPs share the same collection without collision (a GitHub user
+  // id and a future ORCID iD with the same digits resolve to
+  // distinct identities). Written exactly once per (provider,
+  // subject) at first signin; subsequent signins by the same IdP
+  // subject look the existing IdentityId up here and mint a fresh
+  // agent credential under it. Absent for `'harness'` mints — no
+  // external subject to bind against — so the collection is sparse
+  // by construction.
+  readonly identityProviderSubjects: MapLike<string, IdentityId>;
+  // Per-(IdP, bucket, epoch) issuance-frequency counter (PRD
+  // §Identity bullet 2). Single record per bucket, advanced on epoch
+  // boundary the same way `rateLimits` is — when the IdP-layer gate
+  // fires, the server resolves the current epoch from wall-clock
+  // time and the configured `issuance_epoch_seconds`, either reuses
+  // the existing counter (same epoch) or resets to 0 (new epoch)
+  // before checking against the cap. The bucket key encodes whatever
+  // attribute the operational deployment caps against — for v0 the
+  // `GithubOAuthAuthenticator` keys by `github|<github_user_id>`
+  // (per-account issuance throttle), which is the bucket actually
+  // available at the seam; per-(IP, ASN) bucketing requires
+  // request-side metadata that lands at the HTTP transport layer
+  // (slice 4) and can be wired into the same collection without a
+  // schema change.
+  readonly idpIssuanceCounters: MapLike<string, { epoch: number; count: number }>;
   // Per-identity rate-limit counter (PRD §Identity bullet 3). Single
   // record per identity, advanced on epoch boundary: when a write
   // tool is invoked, the server resolves the current epoch from
@@ -131,5 +158,7 @@ export class MemoryStore implements Store {
     { passes: number; fails: number }
   >();
   readonly verifiedRefs = new Map<ProposalId, VerifiedRef>();
+  readonly identityProviderSubjects = new Map<string, IdentityId>();
+  readonly idpIssuanceCounters = new Map<string, { epoch: number; count: number }>();
   readonly rateLimits = new Map<IdentityId, { epoch: number; count: number }>();
 }

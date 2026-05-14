@@ -21,6 +21,7 @@ describe('bootstrap.mintIdentity', () => {
       status: 'active',
       created_at: '2026-01-01T00:00:00.000Z',
       attestation_level: 0,
+      identity_provider: 'harness',
     });
     expect(server.store.identities.get(ident.id)).toEqual(ident);
   });

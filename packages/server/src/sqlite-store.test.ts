@@ -44,6 +44,17 @@ function buildServer(store: Store): { server: Server; caller: Caller } {
 
 async function runScenario(store: Store): Promise<void> {
   const { server, caller } = buildServer(store);
+  // Mint an IdP-driven identity alongside the harness-default
+  // alice so the parity scenario exercises `identityProviderSubjects`
+  // (slice 3c) across backends. Without this the new collection is
+  // empty in both stores and "byte-identical" would be vacuous on
+  // the IdP-subject index.
+  server.bootstrap.mintIdentity({
+    display_name: 'octocat',
+    identity_provider: 'github',
+    identity_provider_subject: '424242',
+    attestation_level: 2,
+  });
   const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
   const st = server.bootstrap.seedSubTopic({
     cause_id: cause.id,
@@ -93,6 +104,8 @@ function snapshot(store: Store): Record<string, [string, unknown][]> {
     reputations: collect(store.reputations),
     calibrationRecords: collect(store.calibrationRecords),
     verifiedRefs: collect(store.verifiedRefs),
+    identityProviderSubjects: collect(store.identityProviderSubjects),
+    idpIssuanceCounters: collect(store.idpIssuanceCounters),
     rateLimits: collect(store.rateLimits),
   };
 }
@@ -108,6 +121,7 @@ describe('SqliteStore — Store surface', () => {
       display_name: 'alice',
       status: 'active' as const,
       attestation_level: 0,
+      identity_provider: 'harness' as const,
       created_at: '2026-01-01T00:00:00.000Z',
     };
     store.identities.set(identity.id, identity);
@@ -140,6 +154,7 @@ describe('SqliteStore — Store surface', () => {
         display_name: k,
         status: 'active',
         attestation_level: 0,
+        identity_provider: 'harness',
         created_at: '2026-01-01T00:00:00.000Z',
       });
     }

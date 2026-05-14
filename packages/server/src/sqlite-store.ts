@@ -145,6 +145,8 @@ export class SqliteStore implements Store {
     { passes: number; fails: number }
   >;
   readonly verifiedRefs: MapLike<ProposalId, VerifiedRef>;
+  readonly identityProviderSubjects: MapLike<string, IdentityId>;
+  readonly idpIssuanceCounters: MapLike<string, { epoch: number; count: number }>;
   readonly rateLimits: MapLike<IdentityId, { epoch: number; count: number }>;
 
   constructor(opts: SqliteStoreOptions) {
@@ -170,6 +172,8 @@ export class SqliteStore implements Store {
     this.reputations = new JsonTable(this.db, 'reputations');
     this.calibrationRecords = new JsonTable(this.db, 'calibration_records');
     this.verifiedRefs = new JsonTable(this.db, 'verified_refs');
+    this.identityProviderSubjects = new JsonTable(this.db, 'identity_provider_subjects');
+    this.idpIssuanceCounters = new JsonTable(this.db, 'idp_issuance_counters');
     this.rateLimits = new JsonTable(this.db, 'rate_limits');
   }
 

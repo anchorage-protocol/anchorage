@@ -5,6 +5,13 @@ import { Timestamp } from './timestamps.js';
 export const PrincipalStatus = z.enum(['active', 'revoked']);
 export type PrincipalStatus = z.infer<typeof PrincipalStatus>;
 
+// Which IdP issued the identity. Slice 3c locks GitHub as the v1
+// production IdP per PRD §Identity (Authenticator seam); `harness` is
+// the testbed/admin-mint path. New IdPs are added here when the
+// authenticator seam grows a new concrete implementation.
+export const IdentityProvider = z.enum(['harness', 'github']);
+export type IdentityProvider = z.infer<typeof IdentityProvider>;
+
 export const Identity = z
   .object({
     id: IdentityId,
@@ -20,6 +27,24 @@ export const Identity = z
     // SSO=3, etc.) live at the IdP and are operationally tunable. v0
     // mints default to 0 (gate inert by default).
     attestation_level: z.number().nonnegative(),
+    // IdP that issued this identity. PRD §Identity (Authenticator
+    // seam): the production runtime mints identities through
+    // `GithubOAuthAuthenticator` (slice 3c) at `'github'`; admin and
+    // testbed mints (`bootstrap.mintIdentity`) default to
+    // `'harness'`. The field is server-side metadata — downstream
+    // gates do not branch on it (sim≡prod invariant); it is recorded
+    // for the curator-side identity-clustering projection (PRD
+    // §Identity bullet 4) and for revocation cascades when an IdP
+    // signals a compromised account.
+    identity_provider: IdentityProvider,
+    // Stable IdP-side subject the identity was minted against. For
+    // GitHub this is the numeric user id (as a string), captured at
+    // first signin so subsequent signins by the same GitHub account
+    // resolve to the same Anchorage identity (identity-on-first-
+    // signin; PRD §Identity, Authenticator seam). Absent for
+    // `'harness'` mints (no external subject to bind against);
+    // required for IdP-driven providers in slice 3c+.
+    identity_provider_subject: z.string().min(1).max(200).optional(),
   })
   .strict();
 export type Identity = z.infer<typeof Identity>;

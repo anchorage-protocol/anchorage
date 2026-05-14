@@ -8,6 +8,7 @@ describe('Identity', () => {
     status: 'active' as const,
     created_at: '2026-05-06T12:00:00.000Z',
     attestation_level: 0,
+    identity_provider: 'harness' as const,
   };
 
   it('parses a valid identity', () => {
@@ -15,6 +16,18 @@ describe('Identity', () => {
     expect(parsed.display_name).toBe('aurelius');
     expect(parsed.status).toBe('active');
     expect(parsed.attestation_level).toBe(0);
+    expect(parsed.identity_provider).toBe('harness');
+    expect(parsed.identity_provider_subject).toBeUndefined();
+  });
+
+  it('parses a github-provider identity with subject', () => {
+    const parsed = Identity.parse({
+      ...valid,
+      identity_provider: 'github',
+      identity_provider_subject: '12345678',
+    });
+    expect(parsed.identity_provider).toBe('github');
+    expect(parsed.identity_provider_subject).toBe('12345678');
   });
 
   it('rejects a negative attestation_level', () => {
@@ -24,6 +37,15 @@ describe('Identity', () => {
   it('rejects a missing attestation_level (required field)', () => {
     const { attestation_level: _omit, ...rest } = valid;
     expect(() => Identity.parse(rest)).toThrow();
+  });
+
+  it('rejects a missing identity_provider (required field)', () => {
+    const { identity_provider: _omit, ...rest } = valid;
+    expect(() => Identity.parse(rest)).toThrow();
+  });
+
+  it('rejects an unknown identity_provider value', () => {
+    expect(() => Identity.parse({ ...valid, identity_provider: 'gitlab' })).toThrow();
   });
 
   it('rejects an unknown field (strict)', () => {

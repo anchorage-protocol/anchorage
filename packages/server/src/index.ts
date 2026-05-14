@@ -8,6 +8,21 @@ export {
   HarnessAuthenticator,
   type ResolvedCaller,
 } from './auth.js';
+export {
+  computeGithubAttestationLevel,
+  FakeGithubApi,
+  type FakeGithubScenario,
+  type GithubApi,
+  GithubApiHttp,
+  type GithubApiHttpOpts,
+  type GithubDeviceCode,
+  type GithubEmailInfo,
+  GithubOAuthAuthenticator,
+  type GithubOAuthAuthenticatorOpts,
+  type GithubPollStatus,
+  type GithubSigninResult,
+  type GithubUser,
+} from './auth-github.js';
 export { type Clock, FakeClock, SystemClock } from './clock.js';
 export { ServerError, type ServerErrorCode } from './errors.js';
 export { type IdGen, RandomIdGen, SeededIdGen } from './id-gen.js';

@@ -23,5 +23,17 @@ export const ServerErrorCode = z.enum([
   // §Identity (cf. the rate-limit-accounting layer of the
   // four-layer sybil-resistance architecture).
   'rate_limited',
+  // Per-(IdP, bucket, epoch) identity-issuance budget exceeded. PRD
+  // §Identity bullet 2 (issuance-frequency cap): the IdP-layer
+  // primitive that caps new-identity mints per epoch. Slice 3c
+  // wires it on the `GithubOAuthAuthenticator.completeSignin` path.
+  // Distinct from `unauthorized` (the caller's token is valid but
+  // *issuance* is throttled, not authentication) and `rate_limited`
+  // (a per-(identity, epoch) write-action cap downstream of identity
+  // existence — issuance fires *before* an identity exists for the
+  // signing-in caller). The recovery path is "wait for the next
+  // epoch and retry signin," same shape as `rate_limited`, but at
+  // a different layer of the four-layer sybil-resistance stack.
+  'issuance_cap',
 ]);
 export type ServerErrorCode = z.infer<typeof ServerErrorCode>;
