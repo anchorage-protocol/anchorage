@@ -69,6 +69,7 @@ See [ROADMAP.md](./ROADMAP.md) for phasing.
 - [Roadmap](./ROADMAP.md) — phased plan from simulation testbed to public instance.
 - [Seed topic](./docs/seed-topic.md) — the first cause the public instance will host, the starter sub-topics, and why.
 - [Phase 1 results](./docs/phase1-results.md) — adversary testbed snapshot as of 2026-05-14: methodology, coverage, headline findings, reproduce instructions.
+- [Deploy guide](./docs/deploy.md) — operator-facing guide to standing a public instance up: env vars, Dockerfile, curator bootstrap, backups, observability.
 
 ## Contributing
 

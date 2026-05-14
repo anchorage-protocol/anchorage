@@ -47,6 +47,14 @@ export {
   type VerifierResponse,
 } from './live-fetch-verifier.js';
 export { buildMcpServer, type McpBuildOptions } from './mcp.js';
+export {
+  type GithubConfig,
+  type ProdConfig,
+  type ProdServerDeps,
+  type ProdServerHandle,
+  parseProdConfig,
+  runProdServer,
+} from './run-prod.js';
 export { Server, type ServerDeps } from './server.js';
 export { SqliteStore, type SqliteStoreOptions } from './sqlite-store.js';
 export { type MapLike, MemoryStore, type Store } from './store.js';
