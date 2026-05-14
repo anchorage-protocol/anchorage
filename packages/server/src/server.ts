@@ -67,7 +67,7 @@ import { type Caller, resolveCaller } from './auth.js';
 import { type Clock, SystemClock } from './clock.js';
 import { ServerError } from './errors.js';
 import { type IdGen, RandomIdGen } from './id-gen.js';
-import { MemoryStore } from './store.js';
+import { MemoryStore, type Store } from './store.js';
 import { StructuralVerifier, type Verifier } from './verifier.js';
 
 // Bootstrap input schemas. These are admin-surface inputs and are
@@ -628,7 +628,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
 export interface ServerDeps {
   clock?: Clock;
   idGen?: IdGen;
-  store?: MemoryStore;
+  store?: Store;
   verifier?: Verifier;
   review?: Partial<ReviewConfig>;
 }
@@ -712,7 +712,7 @@ function assignmentTaskKey(task: AssignmentTask): string {
 export class Server {
   readonly clock: Clock;
   readonly idGen: IdGen;
-  readonly store: MemoryStore;
+  readonly store: Store;
   readonly verifier: Verifier;
   readonly review: ReviewConfig;
 

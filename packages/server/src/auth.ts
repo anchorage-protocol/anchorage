@@ -5,7 +5,7 @@ import type {
   IdentityId,
 } from '@anchorage/contracts';
 import { ServerError } from './errors.js';
-import type { MemoryStore } from './store.js';
+import type { Store } from './store.js';
 
 // Caller posture for tool calls. The MCP transport extracts these from
 // the connection's auth context and passes them in. Phase 1 trusts the
@@ -26,7 +26,7 @@ export interface ResolvedCaller {
   credential?: AgentCredential;
 }
 
-export function resolveCaller(store: MemoryStore, caller: Caller): ResolvedCaller {
+export function resolveCaller(store: Store, caller: Caller): ResolvedCaller {
   const identity = store.identities.get(caller.identity_id);
   if (!identity) {
     throw new ServerError('unauthorized', `unknown identity: ${caller.identity_id}`);
