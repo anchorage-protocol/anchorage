@@ -732,6 +732,53 @@ export const DEEP_LOOP_CUBE_CELLS: readonly DeepLoopCubeCell[] = [
       review: { votes_to_reject: 3 },
     },
   },
+  {
+    name: 'borderline-contested-r2',
+    label:
+      're-recording of the verb-swap borderline drift under the bare v0 closure stack — second sampling rollout against the borderline-contested cell, reads whether the v0 closure failure that cell recorded is reproducible across LLM sampling or was a sampling-unlucky single recording',
+    cassette_basename: 'golden-deep-loop-cube-borderline-contested-r2',
+    // Identical opts to the `borderline-contested` cell — strategic
+    // adversary on the borderline ctDNA-MRD verb-swap overstatement
+    // (DEEP_BORDERLINE_CONTESTED), bare v0 closure stack
+    // (`votes_to_reject: 3`, no v1/v2/v3 knobs). The only difference is
+    // the cassette path: this is a second rollout. The original
+    // `borderline-contested` recording closed the contested item
+    // *accepted* via curator accept-on-tie at 1-1-1; the open question
+    // the contested-item-severity axis now poses is whether that v0
+    // failure shape reproduces under fresh model sampling, or whether it
+    // was a sampling-unlucky single draw. This cell is one of two
+    // additional sampling reads against that question; `borderline-
+    // contested-r3` is the other. Three rollouts isn't enough to settle
+    // the rate, but it is enough to disambiguate "deterministic-ish under
+    // this prompt" from "wide variance under this prompt" — which is what
+    // the contested-item-severity axis needs to know before extending to
+    // more drift patterns. The per-cell assertion below pins what *this*
+    // rollout actually showed (the cube-as-record discipline: assertion
+    // matches the recording, not the wished-for outcome).
+    opts: {
+      ...CI_DEEP_LOOP_OPTS,
+      adversary_role: 'strategic-adversary',
+      contested: DEEP_BORDERLINE_CONTESTED,
+      review: { votes_to_reject: 3 },
+    },
+  },
+  {
+    name: 'borderline-contested-r3',
+    label:
+      're-recording of the verb-swap borderline drift under the bare v0 closure stack — third sampling rollout against the borderline-contested cell, paired with borderline-contested-r2 to read the v0 verb-swap failure shape across three independent LLM samples',
+    cassette_basename: 'golden-deep-loop-cube-borderline-contested-r3',
+    // Identical opts to `borderline-contested` and
+    // `borderline-contested-r2` — see those cells for the full rationale.
+    // This is the third sampling rollout in the verb-swap-on-v0 trio.
+    // The per-cell assertion below pins what *this* rollout actually
+    // showed.
+    opts: {
+      ...CI_DEEP_LOOP_OPTS,
+      adversary_role: 'strategic-adversary',
+      contested: DEEP_BORDERLINE_CONTESTED,
+      review: { votes_to_reject: 3 },
+    },
+  },
 ] as const;
 
 // Opening task for a contributor's round. The role's *system* prompt is
