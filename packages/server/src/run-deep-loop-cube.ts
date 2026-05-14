@@ -71,13 +71,20 @@
 //     floor applies at escalation) — closing the v2 cell's
 //     auto-close-path failure.
 // The cube's recorded outcome: the overstated contested claim ends
-// `rejected` in five of seven cells — the three v0 cells where the
+// `rejected` in six of eight cells — the three v0 cells where the
 // adversary doesn't engage or rejects on the merits, plus the
-// `borderline-contested-v1` cell and the `borderline-contested-v3`
-// cell — and `accepted` in *two*: `borderline-contested` (the v0
+// `borderline-contested-v1` cell, the `borderline-contested-v3`
+// cell, and the `borderline-surrogate` cell (a second contested-
+// item-severity cell, drift pattern surrogate-substitution instead
+// of verb-swap, whose recorded v0 run closes the drift cleanly) —
+// and `accepted` in *two*: `borderline-contested` (the v0
 // escalation-path failure), and `borderline-contested-v2` (the
 // auto-close-path failure that the v1 closure-stack knobs don't
-// reach). Two findings, both pinned.
+// reach). Two findings, both pinned. The contested-item-severity
+// axis now has two cells with different v0 outcomes — verb-swap
+// drift breaks v0, surrogate-substitution drift in this rollout
+// does not — which is itself a finding (single-rollout signal,
+// not a closure rule).
 //
 // Cassettes: multi-cassette, one file per cell, at
 // `test/fixtures/<cell.cassette_basename>.json` — each cell its own
@@ -258,10 +265,12 @@ async function main(): Promise<void> {
         'recording the v0 closure-failure mode on the escalation path, a borderline-contested-v1',
         'cell where the v1 closure-stack knob contains the escalation failure, a',
         'borderline-contested-v2 cell that records a second closure failure at the auto-close',
-        "path the v1 knobs don't reach, and a borderline-contested-v3 cell where",
+        "path the v1 knobs don't reach, a borderline-contested-v3 cell where",
         'contested_votes_to_accept — the first closure-stack knob to touch the auto-close-accept',
-        'path — contains the v2 failure) and reports the per-cell and cross-cell outcomes. Set a',
-        'key and re-run:',
+        'path — contains the v2 failure, and a borderline-surrogate cell that adds a second',
+        'contested-item-severity reading on the v0 stack with a structurally different drift',
+        'pattern — surrogate-substitution instead of verb-swap) and reports the per-cell and',
+        'cross-cell outcomes. Set a key and re-run:',
         '',
         '  ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop-cube',
         '',
@@ -309,16 +318,19 @@ async function main(): Promise<void> {
   // per-cell-status table; the headline is the contested overstated
   // claim's accept-rate across cells (attack-success-rate, ASR) plus
   // how many cells saw the adversary actually drift on it. The
-  // recorded baseline across the full cell set: 5/7 cells reject
+  // recorded baseline across the full cell set: 6/8 cells reject
   // the overstatement (the three v0 cells where the adversary
   // doesn't engage or rejects on the merits, plus the v1 and v3
   // closure-stack cells where the recorded rollouts land tallies
-  // their respective stacks close reject); 2/7 accept it — the
-  // `borderline-contested` cell where the v0 curator escalation
-  // closes a 1-1-1 toward accept, and the `borderline-contested-v2`
-  // cell where the auto-close-accept path fires before escalation
-  // runs. See the cell comments in `deep-loop-scenario.ts` and PRD
-  // §Continuous integration / ROADMAP §Status.
+  // their respective stacks close reject, plus the borderline-
+  // surrogate cell where the strategic adversary judges the
+  // surrogate-as-target overreach too brazen to defend); 2/8
+  // accept it — the `borderline-contested` cell where the v0
+  // curator escalation closes a 1-1-1 toward accept, and the
+  // `borderline-contested-v2` cell where the auto-close-accept
+  // path fires before escalation runs. See the cell comments in
+  // `deep-loop-scenario.ts` and PRD §Continuous integration /
+  // ROADMAP §Status.
   console.log(
     `\n# ── cube summary (${outcomes.length} cell${outcomes.length === 1 ? '' : 's'}) ──`,
   );
