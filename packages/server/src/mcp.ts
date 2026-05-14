@@ -42,8 +42,15 @@ import type { Server } from './server.js';
 // One MCP server instance corresponds to one client connection
 // (the SDK's stdio + in-memory transports are one-to-one with the
 // process / harness instance), so the caller binding is per-instance.
-// For multi-tenant deployments (HTTP transport) the binding would
-// move into per-request context, but the same handler shape applies.
+// For multi-tenant deployments (HTTP transport) the binding moves into
+// per-request context, but the same handler shape applies.
+//
+// Caller binding goes through `server.authenticator` (PRD §Identity,
+// Authenticator seam): the build receives an opaque transport-layer
+// token and resolves it once here, throwing `ServerError('unauthorized')`
+// at the seam if the token is malformed/unknown/revoked. Downstream
+// tool handlers see only the resolved `Caller`; per-tool freshness is
+// re-checked by `resolveCaller` inside the Server.
 //
 // Errors:
 //   - ServerError → returned as a tool error result (PRD's typed error
@@ -53,12 +60,17 @@ import type { Server } from './server.js';
 //   - Anything else → thrown (transport-level fault); MCP turns it
 //     into a generic protocol error and the connection stays open.
 export interface McpBuildOptions {
-  caller: Caller;
+  // Opaque bearer token; the Server's Authenticator interprets it.
+  // The testbed's `HarnessAuthenticator` accepts an identity id (or
+  // `identityId/agentCredentialId` for delegated agents); the
+  // production runtime's `GithubOAuthAuthenticator` (slice 3c)
+  // accepts OAuth-issued session ids.
+  token: string;
   serverInfo?: { name?: string; version?: string };
 }
 
 export function buildMcpServer(server: Server, options: McpBuildOptions): McpServer {
-  const { caller } = options;
+  const caller: Caller = server.authenticator.authenticate(options.token);
   const mcp = new McpServer({
     name: options.serverInfo?.name ?? 'anchorage',
     version: options.serverInfo?.version ?? PROTOCOL_VERSION,

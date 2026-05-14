@@ -66,7 +66,7 @@ async function seededServer(seed: string): Promise<{
 }
 
 async function wireMcpClient(server: Server, identityId: string): Promise<Client> {
-  const mcp = buildMcpServer(server, { caller: { identity_id: identityId as never } });
+  const mcp = buildMcpServer(server, { token: identityId });
   const client = new Client({ name: 'cassette-agent', version: '0.0.0' });
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await Promise.all([mcp.connect(st), client.connect(ct)]);

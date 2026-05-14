@@ -31,7 +31,7 @@ import { FakeVerifier } from './verifier.js';
 // testbed §CI names ("where frontier-model patient adversaries live").
 
 async function wireMcpClient(server: Server, identity_id: string): Promise<Client> {
-  const mcp = buildMcpServer(server, { caller: { identity_id: identity_id as never } });
+  const mcp = buildMcpServer(server, { token: identity_id });
   const client = new Client({ name: 'llm-agent', version: '0.0.0' });
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await Promise.all([mcp.connect(st), client.connect(ct)]);

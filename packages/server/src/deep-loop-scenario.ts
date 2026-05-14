@@ -924,7 +924,7 @@ export async function buildDeepLoopScenario(
   const contributors: DeepLoopContributor[] = [];
   const wire = async (display_name: string, role: LlmRole): Promise<DeepLoopContributor> => {
     const identity = server.bootstrap.mintIdentity({ display_name });
-    const mcp = buildMcpServer(server, { caller: { identity_id: identity.id as never } });
+    const mcp = buildMcpServer(server, { token: identity.id });
     const client = new Client({ name: display_name, version: '0.0.0' });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await Promise.all([mcp.connect(st), client.connect(ct)]);

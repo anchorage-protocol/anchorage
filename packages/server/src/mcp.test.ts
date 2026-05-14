@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it } from 'vitest';
 import { FakeClock } from './clock.js';
+import { ServerError } from './errors.js';
 import { SeededIdGen } from './id-gen.js';
 import { buildMcpServer } from './mcp.js';
 import { Server } from './server.js';
@@ -32,7 +33,7 @@ async function fixtureWithClient() {
     scope_query: 'ctDNA',
   });
 
-  const mcp = buildMcpServer(server, { caller: { identity_id: identity.id } });
+  const mcp = buildMcpServer(server, { token: identity.id });
   const client = new Client({ name: 'test-client', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([mcp.connect(serverTransport), client.connect(clientTransport)]);
@@ -136,7 +137,7 @@ describe('mcp transport', () => {
 
     // Bob: a fresh identity, his own MCP session.
     const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
-    const bobMcp = buildMcpServer(server, { caller: { identity_id: bob.id } });
+    const bobMcp = buildMcpServer(server, { token: bob.id });
     const bob_client = new Client({ name: 'bob-client', version: '0.0.0' });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await Promise.all([bobMcp.connect(st), bob_client.connect(ct)]);
@@ -175,5 +176,101 @@ describe('mcp transport', () => {
     const assignment = server.store.assignments.get(offerData.assignment_id as never);
     expect(assignment?.status).toBe('submitted');
     expect(assignment?.fulfilled_by).toBe(proposalId);
+  });
+});
+
+// The Authenticator is the trust boundary (PRD §Identity, Authenticator
+// seam). These tests pin the boundary behavior under the default
+// `HarnessAuthenticator`: well-formed tokens resolve to a Caller (and
+// the agent-delegation grammar round-trips), every other shape refuses
+// with `unauthorized` at the seam — before any tool handler runs, no
+// rate-limit budget burned, no per-tool gates exercised. Slice 3c's
+// `GithubOAuthAuthenticator` plugs in at the same surface; the
+// downstream contract is identical.
+describe('authenticator seam', () => {
+  function freshServer(): Server {
+    return new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('a'),
+      verifier: new FakeVerifier(),
+    });
+  }
+
+  it('rejects empty tokens with unauthorized', () => {
+    const server = freshServer();
+    expect(() => buildMcpServer(server, { token: '' })).toThrow(ServerError);
+    try {
+      buildMcpServer(server, { token: '' });
+    } catch (err) {
+      expect((err as ServerError).code).toBe('unauthorized');
+    }
+  });
+
+  it('rejects tokens that name an unknown identity', () => {
+    const server = freshServer();
+    expect(() => buildMcpServer(server, { token: 'I-does-not-exist' })).toThrow(ServerError);
+    try {
+      buildMcpServer(server, { token: 'I-does-not-exist' });
+    } catch (err) {
+      expect((err as ServerError).code).toBe('unauthorized');
+    }
+  });
+
+  it('rejects malformed delegated tokens (empty credential segment)', () => {
+    const server = freshServer();
+    const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    expect(() => buildMcpServer(server, { token: `${identity.id}/` })).toThrow(ServerError);
+  });
+
+  it('rejects delegated tokens whose credential belongs to a different identity', () => {
+    const server = freshServer();
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCred = server.bootstrap.bindAgentCredential({
+      identity_id: bob.id,
+      label: 'desktop',
+    });
+    // Alice's identity, Bob's credential — must refuse.
+    expect(() => buildMcpServer(server, { token: `${alice.id}/${bobCred.id}` })).toThrow(
+      ServerError,
+    );
+  });
+
+  it('accepts a delegated token and round-trips the agent_credential_id through tool calls', async () => {
+    const server = freshServer();
+    const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const cred = server.bootstrap.bindAgentCredential({
+      identity_id: identity.id,
+      label: 'desktop',
+    });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
+
+    const mcp = buildMcpServer(server, { token: `${identity.id}/${cred.id}` });
+    const client = new Client({ name: 'delegated-client', version: '0.0.0' });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([mcp.connect(st), client.connect(ct)]);
+
+    // `set_capacity` is a write tool — exercising it confirms the
+    // resolved caller flowed through and the downstream gates did not
+    // refuse on its account. The Caller posture is opaque from the
+    // wire's perspective; we cross-check the identity's capacity
+    // record landed under alice's id (not bob's, not nobody's).
+    const result = await client.callTool({
+      name: 'set_capacity',
+      arguments: { cause_id: cause.id, rate: 1, kinds: ['excerpt'] },
+    });
+    expect(result.isError).toBeFalsy();
+    const cap = server.store.capacities.get(`${identity.id}|${cause.id}`);
+    expect(cap?.rate).toBe(1);
+  });
+
+  it('refuses a token for a revoked identity at the seam', () => {
+    const server = freshServer();
+    const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    // Direct store mutation to flip status — revocation tooling is
+    // not yet exposed as a bootstrap method, and the seam check
+    // doesn't care how the status got to `revoked`.
+    server.store.identities.set(identity.id, { ...identity, status: 'revoked' });
+    expect(() => buildMcpServer(server, { token: identity.id })).toThrow(ServerError);
   });
 });

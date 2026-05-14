@@ -63,7 +63,7 @@ import {
   type WorkKind,
 } from '@anchorage/contracts';
 import { z } from 'zod';
-import { type Caller, resolveCaller } from './auth.js';
+import { type Authenticator, type Caller, HarnessAuthenticator, resolveCaller } from './auth.js';
 import { type Clock, SystemClock } from './clock.js';
 import { ServerError } from './errors.js';
 import { type IdGen, RandomIdGen } from './id-gen.js';
@@ -631,6 +631,12 @@ export interface ServerDeps {
   store?: Store;
   verifier?: Verifier;
   review?: Partial<ReviewConfig>;
+  // Trust-boundary Authenticator (PRD §Identity, Authenticator seam).
+  // Default is `HarnessAuthenticator` over the Server's Store — the
+  // testbed and in-process tests get the deterministic no-network path
+  // for free; the production runtime (slice 4) injects a
+  // `GithubOAuthAuthenticator` here.
+  authenticator?: Authenticator;
 }
 
 // v0 cap on calibration items per fetch. Small enough to keep batch
@@ -715,6 +721,7 @@ export class Server {
   readonly store: Store;
   readonly verifier: Verifier;
   readonly review: ReviewConfig;
+  readonly authenticator: Authenticator;
 
   constructor(deps: ServerDeps = {}) {
     this.clock = deps.clock ?? new SystemClock();
@@ -722,6 +729,7 @@ export class Server {
     this.store = deps.store ?? new MemoryStore();
     this.verifier = deps.verifier ?? new StructuralVerifier();
     this.review = { ...DEFAULT_REVIEW_CONFIG, ...(deps.review ?? {}) };
+    this.authenticator = deps.authenticator ?? new HarnessAuthenticator(this.store);
   }
 
   // Resolve a sub-topic that must exist, be active, and live under the

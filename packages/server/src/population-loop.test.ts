@@ -111,7 +111,7 @@ async function seedServer(reviewOverrides: Partial<ReviewConfig>) {
 }
 
 async function wireClient(server: Server, identity_id: string): Promise<AnchorageClient> {
-  const mcp = buildMcpServer(server, { caller: { identity_id: identity_id as never } });
+  const mcp = buildMcpServer(server, { token: identity_id });
   const client = new Client({ name: 'pop-contributor', version: '0.0.0' });
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await Promise.all([mcp.connect(st), client.connect(ct)]);
