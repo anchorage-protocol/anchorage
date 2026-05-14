@@ -51,11 +51,11 @@ No tokens. No marketplace. No paid tier. Reputation and credit are the only curr
 
 ## Status
 
-Concurrent Phase 0 + Phase 1. Design docs are settled.
+**Phases 0 and 1 closed 2026-05-14.** Design docs are settled; the adversary testbed is comprehensive across every named axis; the published results snapshot is at [docs/phase1-results.md](./docs/phase1-results.md). The user-exposure gate (Phase 1 → Phase 2) is open: real users meeting Anchorage waits on Phase 2's auth + UI + production scaffolding, not on more testbed work.
 
-The v0 MCP tool surface is fully implemented and runs end-to-end through the actual MCP transport. The testbed exercises it against a roster of synthetic archetypes — from honest contributors of varying competence to coordinated adversarial coalitions — and, in a deeper loop, against real-LLM contributors carrying those same adversary-taxonomy roles; reputation, calibration, and convergence outcomes are observable over the wire either way, and a recorded model-backed run replays deterministically as a CI regression check.
+The v0 MCP tool surface is fully implemented and runs end-to-end through the actual MCP transport. The testbed exercises it against a roster of synthetic archetypes — from honest contributors of varying competence to coordinated adversarial coalitions — and, in a deeper loop, against real-LLM contributors carrying those same adversary-taxonomy roles; reputation, calibration, and convergence outcomes are observable over the wire either way, and recorded model-backed runs replay deterministically as CI regression checks.
 
-A growing set of parameter-sweep cubes aggregate attack-success-rate per defense config — and, where a defense's failure mode is collapsing the honest pool rather than letting the attack through, lockout-rate alongside it — as the Phase-1-exit-criterion shape, the model-backed loop included. Live-fetch verification (PMID/DOI/URL resolution) stays a stub until the testbed needs it.
+21 parameter-sweep cubes (20 scripted + 1 model-backed) aggregate attack-success-rate per defense config — and, where a defense's failure mode is collapsing the honest pool rather than letting the attack through, lockout-rate alongside it. Three closure-stack knobs (`escalation_revise_counts_as_reject`, `escalation_requires_votes_to_accept`, `contested_votes_to_accept`) closed the model-backed cube's two recorded closure failures on a borderline contested item; no open closure failure remains in the cube as of this snapshot. Live-fetch verification (PMID/DOI/URL resolution) stays a stub until Phase 2.
 
 See [ROADMAP.md](./ROADMAP.md) for phasing.
 
@@ -66,6 +66,7 @@ See [ROADMAP.md](./ROADMAP.md) for phasing.
 - [Governance](./docs/governance.md) — contribution norms, review responsibilities, dispute resolution.
 - [Roadmap](./ROADMAP.md) — phased plan from simulation testbed to public instance.
 - [Seed topic](./docs/seed-topic.md) — the first cause the public instance will host, the starter sub-topics, and why.
+- [Phase 1 results](./docs/phase1-results.md) — adversary testbed snapshot as of 2026-05-14: methodology, coverage, headline findings, reproduce instructions.
 
 ## Contributing
 

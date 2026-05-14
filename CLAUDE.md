@@ -25,13 +25,15 @@ A protocol and public instance for **cooperative open research with auditable li
 
 ## Phase awareness
 
-Anchorage is in concurrent **Phase 0 + Phase 1** as of 2026-05-06. This gates what kind of work is appropriate:
+**Phases 0 and 1 closed 2026-05-14.** Anchorage is between phases — Phase 1's exit criterion (a comprehensive adversary testbed with a published results snapshot, see [docs/phase1-results.md](./docs/phase1-results.md)) is met, and Phase 2 (single-cause public instance with real human contributors) has not yet begun. This gates what kind of work is appropriate:
 
-- **Phase 0 + 1 (concurrent)**: design docs and the adversary testbed co-evolve. The testbed uses the real graph schema and real write-path tools; contributors are simulated. Docs and code stay in lockstep — no commit lands with one out of date with the other (see [Conventions](#conventions-for-working-in-this-repo)).
-- **Phase 2**: single-cause public instance with real human contributors.
+- **Between Phase 1 and Phase 2**: testbed extension is welcome (more cube cells, more drift kinds, more closure-stack experiments) but no longer load-bearing for any phase exit — every named axis already has measured coverage. The lockstep doc-update discipline still applies to any contract change. New work that anticipates Phase 2 (auth, identity backend, web UI scaffolding, live-fetch verification) is not yet appropriate — wait for the phase to formally open.
+- **Phase 2**: single-cause public instance with real human contributors. Documented in [ROADMAP.md](./ROADMAP.md).
 - **Phase 3+**: documented in [ROADMAP.md](./ROADMAP.md).
 
-**The user-exposure boundary between Phase 1 and Phase 2 is what's load-bearing**: no real users meet the system until the testbed runs the full governance loop against the adversary suite and published attack-success-rates pass thresholds. Doc-then-code sequencing is *not* load-bearing; sim-then-prod sequencing is.
+**The user-exposure boundary between Phase 1 and Phase 2 is what's load-bearing**: no real users meet the system until Phase 2's scaffolding lands. Doc-then-code sequencing is *not* load-bearing; sim-then-prod sequencing is.
+
+The original Phase 1 exit criterion called for "third-party replication" of the published results; this was a category error and has been corrected ([ROADMAP §Phase 1](./ROADMAP.md#phase-1--adversary-testbed-closed-2026-05-14) carries the rationale). Sim and prod are by-construction indistinguishable from the system's perspective; cassettes pin every byte across the wire; the model is a published API; the code is open. A third-party rerun has no epistemic advantage over an in-house rerun. Reproducibility was the load-bearing property and is satisfied. Extending the sweep is incremental work in the same testbed and does not gate Phase 2.
 
 ## Load-bearing design commitments
 
@@ -52,7 +54,7 @@ These are settled. Challenge them only with strong new evidence, not casual reth
 ## Conventions for working in this repo
 
 - **Improve the repo proactively.** When you spot a solid opportunity — a contradiction between docs, an underspecified load-bearing point, prose hiding an ambiguity a careful reader would catch, a section out of step with a more recent commitment — flag it and, if the fix fits the current phase, do it. Don't wait to be asked. The bar is "solid opportunity," not "any nit"; load-bearing commitments aren't casually relitigated, and improvements stay inside the current phase's allowed work. When unsure about scope, surface the observation rather than acting silently. This applies to every agent that ever inspects this repo, not just the current session.
-- **Docs and code never drift apart.** Every commit that changes a contract (data model, tool surface, governance rule, parameter range, identity model) updates both the docs and the code in the same commit. The docs are the spec, not retrospective documentation; a commit that updates one without the other is a bug. This is what makes concurrent Phase 0 + 1 development safe — without lockstep discipline, "concurrent" degenerates into "code is truth, docs are aspirational."
+- **Docs and code never drift apart.** Every commit that changes a contract (data model, tool surface, governance rule, parameter range, identity model) updates both the docs and the code in the same commit. The docs are the spec, not retrospective documentation; a commit that updates one without the other is a bug. This is what made concurrent Phase 0 + 1 development safe — without lockstep discipline, "concurrent" degenerates into "code is truth, docs are aspirational." The discipline holds beyond Phase 0 closure because the underlying invariant is unchanged: the docs are still the spec.
 - **Reference PRD content by section, not by line number.** Cite `PRD §Section name` (with a quoted distinctive phrase if finer granularity is needed), never `PRD line N`. Line numbers shift every time the PRD is edited; section anchors don't. Applies to ROADMAP, code comments, test names, and commit messages.
 - **Doc edits go to `main` directly** when made by the maintainer; no PR ceremony for design-doc work. PRs are for external contributions.
 - **Commits are DCO-signed** (`git commit -s`).
