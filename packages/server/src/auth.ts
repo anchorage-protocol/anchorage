@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   AgentCredential,
   AgentCredentialId,
@@ -6,6 +7,15 @@ import type {
 } from '@anchorage/contracts';
 import { ServerError } from './errors.js';
 import type { Store } from './store.js';
+
+// SHA-256 hex of an opaque bearer secret. The secret itself is minted
+// at `bindAgentCredential` via `IdGen.bearerSecret()` (random in
+// production, seeded in tests), returned to the caller once, and
+// never stored — the server keeps only this hash, indexed in
+// `Store.agentCredentialSecrets`. PRD §Identity (Authenticator seam).
+export function hashBearerSecret(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex');
+}
 
 // Caller posture for tool calls. Produced by an `Authenticator` at the
 // transport layer (one resolution per connection / per request) and
@@ -38,24 +48,41 @@ export interface Authenticator {
   authenticate(token: string): Caller;
 }
 
-// Testbed Authenticator. Tokens encode the caller directly — no
-// session table, no expiry, no network. Two grammars:
+// Testbed Authenticator. Accepts two token grammars, both private to
+// the harness — downstream gates see only the resolved `Caller`,
+// regardless of which grammar produced it (PRD §Identity, Authenticator
+// seam).
 //
-//   "I-xyz"            → { identity_id: 'I-xyz' }
-//   "I-xyz/A-abc"      → { identity_id: 'I-xyz',
-//                          agent_credential_id: 'A-abc' }
+//   - **Bearer secret** (production-shaped path). The token is the
+//     opaque secret issued by `bootstrap.bindAgentCredential`. The
+//     authenticator hashes it and looks up the credential through
+//     `store.agentCredentialSecrets` — the same hash-lookup shape the
+//     production `GithubOAuthAuthenticator` (slice 3c) will use for
+//     OAuth-issued session secrets. Caller carries both
+//     `identity_id` and `agent_credential_id`.
 //
-// The trailing `/A-…` is optional and only present when the caller is
-// acting through a delegated agent. The encoding is symmetric: any
-// caller round-trips through `tokenFor` and back. Validity is checked
-// against the Store at `authenticate` time (the identity must exist
-// and be active; the credential, when named, must belong to the
-// identity and be active) — same invariants the per-tool
-// `resolveCaller` re-checks downstream, so a token issued by a prior
-// session for a now-revoked identity refuses at the seam rather than
-// burning rate-limit budget downstream.
-const HARNESS_TOKEN_SEP = '/';
-
+//   - **Direct identity id** (testbed-convenience path, transitional).
+//     The token is an `IdentityId` known to the store. Resolves to
+//     `{ identity_id }` with no `agent_credential_id`. This grammar
+//     exists so that the checked-in golden cassettes
+//     (`golden-deep-loop.json`, `golden-deep-loop-cube/*.json`) — which
+//     pin exact LLM request/response bytes against a fixed
+//     `FakeClock`-driven timeline — replay without re-recording.
+//     Adding a `bindAgentCredential` call per contributor consumes
+//     one FakeClock tick and shifts every downstream timestamp in
+//     the tool-result chain, which propagates into the next-round
+//     LLM request body and breaks the cassette key. The grammar will
+//     be retired when the cassettes are re-recorded against the
+//     bearer-secret path in a follow-up commit.
+//
+// Bearer-secret lookup is attempted first; the direct-identity-id
+// fallback only fires when the hash misses. Production-side tests
+// exercise the bearer-secret path (mcp.test.ts's `authenticator seam`
+// suite); cassette scenarios stay on the direct-identity-id path.
+//
+// Any mismatch (unknown token, revoked credential, revoked identity)
+// refuses with `unauthorized` at the seam — before any per-tool gate
+// runs, no rate-limit budget burned.
 export class HarnessAuthenticator implements Authenticator {
   constructor(private readonly store: Store) {}
 
@@ -63,34 +90,29 @@ export class HarnessAuthenticator implements Authenticator {
     if (typeof token !== 'string' || token.length === 0) {
       throw new ServerError('unauthorized', 'missing token');
     }
-    const sepIndex = token.indexOf(HARNESS_TOKEN_SEP);
-    const identityPart = sepIndex < 0 ? token : token.slice(0, sepIndex);
-    const credentialPart = sepIndex < 0 ? undefined : token.slice(sepIndex + 1);
-    if (identityPart.length === 0) {
-      throw new ServerError('unauthorized', 'malformed token: empty identity');
+    // Bearer-secret grammar (prod-shaped path).
+    const hash = hashBearerSecret(token);
+    const credentialId = this.store.agentCredentialSecrets.get(hash);
+    if (credentialId !== undefined) {
+      const credential = this.store.agentCredentials.get(credentialId);
+      if (!credential) {
+        throw new ServerError('unauthorized', 'credential record missing for valid secret');
+      }
+      const caller: Caller = {
+        identity_id: credential.identity_id,
+        agent_credential_id: credential.id,
+      };
+      resolveCaller(this.store, caller);
+      return caller;
     }
-    if (credentialPart !== undefined && credentialPart.length === 0) {
-      throw new ServerError('unauthorized', 'malformed token: empty credential');
-    }
-    const caller: Caller = { identity_id: identityPart as IdentityId };
-    if (credentialPart !== undefined) {
-      caller.agent_credential_id = credentialPart as AgentCredentialId;
-    }
-    // Validate against the store now so a malformed/stale token fails
-    // at the seam rather than at the first downstream tool call. The
-    // checks mirror `resolveCaller` exactly — the per-tool path still
-    // re-checks because revocation may happen mid-connection.
+    // Direct-identity-id fallback (transitional testbed grammar). The
+    // identity must exist in the store and be active; `resolveCaller`
+    // enforces that. Tokens that look like identity ids but name an
+    // unknown identity refuse with `unauthorized`, the same code as
+    // the bearer-secret-not-found case.
+    const caller: Caller = { identity_id: token as IdentityId };
     resolveCaller(this.store, caller);
     return caller;
-  }
-
-  // Symmetric serialization — used by the testbed to mint a token
-  // from a Caller it constructed. Production tokens are opaque session
-  // ids and do not have a symmetric inverse.
-  tokenFor(caller: Caller): string {
-    return caller.agent_credential_id === undefined
-      ? caller.identity_id
-      : `${caller.identity_id}${HARNESS_TOKEN_SEP}${caller.agent_credential_id}`;
   }
 }
 

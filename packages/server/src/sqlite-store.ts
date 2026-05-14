@@ -130,6 +130,7 @@ export class SqliteStore implements Store {
   readonly db: DatabaseSync;
   readonly identities: MapLike<IdentityId, Identity>;
   readonly agentCredentials: MapLike<AgentCredentialId, AgentCredential>;
+  readonly agentCredentialSecrets: MapLike<string, AgentCredentialId>;
   readonly causes: MapLike<CauseId, Cause>;
   readonly subTopics: MapLike<SubTopicId, SubTopic>;
   readonly proposals: MapLike<ProposalId, Proposal>;
@@ -157,6 +158,7 @@ export class SqliteStore implements Store {
     this.db.exec(`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`);
     this.identities = new JsonTable(this.db, 'identities');
     this.agentCredentials = new JsonTable(this.db, 'agent_credentials');
+    this.agentCredentialSecrets = new JsonTable(this.db, 'agent_credential_secrets');
     this.causes = new JsonTable(this.db, 'causes');
     this.subTopics = new JsonTable(this.db, 'sub_topics');
     this.proposals = new JsonTable(this.db, 'proposals');

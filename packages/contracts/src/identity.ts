@@ -31,6 +31,16 @@ export const AgentCredential = z
     label: z.string().min(1).max(100),
     status: PrincipalStatus,
     created_at: Timestamp,
+    // SHA-256 hex digest (64 lowercase hex chars) of the bearer
+    // secret issued at bind time. The secret is returned to the
+    // caller once (from `bootstrap.bindAgentCredential`) and never
+    // stored or retrievable; the server validates an incoming bearer
+    // token by hashing it and looking up the resulting digest. PRD
+    // §Identity (Authenticator seam): this is the wire-level shape
+    // every authenticator produces — the testbed's `HarnessAuthenticator`
+    // looks up against this hash, the production
+    // `GithubOAuthAuthenticator` (slice 3c) does the same.
+    secret_hash: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict();
 export type AgentCredential = z.infer<typeof AgentCredential>;

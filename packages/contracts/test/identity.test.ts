@@ -50,15 +50,29 @@ describe('AgentCredential', () => {
     label: 'desktop client',
     status: 'active' as const,
     created_at: '2026-05-06T12:00:00.000Z',
+    // 64 lowercase hex chars — sha256 digest shape.
+    secret_hash: 'a'.repeat(64),
   };
 
   it('parses a valid credential', () => {
     const parsed = AgentCredential.parse(valid);
     expect(parsed.label).toBe('desktop client');
+    expect(parsed.secret_hash).toHaveLength(64);
   });
 
   it('rejects when identity_id is missing', () => {
     const { identity_id: _omit, ...rest } = valid;
     expect(() => AgentCredential.parse(rest)).toThrow();
+  });
+
+  it('rejects when secret_hash is missing', () => {
+    const { secret_hash: _omit, ...rest } = valid;
+    expect(() => AgentCredential.parse(rest)).toThrow();
+  });
+
+  it('rejects a secret_hash that is not 64 lowercase hex chars', () => {
+    expect(() => AgentCredential.parse({ ...valid, secret_hash: 'A'.repeat(64) })).toThrow();
+    expect(() => AgentCredential.parse({ ...valid, secret_hash: 'a'.repeat(63) })).toThrow();
+    expect(() => AgentCredential.parse({ ...valid, secret_hash: `${'a'.repeat(63)}g` })).toThrow();
   });
 });

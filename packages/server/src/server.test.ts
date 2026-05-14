@@ -32,10 +32,10 @@ describe('bootstrap.mintIdentity', () => {
 });
 
 describe('bootstrap.bindAgentCredential', () => {
-  it('binds a credential to an existing identity', () => {
+  it('binds a credential to an existing identity and returns a one-shot secret', () => {
     const server = newServer();
     const ident = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const cred = server.bootstrap.bindAgentCredential({
+    const { credential: cred, secret } = server.bootstrap.bindAgentCredential({
       identity_id: ident.id,
       label: 'desktop',
     });
@@ -43,6 +43,22 @@ describe('bootstrap.bindAgentCredential', () => {
     expect(cred.label).toBe('desktop');
     expect(cred.status).toBe('active');
     expect(server.store.agentCredentials.get(cred.id)).toEqual(cred);
+    // Secret is a non-trivial URL-safe base64 string of the
+    // 32-byte random source; hash is 64 lowercase hex chars and
+    // indexes back to the credential id (the seam-side lookup).
+    expect(secret.length).toBeGreaterThanOrEqual(40);
+    expect(cred.secret_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(server.store.agentCredentialSecrets.get(cred.secret_hash)).toBe(cred.id);
+  });
+
+  it('mints a fresh secret on each call (no collision across credentials)', () => {
+    const server = newServer();
+    const ident = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const a = server.bootstrap.bindAgentCredential({ identity_id: ident.id, label: 'a' });
+    const b = server.bootstrap.bindAgentCredential({ identity_id: ident.id, label: 'b' });
+    expect(a.secret).not.toBe(b.secret);
+    expect(a.credential.secret_hash).not.toBe(b.credential.secret_hash);
+    expect(server.store.agentCredentialSecrets.size).toBe(2);
   });
 
   it('errors not_found when identity is missing', () => {

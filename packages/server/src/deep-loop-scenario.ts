@@ -924,6 +924,14 @@ export async function buildDeepLoopScenario(
   const contributors: DeepLoopContributor[] = [];
   const wire = async (display_name: string, role: LlmRole): Promise<DeepLoopContributor> => {
     const identity = server.bootstrap.mintIdentity({ display_name });
+    // Use `HarnessAuthenticator`'s direct-identity-id grammar (rather
+    // than the bearer-secret grammar) so the checked-in golden
+    // cassettes (`golden-deep-loop*.json`) continue to replay
+    // byte-for-byte. Adding a `bindAgentCredential` here would
+    // consume one `FakeClock` tick per contributor and shift every
+    // downstream tool-result timestamp into the cassette. Will
+    // migrate when those cassettes are re-recorded; see
+    // `auth.ts` HarnessAuthenticator comment.
     const mcp = buildMcpServer(server, { token: identity.id });
     const client = new Client({ name: display_name, version: '0.0.0' });
     const [ct, st] = InMemoryTransport.createLinkedPair();

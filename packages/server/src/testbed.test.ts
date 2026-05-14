@@ -34,7 +34,11 @@ import { FakeVerifier } from './verifier.js';
 // clients see.
 
 async function wireArchetype(server: Server, identity_id: string) {
-  const mcp = buildMcpServer(server, { token: identity_id });
+  const { secret } = server.bootstrap.bindAgentCredential({
+    identity_id: identity_id as never,
+    label: 'archetype',
+  });
+  const mcp = buildMcpServer(server, { token: secret });
   const client = new Client({ name: 'archetype', version: '0.0.0' });
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await Promise.all([mcp.connect(st), client.connect(ct)]);

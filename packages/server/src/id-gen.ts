@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   AgentCredentialId,
   AssignmentId,
@@ -38,6 +39,12 @@ export interface IdGen {
   membershipId(): MembershipId;
   assignmentId(): AssignmentId;
   reviewVoteId(): ReviewVoteId;
+  // Bearer-secret source for the Authenticator seam (slice 3b). Lives
+  // on IdGen because the requirement is identical to the id case:
+  // production needs cryptographic randomness, tests need
+  // reproducibility. The value is opaque to the server beyond its
+  // SHA-256 hash; only the bind site sees it, and only once.
+  bearerSecret(): string;
 }
 
 export class RandomIdGen implements IdGen {
@@ -70,6 +77,11 @@ export class RandomIdGen implements IdGen {
   }
   reviewVoteId(): ReviewVoteId {
     return ReviewVoteId.parse(`${PREFIXES.reviewVote}_${crypto.randomUUID()}`);
+  }
+  bearerSecret(): string {
+    // 256-bit URL-safe base64; same as `generateBearerSecret` in
+    // `auth.ts` for direct callers that don't go through IdGen.
+    return randomBytes(32).toString('base64url');
   }
 }
 
@@ -114,5 +126,16 @@ export class SeededIdGen implements IdGen {
   }
   reviewVoteId(): ReviewVoteId {
     return ReviewVoteId.parse(this.next(PREFIXES.reviewVote));
+  }
+  bearerSecret(): string {
+    // Counter-derived deterministic value, base64url-encoded to match
+    // the production shape's character set. The padding to 32 bytes
+    // (the same length `RandomIdGen` produces) keeps the on-disk
+    // shape identical across backends — relevant because the parity
+    // test (`sqlite-store.test.ts`) asserts byte-equality and a
+    // shorter token in tests would otherwise mask a real divergence.
+    const n = (this.counters.get('secret') ?? 0) + 1;
+    this.counters.set('secret', n);
+    return Buffer.from(`secret_${this.seed}_${String(n).padStart(54, '0')}`).toString('base64url');
   }
 }

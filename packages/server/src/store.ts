@@ -51,6 +51,15 @@ export interface MapLike<K, V> {
 export interface Store {
   readonly identities: MapLike<IdentityId, Identity>;
   readonly agentCredentials: MapLike<AgentCredentialId, AgentCredential>;
+  // Bearer-secret index for the Authenticator seam (PRD §Identity).
+  // Keyed by the SHA-256 hex digest of the issued secret, valued by
+  // the credential id. The secret itself is not stored anywhere — it
+  // is shown to the caller once at `bindAgentCredential` and never
+  // again — so this index is the only path back from a presented
+  // bearer token to a credential record. Slice 3c's
+  // `GithubOAuthAuthenticator` uses the same shape for OAuth-issued
+  // session secrets; the index is authenticator-agnostic.
+  readonly agentCredentialSecrets: MapLike<string, AgentCredentialId>;
   readonly causes: MapLike<CauseId, Cause>;
   readonly subTopics: MapLike<SubTopicId, SubTopic>;
   readonly proposals: MapLike<ProposalId, Proposal>;
@@ -107,6 +116,7 @@ export interface Store {
 export class MemoryStore implements Store {
   readonly identities = new Map<IdentityId, Identity>();
   readonly agentCredentials = new Map<AgentCredentialId, AgentCredential>();
+  readonly agentCredentialSecrets = new Map<string, AgentCredentialId>();
   readonly causes = new Map<CauseId, Cause>();
   readonly subTopics = new Map<SubTopicId, SubTopic>();
   readonly proposals = new Map<ProposalId, Proposal>();

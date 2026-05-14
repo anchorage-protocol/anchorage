@@ -63,7 +63,13 @@ import {
   type WorkKind,
 } from '@anchorage/contracts';
 import { z } from 'zod';
-import { type Authenticator, type Caller, HarnessAuthenticator, resolveCaller } from './auth.js';
+import {
+  type Authenticator,
+  type Caller,
+  HarnessAuthenticator,
+  hashBearerSecret,
+  resolveCaller,
+} from './auth.js';
 import { type Clock, SystemClock } from './clock.js';
 import { ServerError } from './errors.js';
 import { type IdGen, RandomIdGen } from './id-gen.js';
@@ -95,6 +101,18 @@ const BindAgentCredentialInput = z
   })
   .strict();
 type BindAgentCredentialInput = z.infer<typeof BindAgentCredentialInput>;
+
+// The caller receives both the stored record and the freshly-minted
+// bearer secret. The secret is the opaque token an MCP client presents
+// at the Authenticator seam (PRD §Identity); it is not stored anywhere
+// — the server keeps only `credential.secret_hash` — so this is the
+// only moment the plain value is available. The caller is responsible
+// for forwarding it to the agent that will use it (or, in tests, for
+// stashing it in a local variable).
+export interface BindAgentCredentialResult {
+  credential: AgentCredential;
+  secret: string;
+}
 
 const CreateCauseInput = z
   .object({
@@ -1389,7 +1407,7 @@ export class Server {
       return identity;
     },
 
-    bindAgentCredential: (input: BindAgentCredentialInput): AgentCredential => {
+    bindAgentCredential: (input: BindAgentCredentialInput): BindAgentCredentialResult => {
       const parsed = BindAgentCredentialInput.parse(input);
       const identityId = parsed.identity_id as IdentityId;
       const identity = this.store.identities.get(identityId);
@@ -1402,15 +1420,25 @@ export class Server {
           `cannot bind credential to ${identity.status} identity`,
         );
       }
+      // Mint an opaque bearer secret; store only its hash. The plain
+      // secret is returned to the caller exactly once (here) and is
+      // never reachable from the store afterward. PRD §Identity
+      // (Authenticator seam). The IdGen path is what makes
+      // SeededIdGen-driven tests (cassettes, parity) deterministic;
+      // RandomIdGen uses `randomBytes` for production-grade entropy.
+      const secret = this.idGen.bearerSecret();
+      const secret_hash = hashBearerSecret(secret);
       const credential: AgentCredential = {
         id: this.idGen.agentCredentialId(),
         identity_id: identity.id,
         label: parsed.label,
         status: 'active',
         created_at: this.clock.now(),
+        secret_hash,
       };
       this.store.agentCredentials.set(credential.id, credential);
-      return credential;
+      this.store.agentCredentialSecrets.set(secret_hash, credential.id);
+      return { credential, secret };
     },
 
     createCause: (input: CreateCauseInput): Cause => {

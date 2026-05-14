@@ -30,7 +30,16 @@ function buildServer(store: Store): { server: Server; caller: Caller } {
     verifier: new FakeVerifier(),
   });
   const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
-  return { server, caller: { identity_id: identity.id } };
+  // Bind a credential so the parity test exercises both the
+  // agentCredentials collection *and* the agentCredentialSecrets
+  // index introduced in slice 3b — the index must round-trip across
+  // backends or the seam-side bearer-token lookup breaks under
+  // SqliteStore.
+  const { credential } = server.bootstrap.bindAgentCredential({
+    identity_id: identity.id,
+    label: 'desktop',
+  });
+  return { server, caller: { identity_id: identity.id, agent_credential_id: credential.id } };
 }
 
 async function runScenario(store: Store): Promise<void> {
@@ -72,6 +81,7 @@ function snapshot(store: Store): Record<string, [string, unknown][]> {
   return {
     identities: collect(store.identities),
     agentCredentials: collect(store.agentCredentials),
+    agentCredentialSecrets: collect(store.agentCredentialSecrets),
     causes: collect(store.causes),
     subTopics: collect(store.subTopics),
     proposals: collect(store.proposals),

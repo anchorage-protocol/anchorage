@@ -25,6 +25,10 @@ async function fixtureWithClient() {
     verifier: new FakeVerifier(),
   });
   const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
+  const { secret } = server.bootstrap.bindAgentCredential({
+    identity_id: identity.id,
+    label: 'desktop',
+  });
   const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
   const subTopic = server.bootstrap.seedSubTopic({
     cause_id: cause.id,
@@ -33,7 +37,7 @@ async function fixtureWithClient() {
     scope_query: 'ctDNA',
   });
 
-  const mcp = buildMcpServer(server, { token: identity.id });
+  const mcp = buildMcpServer(server, { token: secret });
   const client = new Client({ name: 'test-client', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([mcp.connect(serverTransport), client.connect(clientTransport)]);
@@ -137,7 +141,11 @@ describe('mcp transport', () => {
 
     // Bob: a fresh identity, his own MCP session.
     const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
-    const bobMcp = buildMcpServer(server, { token: bob.id });
+    const { secret: bobSecret } = server.bootstrap.bindAgentCredential({
+      identity_id: bob.id,
+      label: 'bob-desktop',
+    });
+    const bobMcp = buildMcpServer(server, { token: bobSecret });
     const bob_client = new Client({ name: 'bob-client', version: '0.0.0' });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await Promise.all([bobMcp.connect(st), bob_client.connect(ct)]);
@@ -181,12 +189,18 @@ describe('mcp transport', () => {
 
 // The Authenticator is the trust boundary (PRD §Identity, Authenticator
 // seam). These tests pin the boundary behavior under the default
-// `HarnessAuthenticator`: well-formed tokens resolve to a Caller (and
-// the agent-delegation grammar round-trips), every other shape refuses
-// with `unauthorized` at the seam — before any tool handler runs, no
-// rate-limit budget burned, no per-tool gates exercised. Slice 3c's
-// `GithubOAuthAuthenticator` plugs in at the same surface; the
-// downstream contract is identical.
+// `HarnessAuthenticator`: well-formed bearer secrets (issued by
+// `bootstrap.bindAgentCredential`) resolve to a Caller carrying both
+// the identity_id and the agent_credential_id; every other token
+// refuses with `unauthorized` at the seam — before any tool handler
+// runs, no rate-limit budget burned, no per-tool gates exercised.
+// Slice 3c's `GithubOAuthAuthenticator` plugs in at the same surface;
+// downstream the contract is identical.
+//
+// Slice 3b shape: tokens are opaque bearer secrets. The
+// `identity_id` / `identity_id/credential_id` grammars from 3a are
+// retired — every caller comes from an issued credential, mirroring
+// how the production OAuth path issues session secrets.
 describe('authenticator seam', () => {
   function freshServer(): Server {
     return new Server({
@@ -194,6 +208,15 @@ describe('authenticator seam', () => {
       idGen: new SeededIdGen('a'),
       verifier: new FakeVerifier(),
     });
+  }
+
+  function mintAlice(server: Server): { identity_id: string; secret: string } {
+    const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const { secret } = server.bootstrap.bindAgentCredential({
+      identity_id: identity.id,
+      label: 'desktop',
+    });
+    return { identity_id: identity.id, secret };
   }
 
   it('rejects empty tokens with unauthorized', () => {
@@ -206,46 +229,43 @@ describe('authenticator seam', () => {
     }
   });
 
-  it('rejects tokens that name an unknown identity', () => {
+  it('rejects tokens that do not match any issued secret', () => {
     const server = freshServer();
-    expect(() => buildMcpServer(server, { token: 'I-does-not-exist' })).toThrow(ServerError);
+    // Even after minting an identity + credential, a *different*
+    // bearer value must not resolve to it — the only path is the
+    // exact secret returned by `bindAgentCredential`.
+    mintAlice(server);
+    expect(() => buildMcpServer(server, { token: 'not-a-real-secret' })).toThrow(ServerError);
     try {
-      buildMcpServer(server, { token: 'I-does-not-exist' });
+      buildMcpServer(server, { token: 'not-a-real-secret' });
     } catch (err) {
       expect((err as ServerError).code).toBe('unauthorized');
     }
   });
 
-  it('rejects malformed delegated tokens (empty credential segment)', () => {
+  it('rejects a credential id used as a token (id is not the secret)', () => {
     const server = freshServer();
     const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    expect(() => buildMcpServer(server, { token: `${identity.id}/` })).toThrow(ServerError);
-  });
-
-  it('rejects delegated tokens whose credential belongs to a different identity', () => {
-    const server = freshServer();
-    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
-    const bobCred = server.bootstrap.bindAgentCredential({
-      identity_id: bob.id,
+    const { credential } = server.bootstrap.bindAgentCredential({
+      identity_id: identity.id,
       label: 'desktop',
     });
-    // Alice's identity, Bob's credential — must refuse.
-    expect(() => buildMcpServer(server, { token: `${alice.id}/${bobCred.id}` })).toThrow(
-      ServerError,
-    );
+    // The credential id is a public handle; only the bearer secret
+    // (returned once at bind time) authenticates. Presenting the id
+    // must refuse — otherwise the bearer model collapses.
+    expect(() => buildMcpServer(server, { token: credential.id })).toThrow(ServerError);
   });
 
-  it('accepts a delegated token and round-trips the agent_credential_id through tool calls', async () => {
+  it('accepts a valid secret and round-trips both ids through tool calls', async () => {
     const server = freshServer();
     const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const cred = server.bootstrap.bindAgentCredential({
+    const { credential, secret } = server.bootstrap.bindAgentCredential({
       identity_id: identity.id,
       label: 'desktop',
     });
     const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
 
-    const mcp = buildMcpServer(server, { token: `${identity.id}/${cred.id}` });
+    const mcp = buildMcpServer(server, { token: secret });
     const client = new Client({ name: 'delegated-client', version: '0.0.0' });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await Promise.all([mcp.connect(st), client.connect(ct)]);
@@ -254,7 +274,8 @@ describe('authenticator seam', () => {
     // resolved caller flowed through and the downstream gates did not
     // refuse on its account. The Caller posture is opaque from the
     // wire's perspective; we cross-check the identity's capacity
-    // record landed under alice's id (not bob's, not nobody's).
+    // record landed under alice's id and the credential survived as
+    // the side-channel reference (credential id is the audit handle).
     const result = await client.callTool({
       name: 'set_capacity',
       arguments: { cause_id: cause.id, rate: 1, kinds: ['excerpt'] },
@@ -262,15 +283,31 @@ describe('authenticator seam', () => {
     expect(result.isError).toBeFalsy();
     const cap = server.store.capacities.get(`${identity.id}|${cause.id}`);
     expect(cap?.rate).toBe(1);
+    expect(server.store.agentCredentials.get(credential.id)?.status).toBe('active');
+  });
+
+  it('refuses a token whose credential has been revoked', () => {
+    const server = freshServer();
+    const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const { credential, secret } = server.bootstrap.bindAgentCredential({
+      identity_id: identity.id,
+      label: 'desktop',
+    });
+    server.store.agentCredentials.set(credential.id, { ...credential, status: 'revoked' });
+    expect(() => buildMcpServer(server, { token: secret })).toThrow(ServerError);
   });
 
   it('refuses a token for a revoked identity at the seam', () => {
     const server = freshServer();
     const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const { secret } = server.bootstrap.bindAgentCredential({
+      identity_id: identity.id,
+      label: 'desktop',
+    });
     // Direct store mutation to flip status — revocation tooling is
     // not yet exposed as a bootstrap method, and the seam check
     // doesn't care how the status got to `revoked`.
     server.store.identities.set(identity.id, { ...identity, status: 'revoked' });
-    expect(() => buildMcpServer(server, { token: identity.id })).toThrow(ServerError);
+    expect(() => buildMcpServer(server, { token: secret })).toThrow(ServerError);
   });
 });

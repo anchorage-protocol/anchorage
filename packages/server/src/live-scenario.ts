@@ -113,7 +113,11 @@ export async function buildLiveScenario(): Promise<LiveScenario> {
     server.curator.acceptProposal(proposal.proposal_id);
   }
   const agentIdentity = server.bootstrap.mintIdentity({ display_name: 'live-agent' });
-  const mcp = buildMcpServer(server, { token: agentIdentity.id });
+  const { secret } = server.bootstrap.bindAgentCredential({
+    identity_id: agentIdentity.id,
+    label: 'live-agent',
+  });
+  const mcp = buildMcpServer(server, { token: secret });
   const client = new Client({ name: 'live-agent', version: '0.0.0' });
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await Promise.all([mcp.connect(st), client.connect(ct)]);

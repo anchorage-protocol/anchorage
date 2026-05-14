@@ -219,7 +219,11 @@ async function main(): Promise<void> {
   for (let i = 1; i <= CONTRIBUTOR_COUNT; i++) {
     const display_name = `contributor-${i}`;
     const identity = server.bootstrap.mintIdentity({ display_name });
-    const mcp = buildMcpServer(server, { token: identity.id });
+    const { secret } = server.bootstrap.bindAgentCredential({
+      identity_id: identity.id,
+      label: display_name,
+    });
+    const mcp = buildMcpServer(server, { token: secret });
     const client = new Client({ name: display_name, version: '0.0.0' });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await Promise.all([mcp.connect(st), client.connect(ct)]);

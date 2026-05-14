@@ -24,7 +24,10 @@ function fixture(
     ...(opts.review ? { review: opts.review } : {}),
   });
   const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
-  const cred = server.bootstrap.bindAgentCredential({ identity_id: identity.id, label: 'desktop' });
+  const { credential: cred } = server.bootstrap.bindAgentCredential({
+    identity_id: identity.id,
+    label: 'desktop',
+  });
   const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
   const st = server.bootstrap.seedSubTopic({
     cause_id: cause.id,
@@ -196,7 +199,7 @@ describe('tools.proposeAnchor', () => {
   it('rejects an agent credential that does not belong to the identity', async () => {
     const f = fixture();
     const other = f.server.bootstrap.mintIdentity({ display_name: 'mallory' });
-    const otherCred = f.server.bootstrap.bindAgentCredential({
+    const { credential: otherCred } = f.server.bootstrap.bindAgentCredential({
       identity_id: other.id,
       label: 'mallory-bot',
     });
@@ -2496,7 +2499,7 @@ describe('two-component reputation decay', () => {
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const aliceCred = server.bootstrap.bindAgentCredential({
+    const { credential: aliceCred } = server.bootstrap.bindAgentCredential({
       identity_id: alice.id,
       label: 'desktop',
     });
@@ -2580,7 +2583,7 @@ describe('two-component reputation decay', () => {
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const aliceCred = server.bootstrap.bindAgentCredential({
+    const { credential: aliceCred } = server.bootstrap.bindAgentCredential({
       identity_id: alice.id,
       label: 'desktop',
     });
@@ -2663,7 +2666,7 @@ describe('recent-activity assignment gate', () => {
       verifier: new FakeVerifier(),
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const aliceCred = server.bootstrap.bindAgentCredential({
+    const { credential: aliceCred } = server.bootstrap.bindAgentCredential({
       identity_id: alice.id,
       label: 'desktop',
     });
@@ -2698,7 +2701,7 @@ describe('recent-activity assignment gate', () => {
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const aliceCred = server.bootstrap.bindAgentCredential({
+    const { credential: aliceCred } = server.bootstrap.bindAgentCredential({
       identity_id: alice.id,
       label: 'desktop',
     });
@@ -2765,7 +2768,7 @@ describe('recent-activity assignment gate', () => {
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const aliceCred = server.bootstrap.bindAgentCredential({
+    const { credential: aliceCred } = server.bootstrap.bindAgentCredential({
       identity_id: alice.id,
       label: 'desktop',
     });
