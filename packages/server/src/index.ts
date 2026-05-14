@@ -25,6 +25,14 @@ export {
 } from './auth-github.js';
 export { type Clock, FakeClock, SystemClock } from './clock.js';
 export { ServerError, type ServerErrorCode } from './errors.js';
+export {
+  type AnchorageHttpHandler,
+  type AnchorageHttpOpts,
+  type AnchorageHttpServer,
+  buildHttpHandler,
+  type StartHttpServerOpts,
+  startHttpServer,
+} from './http.js';
 export { type IdGen, RandomIdGen, SeededIdGen } from './id-gen.js';
 export {
   LiveFetchVerifier,
