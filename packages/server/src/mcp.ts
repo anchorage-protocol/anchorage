@@ -7,6 +7,7 @@ import {
   DeclineAssignmentOutput,
   FetchCalibrationBatchInput,
   FetchCalibrationBatchOutput,
+  NodeId,
   PROTOCOL_VERSION,
   ProposeAnchorInput,
   ProposeAnchorOutput,
@@ -32,9 +33,11 @@ import {
   RequestAssignmentOutput,
   SetCapacityInput,
   SetCapacityOutput,
+  SubTopicId,
 } from '@anchorage/contracts';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { Caller } from './auth.js';
 import { ServerError } from './errors.js';
 import type { Server } from './server.js';
@@ -294,6 +297,120 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
       outputSchema: QueryReputationOutput.shape,
     },
     wrap(server.tools.queryReputation),
+  );
+
+  // ── Read-path resources ─────────────────────────────────────────
+  // PRD §Read-path tools and resources commits four MCP resources as
+  // the passive browsing surface — `cause://`, `sub-topic://{id}`,
+  // `node://{id}`, `subgraph://{sub-topic-id}`. The handlers live on
+  // `server.resources.*`; this is the wire-side registration.
+  //
+  // Each resource returns a single `text/json` content block (the
+  // structured payload JSON-stringified) with the resolved URI in the
+  // `uri` field. Errors surface as McpError: ServerError('not_found')
+  // becomes InvalidParams (the URI variable did not resolve), and the
+  // typed PRD error code rides along in the McpError `data` field so
+  // clients can pattern-match exactly as they do on tool error
+  // payloads. Anything other than ServerError bubbles up as a
+  // protocol-level InternalError — the same posture wrap() takes for
+  // unexpected throws in the tool path.
+
+  function resourceError(err: unknown): never {
+    if (err instanceof ServerError) {
+      const jsonRpcCode =
+        err.code === 'not_found' || err.code === 'invalid_input'
+          ? ErrorCode.InvalidParams
+          : ErrorCode.InternalError;
+      throw new McpError(jsonRpcCode, err.message, { code: err.code });
+    }
+    throw err;
+  }
+
+  function jsonResource(uri: string, payload: unknown): ReadResourceResult {
+    return {
+      contents: [
+        {
+          uri,
+          mimeType: 'application/json',
+          text: JSON.stringify(payload),
+        },
+      ],
+    };
+  }
+
+  // cause:// — static URI, list of active causes + their active sub-topics.
+  mcp.registerResource(
+    'cause-directory',
+    'cause://',
+    {
+      description: 'List of active causes with their active sub-topics.',
+      mimeType: 'application/json',
+    },
+    async (uri): Promise<ReadResourceResult> => {
+      try {
+        const result = await server.resources.getCauseDirectory(caller);
+        return jsonResource(uri.toString(), result);
+      } catch (err) {
+        resourceError(err);
+      }
+    },
+  );
+
+  // sub-topic://{id} — sub-topic detail + activity counters.
+  mcp.registerResource(
+    'sub-topic-detail',
+    new ResourceTemplate('sub-topic://{id}', { list: undefined }),
+    {
+      description: 'Sub-topic metadata, status, scope query, and recent activity counters.',
+      mimeType: 'application/json',
+    },
+    async (uri, variables): Promise<ReadResourceResult> => {
+      try {
+        const id = SubTopicId.parse(String(variables['id']));
+        const result = await server.resources.getSubTopicDetail(caller, id);
+        return jsonResource(uri.toString(), result);
+      } catch (err) {
+        resourceError(err);
+      }
+    },
+  );
+
+  // node://{id} — node + immediate active neighbors.
+  mcp.registerResource(
+    'node-neighborhood',
+    new ResourceTemplate('node://{id}', { list: undefined }),
+    {
+      description: 'A node plus its immediate active edge neighborhood.',
+      mimeType: 'application/json',
+    },
+    async (uri, variables): Promise<ReadResourceResult> => {
+      try {
+        const id = NodeId.parse(String(variables['id']));
+        const result = await server.resources.getNodeNeighborhood(caller, id);
+        return jsonResource(uri.toString(), result);
+      } catch (err) {
+        resourceError(err);
+      }
+    },
+  );
+
+  // subgraph://{sub-topic-id} — active nodes + edges scoped to a sub-topic.
+  mcp.registerResource(
+    'subgraph',
+    new ResourceTemplate('subgraph://{sub_topic_id}', { list: undefined }),
+    {
+      description: 'Active nodes and edges scoped to (or referencing) a sub-topic.',
+      mimeType: 'application/json',
+    },
+    async (uri, variables): Promise<ReadResourceResult> => {
+      try {
+        const id = SubTopicId.parse(String(variables['sub_topic_id']));
+        const result = await server.resources.getSubgraph(caller, id);
+        return jsonResource(uri.toString(), result);
+      } catch (err) {
+        resourceError(err);
+      }
+    },
   );
 
   return mcp;

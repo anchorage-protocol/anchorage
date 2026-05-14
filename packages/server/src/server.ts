@@ -10,6 +10,7 @@ import {
   CastReviewVoteInput,
   type CastReviewVoteOutput,
   type Cause,
+  type CauseDirectory,
   type CauseId,
   DeclineAssignmentInput,
   type DeclineAssignmentOutput,
@@ -23,6 +24,7 @@ import {
   type IdentityId,
   type Node,
   type NodeId,
+  type NodeNeighborhood,
   type OpenQuestionNode,
   type Proposal,
   type ProposalId,
@@ -55,7 +57,9 @@ import {
   type ReviewVote,
   SetCapacityInput,
   type SetCapacityOutput,
+  type Subgraph,
   type SubTopic,
+  type SubTopicDetail,
   type SubTopicId,
   type SupersedesEdge,
   type SynthesisNode,
@@ -2775,6 +2779,177 @@ export class Server {
         .slice(0, CALIBRATION_BATCH_SIZE)
         .map((p) => ({ proposal_id: p.id, payload: p.payload }));
       return { items };
+    },
+  };
+
+  // PRD §Read-path tools and resources: the *resources* surface (passive
+  // browsing) — `cause://`, `sub-topic://{id}`, `node://{id}`,
+  // `subgraph://{sub-topic-id}`. The MCP-side registration lives in
+  // mcp.ts; these handlers compute the structured payload for each URI
+  // out of current graph state, with the same Caller-resolution gating
+  // as the read-path tools (token must resolve, no rate-limit budget
+  // consumed). Sim≡prod by construction: testbed and production runtime
+  // expose the same resources through the same transport.
+  readonly resources = {
+    // `cause://` — list of active causes, each with their active
+    // sub-topics. The home-page payload: enough to render the cause
+    // list and click into a cause without a second resource read.
+    // Archived causes are excluded (the home view is a recruitment
+    // surface); proposed/archived sub-topics are excluded for the
+    // same reason (the home view shows contribution targets, not
+    // queue state). Stable order (created_at, then id) keeps replay
+    // determinism intact for testbed runs that observe this surface.
+    getCauseDirectory: async (caller: Caller): Promise<CauseDirectory> => {
+      resolveCaller(this.store, caller);
+      const causes = [...this.store.causes.values()].filter((c) => c.status === 'active');
+      causes.sort((a, b) => {
+        if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+        return a.id.localeCompare(b.id);
+      });
+      const out: CauseDirectory = {
+        causes: causes.map((cause) => {
+          const subTopics = [...this.store.subTopics.values()].filter(
+            (st) => st.cause_id === cause.id && st.status === 'active',
+          );
+          subTopics.sort((a, b) => {
+            if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+            return a.id.localeCompare(b.id);
+          });
+          return { cause, sub_topics: subTopics };
+        }),
+      };
+      return out;
+    },
+
+    // `sub-topic://{id}` — sub-topic metadata, status, scope query,
+    // recent activity. The activity counters are derived projections
+    // — kept consistent with the graph by computation, not by
+    // bookkeeping, the same way deriveFrontier is consistent with
+    // proposals/edges. Resolves the sub-topic regardless of status:
+    // a `proposed` sub-topic page is meaningful (it shows the
+    // proposal under review), and `archived` sub-topics remain
+    // browsable as graph history. The caller-side decision about
+    // which statuses to surface lives at the UI.
+    getSubTopicDetail: async (caller: Caller, subTopicId: SubTopicId): Promise<SubTopicDetail> => {
+      resolveCaller(this.store, caller);
+      const subTopic = this.store.subTopics.get(subTopicId);
+      if (!subTopic) {
+        throw new ServerError('not_found', `sub-topic not found: ${subTopicId}`);
+      }
+      const cause = this.store.causes.get(subTopic.cause_id);
+      if (!cause) {
+        throw new ServerError(
+          'invalid_state',
+          `sub-topic ${subTopicId} references missing cause ${subTopic.cause_id}`,
+        );
+      }
+      let activeNodes = 0;
+      for (const n of this.store.nodes.values()) {
+        if (n.status !== 'active') continue;
+        if (n.home_sub_topic_id === subTopicId || n.scope_memberships.includes(subTopicId)) {
+          activeNodes += 1;
+        }
+      }
+      let stagedProposals = 0;
+      for (const p of this.store.proposals.values()) {
+        if (p.status !== 'staged') continue;
+        const located = this.locateProposalForReview(p);
+        if (located && located.sub_topic_id === subTopicId) stagedProposals += 1;
+      }
+      const frontierItems = this.deriveFrontier({ sub_topic_id: subTopicId }).length;
+      return {
+        sub_topic: subTopic,
+        cause,
+        activity: {
+          active_nodes: activeNodes,
+          staged_proposals: stagedProposals,
+          frontier_items: frontierItems,
+        },
+      };
+    },
+
+    // `node://{id}` — node + immediate active neighbors. "Immediate"
+    // means one edge hop in either direction over the active edge
+    // set, with the other endpoint of each edge hydrated. The
+    // requested node is resolvable regardless of status (so a node
+    // page can render rejected / unresolvable nodes); edges and
+    // neighbors are restricted to `active` so the neighborhood view
+    // is the convex-hull projection — staged/rejected edges live in
+    // the proposal queue, visible via `query_proposals`. Stable
+    // iteration order keeps cassette equality.
+    getNodeNeighborhood: async (caller: Caller, nodeId: NodeId): Promise<NodeNeighborhood> => {
+      resolveCaller(this.store, caller);
+      const node = this.store.nodes.get(nodeId);
+      if (!node) {
+        throw new ServerError('not_found', `node not found: ${nodeId}`);
+      }
+      const edges: Edge[] = [];
+      const neighborIds = new Set<NodeId>();
+      for (const e of this.store.edges.values()) {
+        if (e.status !== 'active') continue;
+        if (e.from === nodeId) {
+          edges.push(e);
+          neighborIds.add(e.to);
+        } else if (e.to === nodeId) {
+          edges.push(e);
+          neighborIds.add(e.from);
+        }
+      }
+      edges.sort((a, b) => {
+        if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+        return a.id.localeCompare(b.id);
+      });
+      const neighbors: Node[] = [];
+      for (const nid of neighborIds) {
+        const n = this.store.nodes.get(nid);
+        if (n) neighbors.push(n);
+      }
+      neighbors.sort((a, b) => {
+        if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+        return a.id.localeCompare(b.id);
+      });
+      return { node, edges, neighbors };
+    },
+
+    // `subgraph://{sub-topic-id}` — active subgraph scoped to the
+    // sub-topic. Node set: active nodes whose home OR scope
+    // memberships include the sub-topic (the scope-membership
+    // projection is what makes a node visible outside its home).
+    // Edge set: active edges with both endpoints in the node set.
+    // Sub-topic itself is resolvable regardless of status (matching
+    // getSubTopicDetail), but if the sub-topic doesn't exist this
+    // refuses with `not_found` rather than returning an empty
+    // subgraph — a request for a non-existent URI is a client error,
+    // not a valid empty answer.
+    getSubgraph: async (caller: Caller, subTopicId: SubTopicId): Promise<Subgraph> => {
+      resolveCaller(this.store, caller);
+      const subTopic = this.store.subTopics.get(subTopicId);
+      if (!subTopic) {
+        throw new ServerError('not_found', `sub-topic not found: ${subTopicId}`);
+      }
+      const nodes: Node[] = [];
+      const nodeIds = new Set<NodeId>();
+      for (const n of this.store.nodes.values()) {
+        if (n.status !== 'active') continue;
+        if (n.home_sub_topic_id === subTopicId || n.scope_memberships.includes(subTopicId)) {
+          nodes.push(n);
+          nodeIds.add(n.id);
+        }
+      }
+      nodes.sort((a, b) => {
+        if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+        return a.id.localeCompare(b.id);
+      });
+      const edges: Edge[] = [];
+      for (const e of this.store.edges.values()) {
+        if (e.status !== 'active') continue;
+        if (nodeIds.has(e.from) && nodeIds.has(e.to)) edges.push(e);
+      }
+      edges.sort((a, b) => {
+        if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+        return a.id.localeCompare(b.id);
+      });
+      return { sub_topic: subTopic, nodes, edges };
     },
   };
 
