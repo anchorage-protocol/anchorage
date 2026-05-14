@@ -21,7 +21,8 @@
     "live": "tsx --env-file-if-exists=../../.env --env-file-if-exists=.env src/run-live.ts",
     "population": "tsx --env-file-if-exists=../../.env --env-file-if-exists=.env src/run-population.ts",
     "deep-loop": "tsx --env-file-if-exists=../../.env --env-file-if-exists=.env src/run-deep-loop.ts",
-    "deep-loop-cube": "tsx --env-file-if-exists=../../.env --env-file-if-exists=.env src/run-deep-loop-cube.ts"
+    "deep-loop-cube": "tsx --env-file-if-exists=../../.env --env-file-if-exists=.env src/run-deep-loop-cube.ts",
+    "admin": "tsx src/admin-cli.ts"
   },
   "dependencies": {
     "@anchorage/contracts": "workspace:*",

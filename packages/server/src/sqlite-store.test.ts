@@ -122,6 +122,7 @@ describe('SqliteStore — Store surface', () => {
       status: 'active' as const,
       attestation_level: 0,
       identity_provider: 'harness' as const,
+      role: 'contributor' as const,
       created_at: '2026-01-01T00:00:00.000Z',
     };
     store.identities.set(identity.id, identity);
@@ -155,6 +156,7 @@ describe('SqliteStore — Store surface', () => {
         status: 'active',
         attestation_level: 0,
         identity_provider: 'harness',
+        role: 'contributor',
         created_at: '2026-01-01T00:00:00.000Z',
       });
     }

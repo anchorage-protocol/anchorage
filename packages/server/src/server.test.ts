@@ -22,6 +22,7 @@ describe('bootstrap.mintIdentity', () => {
       created_at: '2026-01-01T00:00:00.000Z',
       attestation_level: 0,
       identity_provider: 'harness',
+      role: 'contributor',
     });
     expect(server.store.identities.get(ident.id)).toEqual(ident);
   });
@@ -29,6 +30,35 @@ describe('bootstrap.mintIdentity', () => {
   it('rejects empty display name', () => {
     const server = newServer();
     expect(() => server.bootstrap.mintIdentity({ display_name: '' })).toThrow();
+  });
+
+  it("defaults role to 'contributor' (slice 4b)", () => {
+    const server = newServer();
+    const ident = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    expect(ident.role).toBe('contributor');
+  });
+
+  it("mints a curator under 'harness' provider when role is set (slice 4b admin path)", () => {
+    const server = newServer();
+    const ident = server.bootstrap.mintIdentity({ display_name: 'carla', role: 'curator' });
+    expect(ident.role).toBe('curator');
+    expect(ident.identity_provider).toBe('harness');
+  });
+
+  it("refuses role: 'curator' under an IdP-driven provider (slice 4b — no OAuth auto-promotion)", () => {
+    const server = newServer();
+    expect(() =>
+      server.bootstrap.mintIdentity({
+        display_name: 'mallory',
+        role: 'curator',
+        identity_provider: 'github',
+        identity_provider_subject: '999',
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        code: 'invalid_input',
+      }) as never,
+    );
   });
 });
 

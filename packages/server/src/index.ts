@@ -3,6 +3,12 @@ import { PROTOCOL_VERSION } from '@anchorage/contracts';
 export const SERVER_PROTOCOL_VERSION = PROTOCOL_VERSION;
 
 export {
+  type AdminCliDeps,
+  type AdminCliResult,
+  makeProductionServer,
+  runAdminCli,
+} from './admin-cli.js';
+export {
   type Authenticator,
   type Caller,
   HarnessAuthenticator,

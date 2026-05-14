@@ -103,6 +103,14 @@ const MintIdentityInput = z
     // can't express the dependency, so the check lives in the
     // bootstrap method.
     identity_provider_subject: z.string().min(1).max(200).optional(),
+    // Slice 4b: the role the minted identity carries. Defaults to
+    // `'contributor'`. `'curator'` is gated to `'harness'`-provider
+    // mints only — the bootstrap method refuses
+    // `(identity_provider: 'github', role: 'curator')` so an OAuth
+    // signin can never auto-promote into the curator pool. The
+    // admin CLI (`anchorage-admin mint-curator`) is the only path
+    // that produces curator identities.
+    role: z.enum(['contributor', 'curator']).optional(),
   })
   .strict();
 type MintIdentityInput = z.infer<typeof MintIdentityInput>;
@@ -1442,6 +1450,20 @@ export class Server {
           `identity_provider '${provider}' requires identity_provider_subject`,
         );
       }
+      // Slice 4b role-provider invariant: only `'harness'` mints can
+      // produce a curator. The admin CLI (`anchorage-admin
+      // mint-curator`) is the production path for curator seating;
+      // an IdP-driven mint that requested `role: 'curator'` would
+      // open a coordination back-door (any GitHub account could
+      // self-promote on first signin) that the operator-only
+      // bootstrap precludes by construction. PRD §Identity (Roles).
+      const role = parsed.role ?? 'contributor';
+      if (role === 'curator' && provider !== 'harness') {
+        throw new ServerError(
+          'invalid_input',
+          `curator role can only be minted under identity_provider 'harness'; got '${provider}'`,
+        );
+      }
       // Identity-on-first-signin: if the (provider, subject) pair
       // already names an existing identity, the IdP-mint path is a
       // bug — `GithubOAuthAuthenticator` resolves through
@@ -1470,6 +1492,7 @@ export class Server {
         ...(parsed.identity_provider_subject !== undefined
           ? { identity_provider_subject: parsed.identity_provider_subject }
           : {}),
+        role,
       };
       this.store.identities.set(identity.id, identity);
       if (parsed.identity_provider_subject !== undefined) {

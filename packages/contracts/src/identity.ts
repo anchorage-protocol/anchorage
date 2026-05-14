@@ -12,6 +12,24 @@ export type PrincipalStatus = z.infer<typeof PrincipalStatus>;
 export const IdentityProvider = z.enum(['harness', 'github']);
 export type IdentityProvider = z.infer<typeof IdentityProvider>;
 
+// Role attached to the identity. `contributor` is the default — every
+// IdP-driven signin (slice 3c's GitHub OAuth, future ORCID, future
+// institutional SSO) lands here, and the contributor-facing write
+// surface is the only one a contributor exercises. `curator` is the
+// privileged role per PRD §The contribution flow (Resolve step) and
+// PRD §Reviewer assignment (step 4: curator escalation): the
+// human-or-humans who can fire `server.curator.*` (`acceptProposal`,
+// `rejectProposal`, `deferSubTopic`, `expireStaleAssignments`,
+// `revokeIdentity`). Slice 4b (the role field + the `anchorage-admin`
+// CLI bootstrap) commits the data-model side; the curator-only MCP
+// tool surface that reads the role lands in slice 7 alongside the
+// operational tooling UI. The role is invariant under IdP signin:
+// only `'harness'`-provider mints (i.e. the admin CLI) can produce a
+// curator, so no GitHub account can auto-promote into the curator
+// pool — curator seating is an operator decision.
+export const IdentityRole = z.enum(['contributor', 'curator']);
+export type IdentityRole = z.infer<typeof IdentityRole>;
+
 export const Identity = z
   .object({
     id: IdentityId,
@@ -45,6 +63,13 @@ export const Identity = z
     // `'harness'` mints (no external subject to bind against);
     // required for IdP-driven providers in slice 3c+.
     identity_provider_subject: z.string().min(1).max(200).optional(),
+    // Server-side role (slice 4b). Defaults to `'contributor'` so
+    // pre-4b stored records and cassettes parse cleanly through the
+    // default without re-recording; new identities minted through the
+    // admin CLI may set `'curator'`. PRD §Identity (Roles) and PRD
+    // §The contribution flow document the role's semantics; the
+    // curator-only MCP tool surface that reads it lands in slice 7.
+    role: IdentityRole.default('contributor'),
   })
   .strict();
 export type Identity = z.infer<typeof Identity>;

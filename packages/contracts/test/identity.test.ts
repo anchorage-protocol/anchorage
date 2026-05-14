@@ -63,6 +63,20 @@ describe('Identity', () => {
   it('rejects a non-ISO timestamp', () => {
     expect(() => Identity.parse({ ...valid, created_at: '2026-05-06' })).toThrow();
   });
+
+  it("defaults role to 'contributor' when absent (slice 4b — pre-4b records parse cleanly)", () => {
+    const parsed = Identity.parse(valid);
+    expect(parsed.role).toBe('contributor');
+  });
+
+  it("parses an explicit role: 'curator'", () => {
+    const parsed = Identity.parse({ ...valid, role: 'curator' });
+    expect(parsed.role).toBe('curator');
+  });
+
+  it('rejects an unknown role value', () => {
+    expect(() => Identity.parse({ ...valid, role: 'admin' })).toThrow();
+  });
 });
 
 describe('AgentCredential', () => {
