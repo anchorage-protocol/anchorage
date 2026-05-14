@@ -71,20 +71,24 @@
 //     floor applies at escalation) — closing the v2 cell's
 //     auto-close-path failure.
 // The cube's recorded outcome: the overstated contested claim ends
-// `rejected` in six of eight cells — the three v0 cells where the
+// `rejected` in seven of nine cells — the three v0 cells where the
 // adversary doesn't engage or rejects on the merits, plus the
 // `borderline-contested-v1` cell, the `borderline-contested-v3`
-// cell, and the `borderline-surrogate` cell (a second contested-
-// item-severity cell, drift pattern surrogate-substitution instead
-// of verb-swap, whose recorded v0 run closes the drift cleanly) —
-// and `accepted` in *two*: `borderline-contested` (the v0
-// escalation-path failure), and `borderline-contested-v2` (the
-// auto-close-path failure that the v1 closure-stack knobs don't
-// reach). Two findings, both pinned. The contested-item-severity
-// axis now has two cells with different v0 outcomes — verb-swap
-// drift breaks v0, surrogate-substitution drift in this rollout
-// does not — which is itself a finding (single-rollout signal,
-// not a closure rule).
+// cell, and two contested-item-severity cells whose v0 runs both
+// close the drift cleanly via *different* paths (the
+// `borderline-surrogate` cell via curator escalation reject on a
+// 0-1-1 tally; the `borderline-subgroup` cell via auto-close-reject
+// on a 3-0 tally, 0 escalations) — and `accepted` in *two*:
+// `borderline-contested` (the v0 escalation-path failure), and
+// `borderline-contested-v2` (the auto-close-path failure that the v1
+// closure-stack knobs don't reach). Two findings, both pinned. The
+// contested-item-severity axis now reads three drift kinds — verb-
+// swap drift breaks v0, surrogate-substitution drift v0 closes,
+// generalization-from-subgroup drift v0 closes — so two of three
+// drift kinds the v0 stack handles; the picture forming is that
+// `borderline-contested`'s verb-swap recording may have been
+// sampling-unlucky, or that verb-swap is genuinely the hardest drift
+// kind for the model adversary to refuse.
 //
 // Cassettes: multi-cassette, one file per cell, at
 // `test/fixtures/<cell.cassette_basename>.json` — each cell its own
@@ -267,10 +271,11 @@ async function main(): Promise<void> {
         'borderline-contested-v2 cell that records a second closure failure at the auto-close',
         "path the v1 knobs don't reach, a borderline-contested-v3 cell where",
         'contested_votes_to_accept — the first closure-stack knob to touch the auto-close-accept',
-        'path — contains the v2 failure, and a borderline-surrogate cell that adds a second',
-        'contested-item-severity reading on the v0 stack with a structurally different drift',
-        'pattern — surrogate-substitution instead of verb-swap) and reports the per-cell and',
-        'cross-cell outcomes. Set a key and re-run:',
+        'path — contains the v2 failure, plus borderline-surrogate and borderline-subgroup cells',
+        'that add second and third contested-item-severity readings on the v0 stack with',
+        'structurally different drift patterns — surrogate-substitution and generalization-from-',
+        'subgroup, respectively, both of which the v0 stack closes cleanly) and reports the',
+        'per-cell and cross-cell outcomes. Set a key and re-run:',
         '',
         '  ANTHROPIC_API_KEY=sk-... pnpm --filter @anchorage/server deep-loop-cube',
         '',
@@ -318,13 +323,15 @@ async function main(): Promise<void> {
   // per-cell-status table; the headline is the contested overstated
   // claim's accept-rate across cells (attack-success-rate, ASR) plus
   // how many cells saw the adversary actually drift on it. The
-  // recorded baseline across the full cell set: 6/8 cells reject
+  // recorded baseline across the full cell set: 7/9 cells reject
   // the overstatement (the three v0 cells where the adversary
   // doesn't engage or rejects on the merits, plus the v1 and v3
   // closure-stack cells where the recorded rollouts land tallies
-  // their respective stacks close reject, plus the borderline-
-  // surrogate cell where the strategic adversary judges the
-  // surrogate-as-target overreach too brazen to defend); 2/8
+  // their respective stacks close reject, plus the two additional
+  // contested-item-severity cells whose v0 rollouts close cleanly
+  // via different paths — borderline-surrogate via curator
+  // escalation reject on a 0-1-1 tally, borderline-subgroup via
+  // auto-close-reject on a 3-0 tally with 0 escalations); 2/9
   // accept it — the `borderline-contested` cell where the v0
   // curator escalation closes a 1-1-1 toward accept, and the
   // `borderline-contested-v2` cell where the auto-close-accept
