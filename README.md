@@ -70,7 +70,7 @@ See [ROADMAP.md](./ROADMAP.md) for phasing.
 
 ## Contributing
 
-While we're still designing, the contributions that help most:
+Between Phase 1 closure and Phase 2 opening, the contributions that help most:
 
 - **Pressure-testing the design.** Issues pointing at specific failure modes in the governance design are gold.
 - **Sub-topic candidates within colon cancer** (the locked v0 cause) that fit the criteria in [docs/seed-topic.md](./docs/seed-topic.md). The shortlist is open through instance launch; the final v0 starter set isn't fixed yet.

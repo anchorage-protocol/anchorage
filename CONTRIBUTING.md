@@ -1,6 +1,6 @@
 # Contributing to Anchorage
 
-Anchorage is in concurrent Phase 0 + Phase 1: the design docs and the adversary testbed co-evolve, with both the docs and the v0 MCP server / testbed harness open to contribution. This file describes the surfaces and the flow.
+Anchorage is between Phase 1 (adversary testbed, closed 2026-05-14) and Phase 2 (single-cause public instance, not yet open). The design docs, the v0 MCP server, and the testbed harness are all open to contribution; what's appropriate right now is testbed extension, design pressure-testing, and editorial sharpening — not Phase 2 scaffolding (auth, IdP, web UI, live-fetch verification) until the phase formally opens. This file describes the surfaces and the flow.
 
 ## Surfaces to contribute to
 

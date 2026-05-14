@@ -2,7 +2,7 @@
 
 > The technical north star: data model, interfaces, governance machinery, calibration, credit, adversary testbed. Where the [manifesto](./manifesto.md) explains *why* and [governance](./governance.md) sketches *who decides what*, this document specifies *how*.
 
-This document captures design intent. **Field-level contracts** (zod schemas, MCP tool I/O shapes, lifecycle states) live in [`@anchorage/contracts`](../packages/contracts/src) and are the executable spec. The two stay in lockstep under the docs-never-drift discipline (see [CLAUDE.md](../CLAUDE.md)) — a contract change without a doc change, or vice versa, is a bug. Parameters deliberately deferred to the adversary-testbed phase — calibration ratios, reputation decay rates, vote thresholds — remain unspecified here; they will be tuned against simulation rather than guessed.
+This document captures design intent. **Field-level contracts** (zod schemas, MCP tool I/O shapes, lifecycle states) live in [`@anchorage/contracts`](../packages/contracts/src) and are the executable spec. The two stay in lockstep under the docs-never-drift discipline (see [CLAUDE.md](../CLAUDE.md)) — a contract change without a doc change, or vice versa, is a bug. Parameters deliberately deferred to the adversary testbed — calibration ratios, reputation decay rates, vote thresholds — remain unspecified here; they are tuned against simulation rather than guessed, with Phase 1's cube suite ([docs/phase1-results.md](./phase1-results.md)) reading the closure properties each parameter axis pins, and the testbed remaining the regression handle for any future change.
 
 ---
 
@@ -247,7 +247,7 @@ In Phase 3+: auto-discovery surfaces tractable scope envelopes from graph state;
 
 ## Identity
 
-The identity model is a requirements sketch in v0; specific tech (OIDC providers, key formats, attestations) is a Phase 1 implementation choice, but the *contract* the rest of the design depends on is fixed here.
+The identity model is a requirements sketch in v0; specific tech (OIDC providers, key formats, attestations) is a Phase 2 implementation choice — Phase 1 wired the gates and budget arithmetic against synthetic identities, but the production IdP and attestation issuance land with the public instance — and the *contract* the rest of the design depends on is fixed here.
 
 Sybil-resistance has four layers: **binding cost** at issuance, **issuance-frequency cap** at the IdP, **per-identity rate-limit accounting** at the MCP write surface, and **cross-cause identity-clustering** at the curator surface. The first two live below the MCP layer — the server does not mint identities; the second two are server-side primitives. They compose multiplicatively against an adversary budget: a coalition affording K sybils pays per-sybil binding cost at mint, must spread the K mints across multiple epochs at the issuance-frequency cap, has each sybil's per-epoch throughput bounded by the rate-limit, and surfaces in the clustering projection if behavioral coordination survives the first three. The architecture's regression handle is the [sybil-amplified-coalition scenario](#adversary-testbed) where a fresh recruit walks past every *behavior-based* defense by construction (cluster signal, calibration record, reputation gates all require accumulated per-identity history); the four identity-layer primitives are what closes the seam the behavior-based stack cannot.
 

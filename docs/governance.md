@@ -126,6 +126,6 @@ The principle is that exposure should help reviewers more than it helps attacker
 
 ## What this document will become
 
-This is the skeleton. The full governance specification — with concrete parameter ranges, reviewer-assignment pseudocode, and the formal definition of the calibration regime — lives in the [PRD](./prd.md) and will be tuned against the adversary testbed in Phase 1.
+This is the skeleton. The full governance specification — with concrete parameter ranges, reviewer-assignment pseudocode, and the formal definition of the calibration regime — lives in the [PRD](./prd.md), and was tuned against the adversary testbed across Phase 1 (closed 2026-05-14); the testbed remains the regression handle for any subsequent governance change.
 
 Operational governance for the running public instance — moderation guidelines, escalation paths, named curator responsibilities — will be added once the instance exists.
