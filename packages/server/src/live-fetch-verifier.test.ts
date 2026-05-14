@@ -76,7 +76,10 @@ const URL_REF: ExternalRef = { kind: 'url', value: 'https://example.com/paper' }
 describe('LiveFetchVerifier.verifyExternalRef', () => {
   it('resolves PMIDs against NCBI E-utilities efetch', async () => {
     const { fetch, calls } = stubFetch([
-      { match: (u) => u.startsWith('https://eutils.ncbi.nlm.nih.gov/'), response: ok(PMID_ABSTRACT) },
+      {
+        match: (u) => u.startsWith('https://eutils.ncbi.nlm.nih.gov/'),
+        response: ok(PMID_ABSTRACT),
+      },
     ]);
     const v = new LiveFetchVerifier({ fetch });
 
@@ -104,9 +107,7 @@ describe('LiveFetchVerifier.verifyExternalRef', () => {
   });
 
   it('rejects a PMID that returns HTTP non-200', async () => {
-    const { fetch } = stubFetch([
-      { match: () => true, response: notOk(500, 'oops') },
-    ]);
+    const { fetch } = stubFetch([{ match: () => true, response: notOk(500, 'oops') }]);
     const v = new LiveFetchVerifier({ fetch });
 
     await expect(v.verifyExternalRef(PMID_REF)).rejects.toMatchObject({
@@ -116,9 +117,7 @@ describe('LiveFetchVerifier.verifyExternalRef', () => {
   });
 
   it('rejects a PMID whose body is empty (E-utilities not-found returns 200 + empty)', async () => {
-    const { fetch } = stubFetch([
-      { match: () => true, response: ok('   \n\n  ') },
-    ]);
+    const { fetch } = stubFetch([{ match: () => true, response: ok('   \n\n  ') }]);
     const v = new LiveFetchVerifier({ fetch });
 
     await expect(v.verifyExternalRef(PMID_REF)).rejects.toMatchObject({
@@ -142,7 +141,7 @@ describe('LiveFetchVerifier.verifyExternalRef', () => {
     const { content_hash } = await v.verifyExternalRef(DOI_REF);
     expect(content_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(calls[0]!.url).toBe('https://api.crossref.org/works/10.1234%2Fexample');
-    expect(calls[0]!.init?.headers?.Accept).toBe('application/json');
+    expect(calls[0]!.init?.headers?.['Accept']).toBe('application/json');
   });
 
   it('accepts a DOI with only a title (no abstract) — title-only span match is the v0 limitation', async () => {
@@ -159,9 +158,7 @@ describe('LiveFetchVerifier.verifyExternalRef', () => {
   });
 
   it('rejects a DOI whose Crossref record has neither title nor abstract', async () => {
-    const { fetch } = stubFetch([
-      { match: () => true, response: ok({ message: {} }) },
-    ]);
+    const { fetch } = stubFetch([{ match: () => true, response: ok({ message: {} }) }]);
     const v = new LiveFetchVerifier({ fetch });
 
     await expect(v.verifyExternalRef(DOI_REF)).rejects.toMatchObject({
@@ -194,8 +191,12 @@ describe('LiveFetchVerifier.verifyExternalRef', () => {
   it('produces a stable, normalized content hash (reflow + smart quotes do not change the hash)', async () => {
     const plain = ok('Pages 1-2: "data" and \'span\'...');
     const fancy = ok('Pages 1–2:\n“data”  and ‘span’…');
-    const v1 = new LiveFetchVerifier({ fetch: stubFetch([{ match: () => true, response: plain }]).fetch });
-    const v2 = new LiveFetchVerifier({ fetch: stubFetch([{ match: () => true, response: fancy }]).fetch });
+    const v1 = new LiveFetchVerifier({
+      fetch: stubFetch([{ match: () => true, response: plain }]).fetch,
+    });
+    const v2 = new LiveFetchVerifier({
+      fetch: stubFetch([{ match: () => true, response: fancy }]).fetch,
+    });
 
     const h1 = (await v1.verifyExternalRef(PMID_REF)).content_hash;
     const h2 = (await v2.verifyExternalRef(PMID_REF)).content_hash;
@@ -205,9 +206,7 @@ describe('LiveFetchVerifier.verifyExternalRef', () => {
 
 describe('LiveFetchVerifier.verifySpan', () => {
   it('accepts a span that is a verbatim substring of the fetched PMID source', async () => {
-    const { fetch, calls } = stubFetch([
-      { match: () => true, response: ok(PMID_ABSTRACT) },
-    ]);
+    const { fetch, calls } = stubFetch([{ match: () => true, response: ok(PMID_ABSTRACT) }]);
     const v = new LiveFetchVerifier({ fetch });
 
     await v.verifyExternalRef(PMID_REF); // populates the cache
@@ -220,9 +219,7 @@ describe('LiveFetchVerifier.verifySpan', () => {
   });
 
   it('falls back to a fresh fetch when the cache is cold (re-verification path)', async () => {
-    const { fetch, calls } = stubFetch([
-      { match: () => true, response: ok(PMID_ABSTRACT) },
-    ]);
+    const { fetch, calls } = stubFetch([{ match: () => true, response: ok(PMID_ABSTRACT) }]);
     const v = new LiveFetchVerifier({ fetch });
 
     // No prior verifyExternalRef call — cache is empty.
@@ -241,10 +238,9 @@ describe('LiveFetchVerifier.verifySpan', () => {
   });
 
   it('accepts a span whose typography differs from the source (normalization is load-bearing)', async () => {
-    const sourceWithSmartQuotes = '... reports that “ctDNA-positive” patients—a high-risk subset—had worse outcomes.';
-    const { fetch } = stubFetch([
-      { match: () => true, response: ok(sourceWithSmartQuotes) },
-    ]);
+    const sourceWithSmartQuotes =
+      '... reports that “ctDNA-positive” patients—a high-risk subset—had worse outcomes.';
+    const { fetch } = stubFetch([{ match: () => true, response: ok(sourceWithSmartQuotes) }]);
     const v = new LiveFetchVerifier({ fetch });
 
     await v.verifyExternalRef(PMID_REF);
