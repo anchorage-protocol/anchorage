@@ -51,7 +51,7 @@ No tokens. No marketplace. No paid tier. Reputation and credit are the only curr
 
 ## Status
 
-**Phases 0 and 1 closed 2026-05-14.** Design docs are settled; the adversary testbed is comprehensive across every named axis; the published results snapshot is at [docs/phase1-results.md](./docs/phase1-results.md). The user-exposure gate (Phase 1 → Phase 2) is open: real users meeting Anchorage waits on Phase 2's auth + UI + production scaffolding, not on more testbed work.
+**Phases 0 and 1 closed 2026-05-14. Phase 2 opened 2026-05-14.** Design docs are settled; the adversary testbed is comprehensive across every named axis; the published results snapshot is at [docs/phase1-results.md](./docs/phase1-results.md). Phase 2 (single-cause public instance with real human contributors) is now the active phase; the slice plan is in [ROADMAP §Phase 2](./ROADMAP.md#phase-2--single-cause-public-instance-opened-2026-05-14), starting with live-fetch verification.
 
 The v0 MCP tool surface is fully implemented and runs end-to-end through the actual MCP transport. The testbed exercises it against a roster of synthetic archetypes — from honest contributors of varying competence to coordinated adversarial coalitions — and, in a deeper loop, against real-LLM contributors carrying those same adversary-taxonomy roles; reputation, calibration, and convergence outcomes are observable over the wire either way, and recorded model-backed runs replay deterministically as CI regression checks.
 
@@ -70,7 +70,7 @@ See [ROADMAP.md](./ROADMAP.md) for phasing.
 
 ## Contributing
 
-Between Phase 1 closure and Phase 2 opening, the contributions that help most:
+In Phase 2, the contributions that help most:
 
 - **Pressure-testing the design.** Issues pointing at specific failure modes in the governance design are gold.
 - **Sub-topic candidates within colon cancer** (the locked v0 cause) that fit the criteria in [docs/seed-topic.md](./docs/seed-topic.md). The shortlist is open through instance launch; the final v0 starter set isn't fixed yet.

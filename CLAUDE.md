@@ -25,10 +25,10 @@ A protocol and public instance for **cooperative open research with auditable li
 
 ## Phase awareness
 
-**Phases 0 and 1 closed 2026-05-14.** Anchorage is between phases — Phase 1's exit criterion (a comprehensive adversary testbed with a published results snapshot, see [docs/phase1-results.md](./docs/phase1-results.md)) is met, and Phase 2 (single-cause public instance with real human contributors) has not yet begun. This gates what kind of work is appropriate:
+**Phases 0 and 1 closed 2026-05-14. Phase 2 opened 2026-05-14.** Phase 1's exit criterion (a comprehensive adversary testbed with a published results snapshot, see [docs/phase1-results.md](./docs/phase1-results.md)) is met, and Phase 2 (single-cause public instance with real human contributors) is now open. This gates what kind of work is appropriate:
 
-- **Between Phase 1 and Phase 2**: testbed extension is welcome (more cube cells, more drift kinds, more closure-stack experiments) but no longer load-bearing for any phase exit — every named axis already has measured coverage. The lockstep doc-update discipline still applies to any contract change. New work that anticipates Phase 2 (auth, identity backend, web UI scaffolding, live-fetch verification) is not yet appropriate — wait for the phase to formally open.
-- **Phase 2**: single-cause public instance with real human contributors. Documented in [ROADMAP.md](./ROADMAP.md).
+- **Phase 2**: single-cause public instance with real human contributors. Slice plan in [ROADMAP §Phase 2](./ROADMAP.md#phase-2--single-cause-public-instance-opened-2026-05-14) — eight slices stacked in rough dependency order, from live-fetch verification (slice 1) through manuscript projection (slice 6) and the first testbed-caught governance change (slice 8). Work the slice plan in order by default; reorder with reason. Every slice preserves the sim≡prod invariant (no `if (sim) ...` branching, ever) and lands doc-and-code in the same commit when it touches a contract.
+- **Testbed extension** remains welcome (more cube cells, more drift kinds, more closure-stack experiments) as ongoing infrastructure, but is no longer load-bearing for any phase exit — every named axis already has measured coverage as of the Phase 1 snapshot. Phase 2 slice work is the load-bearing path.
 - **Phase 3+**: documented in [ROADMAP.md](./ROADMAP.md).
 
 **The user-exposure boundary between Phase 1 and Phase 2 is what's load-bearing**: no real users meet the system until Phase 2's scaffolding lands. Doc-then-code sequencing is *not* load-bearing; sim-then-prod sequencing is.

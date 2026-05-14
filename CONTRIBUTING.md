@@ -1,6 +1,6 @@
 # Contributing to Anchorage
 
-Anchorage is between Phase 1 (adversary testbed, closed 2026-05-14) and Phase 2 (single-cause public instance, not yet open). The design docs, the v0 MCP server, and the testbed harness are all open to contribution; what's appropriate right now is testbed extension, design pressure-testing, and editorial sharpening — not Phase 2 scaffolding (auth, IdP, web UI, live-fetch verification) until the phase formally opens. This file describes the surfaces and the flow.
+Anchorage is in Phase 2 (single-cause public instance, opened 2026-05-14; Phase 1's adversary testbed closed the same day). The design docs, the v0 MCP server, the testbed harness, and the Phase 2 slice plan are all open to contribution; what's appropriate right now is Phase 2 slice work (the slices in [ROADMAP §Phase 2](./ROADMAP.md#phase-2--single-cause-public-instance-opened-2026-05-14), starting with live-fetch verification), plus the standing surfaces — testbed extension, design pressure-testing, editorial sharpening. This file describes the surfaces and the flow.
 
 ## Surfaces to contribute to
 
