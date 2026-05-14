@@ -9,4 +9,16 @@ export { type IdGen, RandomIdGen, SeededIdGen } from './id-gen.js';
 export { buildMcpServer, type McpBuildOptions } from './mcp.js';
 export { Server, type ServerDeps } from './server.js';
 export { MemoryStore } from './store.js';
-export { FakeVerifier, StructuralVerifier, type VerifiedRef, type Verifier } from './verifier.js';
+export {
+  LiveFetchVerifier,
+  type LiveFetchVerifierOpts,
+  type VerifierFetch,
+  type VerifierResponse,
+} from './live-fetch-verifier.js';
+export {
+  FakeVerifier,
+  normalizeForSpanMatch,
+  StructuralVerifier,
+  type VerifiedRef,
+  type Verifier,
+} from './verifier.js';

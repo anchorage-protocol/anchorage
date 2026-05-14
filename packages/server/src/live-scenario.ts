@@ -55,10 +55,13 @@ export const LIVE_ANCHORS: { pmid: string; content: string }[] = [
 // golden-cassette test so the recorded run and the replay run send the
 // byte-identical first user turn. It is deliberately explicit that the
 // anchor's `content` is the source text span verification matches
-// against (there is no source-retrieval tool in v0; the live-fetch
-// verifier is a stub — see ROADMAP §Status), because a careful honest
-// agent handed a bare "extract an excerpt from PMID X" task correctly
-// *declines* — it has no way to fetch X and won't fabricate a span.
+// against (there is no source-retrieval *tool* exposed to contributors
+// in v0; this scenario uses `FakeVerifier` with inline source fixtures
+// rather than the production `LiveFetchVerifier`, because the cassette-
+// replay tests need byte-deterministic source content not subject to
+// PubMed availability), because a careful honest agent handed a bare
+// "extract an excerpt from PMID X" task correctly *declines* — it has
+// no way to fetch X and won't fabricate a span.
 // The role's *system* prompt (the experimental treatment) is still
 // what `run-live.ts` carries; only the kickoff task is standardized
 // here, the same split `run-deep-loop.ts` uses (`deepLoopTask`).

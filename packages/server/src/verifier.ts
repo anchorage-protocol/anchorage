@@ -6,8 +6,10 @@ import { ServerError } from './errors.js';
 // outside world. PRD §Verification engine: "the server fetches the
 // external_ref, confirms resolution, and rejects on failure." That
 // fetch is network I/O — async, swappable, faked in the testbed, real
-// against PubMed/CrossRef in production. Keeping it behind an interface
-// from day one avoids retrofitting async later.
+// against PubMed/Crossref in production. The production implementation
+// is `LiveFetchVerifier` (`live-fetch-verifier.ts`); the testbed uses
+// `FakeVerifier` below; `StructuralVerifier` is the no-network
+// placeholder for tests that don't exercise the verifier at all.
 //
 // The verifier returns observed metadata (currently `content_hash`,
 // later: span-match offsets, fetched-source provenance). This lives on
@@ -27,29 +29,27 @@ export interface Verifier {
   verifySpan(ref: ExternalRef, span: QuotedSpan): Promise<void>;
 }
 
-// StructuralVerifier is the v0 stand-in for live-fetch verification:
-// shape is already enforced by the contracts schema, so this verifier
-// just synthesizes a deterministic placeholder hash from the ref
-// itself. The live-fetch verifier (PubMed/Crossref/URL resolution and
-// source caching, README §Status / ROADMAP §Status next-milestones —
-// stays a stub until the testbed needs it) replaces this; the
-// verification-engine seam itself — Verifier interface + this module —
-// is wired today and routes every write tool through verifyExternalRef
-// / verifySpan. Until live-fetch lands, downstream code can treat
-// content_hash as a stable identifier even though it doesn't reflect
-// real source content.
+// StructuralVerifier is the no-network placeholder for tests and in-
+// process scenarios that don't exercise the verifier itself — schema
+// shape is already enforced by the contracts, so this verifier just
+// synthesizes a deterministic placeholder hash from the ref. The
+// production verifier is `LiveFetchVerifier` (`live-fetch-verifier.ts`)
+// and is wired by production deployments that point at real PubMed and
+// Crossref; testbed scenarios that need source-fixture-backed span
+// verification use `FakeVerifier` below.
 //
-// Span verification here is a no-op pending the live-fetch verifier.
-// It is *not* a permissive default for tests — tests use FakeVerifier,
-// which can be configured with source fixtures to exercise the
-// rejection path.
+// Span verification here is a no-op: tests that care about span
+// fidelity reach for `FakeVerifier` with a populated `sources` map. The
+// `Server` ctor defaults to this verifier so existing in-process tests
+// continue to construct cleanly without an explicit verifier; any
+// production runtime overrides it with `LiveFetchVerifier`.
 export class StructuralVerifier implements Verifier {
   async verifyExternalRef(ref: ExternalRef): Promise<VerifiedRef> {
     const hash = createHash('sha256').update(`${ref.kind}:${ref.value}`).digest('hex');
     return { content_hash: `placeholder:${hash}` };
   }
   async verifySpan(_ref: ExternalRef, _span: QuotedSpan): Promise<void> {
-    // Pending the live-fetch verifier. See class comment.
+    // No-op; see class comment.
   }
 }
 
@@ -58,11 +58,11 @@ export class StructuralVerifier implements Verifier {
 // - `hashes` overrides the placeholder content hash for a ref.
 // - `sources` is the fixture map for span verification: when a ref's
 //   source content is configured, verifySpan checks that span.text
-//   appears in it after light normalization (whitespace collapse).
-//   When not configured, span verification is skipped — most scenarios
-//   don't care about span fidelity, and forcing them all to provide
-//   source fixtures would be noise. Scenarios that *do* exercise the
-//   verification engine populate `sources` explicitly.
+//   appears in it after normalization. When not configured, span
+//   verification is skipped — most scenarios don't care about span
+//   fidelity, and forcing them all to provide source fixtures would be
+//   noise. Scenarios that *do* exercise the verification engine
+//   populate `sources` explicitly.
 export class FakeVerifier implements Verifier {
   constructor(
     private readonly unresolvable: ReadonlySet<string> = new Set(),
@@ -79,7 +79,7 @@ export class FakeVerifier implements Verifier {
   async verifySpan(ref: ExternalRef, span: QuotedSpan): Promise<void> {
     const source = this.sources.get(ref.value);
     if (source === undefined) return;
-    if (!normalize(source).includes(normalize(span.text))) {
+    if (!normalizeForSpanMatch(source).includes(normalizeForSpanMatch(span.text))) {
       throw new ServerError(
         'invalid_input',
         `quoted_span does not appear in source for ${ref.kind}:${ref.value}`,
@@ -88,14 +88,37 @@ export class FakeVerifier implements Verifier {
   }
 }
 
-// Light normalization for span matching: collapse runs of whitespace
-// (including newlines) to a single space and trim. Enough to absorb
-// reflow differences between the source and a contributor's quote.
-// PRD §Verification engine commits to a fuller spec ("whitespace,
-// quote-style, and a small set of typographic equivalences"); only
-// the whitespace dimension is wired here. Quote-style and typographic
-// equivalences are the outstanding scope, not the verification engine
-// itself, which routes every write tool through this module today.
-function normalize(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
+// Normalization for span matching. PRD §Verification engine commits to
+// "whitespace, quote-style, and a small set of typographic equivalences
+// specified in the verification spec, not left to 'light normalization'
+// hand-waving." Three layers, applied in order:
+//
+//   1. Quote-style fold: smart quotes (curly singles/doubles, prime
+//      marks, low-9 quotation marks) collapse to ASCII straight quotes.
+//      Source publishers and contributor inputs use these inconsistently
+//      and an excerpt that quoted a source with "" rendered as "" would
+//      otherwise fail the substring match for cosmetic reasons.
+//   2. Typographic fold: en-dash, em-dash, and minus-sign to ASCII
+//      hyphen; horizontal ellipsis to three dots. The set is
+//      deliberately small — these are the typographic equivalences
+//      source publishers routinely substitute for ASCII without
+//      changing meaning, and a contributor's quote should match
+//      regardless of which form their copy-paste preserved.
+//      (Non-breaking spaces — U+00A0 and U+202F — collapse via the
+//      whitespace step below; JS `\s` already includes them.)
+//   3. Whitespace collapse: any run of whitespace (newlines included)
+//      to a single space, then trim. Absorbs reflow differences between
+//      source rendering and a contributor's quote.
+//
+// Both `LiveFetchVerifier` (`live-fetch-verifier.ts`) and `FakeVerifier`
+// route through this single function so the test fixtures and the
+// production fetcher agree on what counts as a match.
+export function normalizeForSpanMatch(s: string): string {
+  return s
+    .replace(/[‘’‚‛′]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/[–—−]/g, '-')
+    .replace(/…/g, '...')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
