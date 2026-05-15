@@ -20,10 +20,11 @@ export type IdentityProvider = z.infer<typeof IdentityProvider>;
 // PRD §Reviewer assignment (step 4: curator escalation): the
 // human-or-humans who can fire `server.curator.*` (`acceptProposal`,
 // `rejectProposal`, `deferSubTopic`, `expireStaleAssignments`,
-// `revokeIdentity`). Slice 4b (the role field + the `anchorage-admin`
-// CLI bootstrap) commits the data-model side; the curator-only MCP
-// tool surface that reads the role lands in slice 7 alongside the
-// operational tooling UI. The role is invariant under IdP signin:
+// `revokeIdentity`). Slice 4b committed the data-model side (the role
+// field + the `anchorage-admin` CLI bootstrap); slice 7a wired the
+// curator-only MCP tool surface that reads the role, and slices 7b/7c
+// wired the read-only console and the re-verification surface that
+// route through the same role gate. The role is invariant under IdP signin:
 // only `'harness'`-provider mints (i.e. the admin CLI) can produce a
 // curator, so no GitHub account can auto-promote into the curator
 // pool — curator seating is an operator decision.
@@ -68,7 +69,7 @@ export const Identity = z
     // default without re-recording; new identities minted through the
     // admin CLI may set `'curator'`. PRD §Identity (Roles) and PRD
     // §The contribution flow document the role's semantics; the
-    // curator-only MCP tool surface that reads it lands in slice 7.
+    // curator-only MCP tool surface that reads it landed in slice 7a.
     role: IdentityRole.default('contributor'),
   })
   .strict();

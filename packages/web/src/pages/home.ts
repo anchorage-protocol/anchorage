@@ -10,11 +10,10 @@ import { emptyState, siteFooter, siteHeader } from './layout.js';
 //
 // Layout decisions:
 // - Two-line per-cause card: name + description, then a nested
-//   sub-topic list. The cause itself is not currently linked because
-//   slice 5b only ships the sub-topic page; the cause page lands in
-//   slice 5c (PRD §Read-path tools and resources — cause-level browse
-//   is a Phase 3 surface for cross-sub-topic frontier, not a v0
-//   target). The cause name therefore renders as plain text.
+//   sub-topic list. The cause itself is not linked because cause-level
+//   browse is a Phase 3 surface for cross-sub-topic frontier, not a v0
+//   target (PRD §Read-path tools and resources). The cause name
+//   therefore renders as plain text.
 // - The cause description renders as plain text — the seed cause has
 //   prose, but we don't accept HTML in cause fields by construction
 //   (CauseDirectory's schema is `description: string`).

@@ -18,9 +18,11 @@ import { emptyState, siteFooter, siteHeader } from './layout.js';
 // Status surfacing: a `revoked` contributor renders normally (their
 // graph history is preserved per PRD §Identity Revocation), with a
 // clear inline notice so readers can correlate revocation against
-// past contributions. Slice 5c does not yet show *which* edges /
-// nodes the contributor proposed (that's a graph-walk projection
-// that lands alongside the manuscript projection in slice 6).
+// past contributions. The contributor page does not yet surface
+// *which* edges / nodes the contributor proposed — that's a graph-walk
+// projection deferred beyond slice 6 (the manuscript projection
+// credits contributors by sub-topic; a per-contributor drill-down
+// across causes is a later enhancement, not a v0 target).
 
 export function renderContributorPage(data: ContributorProfile): string {
   const body = html`${siteHeader()}
