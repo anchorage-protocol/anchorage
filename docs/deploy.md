@@ -111,7 +111,7 @@ pnpm admin list-curators --db=/data/anchorage.db
 pnpm admin revoke-identity --db=/data/anchorage.db --identity-id=idn_xxx
 ```
 
-The curator-only MCP tool surface — the wire-level path through which a curator actually fires `acceptProposal` / `rejectProposal` — lands in [Phase 2 slice 7](../ROADMAP.md#phase-2--single-cause-public-instance-opened-2026-05-14). Slice 4 stops at the data model and the bootstrap.
+The curator-only MCP tool surface — the wire-level path through which a curator actually fires `acceptProposal` / `rejectProposal` — landed in [Phase 2 slice 7a](../ROADMAP.md#phase-2--single-cause-public-instance-opened-2026-05-14); slice 4 stops at the data model and the bootstrap. The read-only curator console (slice 7b) and the re-verification scheduler (slice 7c) are documented as opt-in bootstraps below.
 
 ## Bootstrap: enabling the read-only web tier (slice 5b)
 
@@ -195,7 +195,13 @@ The runtime emits structured logs via the injected log sink. The default sink is
 
 - `anchorage.server.started` — emitted once per boot, with `url`, `db_path`, `github_oauth: boolean`, `web_tier: boolean`, `curator_console: boolean`.
 - `web.page.home` / `web.page.sub_topic` — emitted on every served web page (slice 5b). Carries the cause count or sub-topic id respectively. No PII; the web reader is shared across all anonymous traffic.
+- `web.page.node` / `web.page.contributor` — emitted on every served node-detail and contributor-profile page (slice 5c). Carries `{ node_id }` and `{ identity_id }` respectively. No PII beyond the public contributor display fields the profile page itself surfaces.
+- `web.page.manuscript` — emitted on every served `/manuscript/:sub-topic-id` page (slice 6b). Carries `{ sub_topic_id }`.
 - `web.page.curator.index` / `web.page.curator.queue` / `web.page.curator.decline_patterns` / `web.page.curator.identity_clusters` — emitted on every served curator-console page (slice 7b). Carries projection-shape counts (cause count, proposal count, entry count, pair count) and the cause_id filter where applicable.
+- `web.page.curator.unresolvable` — emitted on every served `/curator/unresolvable` page (slice 7c). Carries `{ anchor_count, cause_id }`.
+- `anchorage.reverify.started` — emitted once per boot when the re-verification scheduler is configured (slice 7c). Carries `{ interval_ms, max_age_ms, batch_size }`. Absent when the scheduler is disabled.
+- `anchorage.reverify.tick` — emitted per non-empty scheduler tick (slice 7c). Carries `{ checked, unchanged, unresolvable }`. Empty ticks are silent to keep the log volume bounded under quiet steady state.
+- `anchorage.reverify.error` — emitted per scheduler tick that threw (slice 7c). Carries `{ message }`. The scheduler itself survives the throw and keeps ticking.
 - `anchorage.server.stopped` — emitted once per graceful shutdown.
 - `auth.github.start` / `auth.github.complete` — one per device-code flow attempt (metadata only: `user_code`, `status` — never the secret).
 - `http error <method> <path>` — emitted on uncaught throws inside the HTTP handler.
