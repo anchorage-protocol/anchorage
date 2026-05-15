@@ -1,5 +1,9 @@
 import type {
   CauseDirectory,
+  ContributorProfile,
+  IdentityId,
+  NodeId,
+  NodeNeighborhood,
   QueryFrontierOutput,
   Subgraph,
   SubTopicDetail,
@@ -54,6 +58,14 @@ export class InProcessReader implements AnchorageReader {
 
   async getSubgraph(id: SubTopicId): Promise<Subgraph> {
     return this.server.resources.getSubgraph(this.caller, id);
+  }
+
+  async getNodeNeighborhood(id: NodeId): Promise<NodeNeighborhood> {
+    return this.server.resources.getNodeNeighborhood(this.caller, id);
+  }
+
+  async getContributorProfile(id: IdentityId): Promise<ContributorProfile> {
+    return this.server.resources.getContributorProfile(this.caller, id);
   }
 
   async queryFrontier(subTopicId: SubTopicId): Promise<QueryFrontierOutput> {

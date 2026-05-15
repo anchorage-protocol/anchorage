@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { escapeHtml, html, raw, renderDocument } from './render.js';
-import { matchSubTopicRoute } from './web.js';
+import { matchContributorRoute, matchNodeRoute, matchSubTopicRoute } from './web.js';
 
 // Slice 5b — `@anchorage/web` package unit tests. The runtime
 // dependency graph is one-way (web → contracts only at runtime), so
@@ -42,18 +42,31 @@ describe('render primitives', () => {
   });
 });
 
-describe('matchSubTopicRoute', () => {
-  it('returns the id segment for /sub-topic/:id', () => {
+describe('route matchers', () => {
+  it('matchSubTopicRoute returns the id segment for /sub-topic/:id', () => {
     expect(matchSubTopicRoute('/sub-topic/abc')).toBe('abc');
     expect(matchSubTopicRoute('/sub-topic/sub-topic_01HXXXX')).toBe('sub-topic_01HXXXX');
   });
+  it('matchNodeRoute returns the id segment for /node/:id', () => {
+    expect(matchNodeRoute('/node/nod_abc')).toBe('nod_abc');
+  });
+  it('matchContributorRoute returns the id segment for /contributor/:id', () => {
+    expect(matchContributorRoute('/contributor/idn_abc')).toBe('idn_abc');
+  });
   it('returns undefined for unrelated paths', () => {
-    expect(matchSubTopicRoute('/')).toBeUndefined();
+    for (const m of [matchSubTopicRoute, matchNodeRoute, matchContributorRoute]) {
+      expect(m('/')).toBeUndefined();
+      expect(m('/something/else')).toBeUndefined();
+    }
     expect(matchSubTopicRoute('/sub-topic')).toBeUndefined();
     expect(matchSubTopicRoute('/sub-topic/')).toBeUndefined();
     expect(matchSubTopicRoute('/sub-topic/abc/extra')).toBeUndefined();
+    expect(matchNodeRoute('/node/')).toBeUndefined();
+    expect(matchContributorRoute('/contributor/abc/extra')).toBeUndefined();
   });
   it('decodes percent-encoded segments', () => {
     expect(matchSubTopicRoute('/sub-topic/abc%20def')).toBe('abc def');
+    expect(matchNodeRoute('/node/abc%20def')).toBe('abc def');
+    expect(matchContributorRoute('/contributor/abc%20def')).toBe('abc def');
   });
 });

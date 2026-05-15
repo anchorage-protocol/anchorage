@@ -6,13 +6,17 @@
 // as the MCP `/mcp` route. The dependency direction is one-way:
 // `@anchorage/web` depends only on `@anchorage/contracts` at
 // runtime; the server composes the two.
+export { renderContributorPage } from './pages/contributor.js';
 export { renderHomePage } from './pages/home.js';
+export { renderNodePage } from './pages/node.js';
 export { renderSubTopicPage, type SubTopicPageData } from './pages/sub-topic.js';
 export type { AnchorageReader } from './reader.js';
 export { escapeHtml, html, Raw, raw, renderDocument } from './render.js';
 export { baselineStylesheet } from './styles.js';
 export {
   buildWebHandler,
+  matchContributorRoute,
+  matchNodeRoute,
   matchSubTopicRoute,
   type WebHandler,
   type WebHandlerOpts,

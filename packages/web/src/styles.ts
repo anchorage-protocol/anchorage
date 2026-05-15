@@ -189,6 +189,52 @@ footer.site {
   color: var(--fg-muted);
 }
 footer.site a { color: var(--fg-muted); }
+
+/* Slice 5c — node-detail + contributor page chrome */
+.provenance, .anchor-source, .edge-list, .tier-list { list-style: none; padding: 0; margin: 0; }
+.provenance > li, .anchor-source > li, .edge-list > li, .tier-list > li {
+  padding: 0.35rem 0;
+  border-bottom: 1px dashed var(--rule);
+}
+.provenance > li:last-child, .anchor-source > li:last-child, .edge-list > li:last-child, .tier-list > li:last-child { border-bottom: none; }
+
+.excerpt-span {
+  font-family: var(--serif);
+  font-style: italic;
+  border-left: 3px solid var(--accent);
+  padding: 0.25rem 0 0.25rem 0.75rem;
+  margin: 0.5rem 0;
+  color: var(--fg);
+}
+
+.edge-kind { color: var(--accent); }
+.edge-arrow { color: var(--fg-muted); margin: 0 0.25rem; font-family: var(--mono); }
+
+.tier-pill {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  background: var(--bg-card);
+  color: var(--fg-muted);
+  margin-right: 0.4rem;
+}
+.tier-contributing { color: var(--link); border-color: var(--link); }
+.tier-quiet { color: var(--accent); border-color: var(--accent); }
+.tier-none { color: var(--fg-muted); }
+
+.revoked-notice {
+  background: var(--bg-card);
+  border-left: 3px solid var(--accent);
+  padding: 0.5rem 0.75rem;
+  font-family: var(--sans);
+  font-size: 0.9rem;
+  color: var(--fg-muted);
+}
 `;
 
 export const baselineStylesheet: Raw = raw(CSS);

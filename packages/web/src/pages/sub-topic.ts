@@ -80,7 +80,7 @@ function renderNodeList(nodes: readonly Node[]): Raw {
 ${nodes.map(
   (n) => html`<li>
   <span class="node-kind">${n.kind}</span>
-  <span class="node-id">${n.id}</span>
+  <a class="node-id" href="/node/${n.id}">${n.id}</a>
   <span class="node-content">${n.content}</span>
 </li>`,
 )}
@@ -101,18 +101,22 @@ ${frontier.items.map(renderFrontierItem)}
 function renderFrontierItem(item: FrontierItem): Raw {
   // Each kind references a different id field; the page surfaces
   // the kind label and the relevant id so a reader can correlate
-  // with the rest of the graph view. Slice 5c links these to
-  // per-node / per-proposal pages.
+  // with the rest of the graph view. Node-referencing kinds link
+  // to `/node/{id}` (slice 5c); `needs_review` references a
+  // proposal_id, whose dedicated per-proposal page is a later
+  // slice — the id renders as plain text until then.
   switch (item.kind) {
     case 'orphan_anchor':
       return html`<li>
   <span class="frontier-kind">orphan anchor</span>
-  <span class="frontier-id">${item.anchor_id}</span>
+  <a class="frontier-id" href="/node/${item.anchor_id}">${item.anchor_id}</a>
 </li>`;
     case 'needs_synthesis':
       return html`<li>
   <span class="frontier-kind">needs synthesis</span>
-  <span class="frontier-id">${item.parent_ids.join(', ')}</span>
+  <span class="frontier-id">${item.parent_ids.map(
+    (id, i) => html`${i > 0 ? ', ' : ''}<a href="/node/${id}">${id}</a>`,
+  )}</span>
 </li>`;
     case 'needs_review':
       return html`<li>
@@ -122,7 +126,7 @@ function renderFrontierItem(item: FrontierItem): Raw {
     case 'unresolvable_anchor':
       return html`<li>
   <span class="frontier-kind">unresolvable anchor</span>
-  <span class="frontier-id">${item.anchor_id}</span>
+  <a class="frontier-id" href="/node/${item.anchor_id}">${item.anchor_id}</a>
 </li>`;
   }
 }

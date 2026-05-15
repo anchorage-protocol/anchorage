@@ -1,5 +1,6 @@
 import { createServer, type Server as NodeHttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { IdentityId, NodeId, SubTopicId } from '@anchorage/contracts';
 import { buildWebHandler } from '@anchorage/web';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HarnessAuthenticator } from './auth.js';
@@ -42,8 +43,11 @@ interface Fixture {
   server: Server;
   webUrl: string;
   webServer: NodeHttpServer;
-  mrdId: string;
-  oligoId: string;
+  mrdId: SubTopicId;
+  oligoId: SubTopicId;
+  aliceId: IdentityId;
+  anchorId: NodeId;
+  excerptId: NodeId;
 }
 
 async function fixture(): Promise<Fixture> {
@@ -92,7 +96,9 @@ async function fixture(): Promise<Fixture> {
       quoted_span: { text: 'postoperative ctDNA', offset: 0 },
     },
   );
-  server.curator.acceptProposal(excerptRes.proposal_id);
+  const accExcerpt = server.curator.acceptProposal(excerptRes.proposal_id);
+  const excerptId = accExcerpt.node_id;
+  if (!excerptId) throw new Error('excerpt accept did not return node_id');
 
   // HarnessAuthenticator resolves the web-reader caller end-to-end
   // the way the production runtime will — through the direct
@@ -120,6 +126,9 @@ async function fixture(): Promise<Fixture> {
     webServer: httpServer,
     mrdId: mrd.id,
     oligoId: oligo.id,
+    aliceId: alice.id,
+    anchorId,
+    excerptId,
   };
 }
 
@@ -229,6 +238,9 @@ describe('GET /sub-topic/:id', () => {
     expect(body).toContain('Active nodes');
     expect(body).toContain('Frontier');
     expect(body).toContain('<a href="/">Causes</a>');
+    // Node ids in the list link to the node-detail page (slice 5c).
+    expect(body).toContain(`href="/node/${f.anchorId}"`);
+    expect(body).toContain(`href="/node/${f.excerptId}"`);
   });
 
   it('404s on an unknown sub-topic id', async () => {
@@ -248,6 +260,127 @@ describe('GET /sub-topic/:id', () => {
     expect(res.status).toBe(404);
     const body = await res.text();
     expect(body).toContain('Page not found');
+  });
+});
+
+describe('GET /node/:id (slice 5c)', () => {
+  it('renders the node-detail page for an anchor with its source ref and content hash', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/node/${f.anchorId}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/text\/html/);
+    const body = await res.text();
+    expect(body).toContain('Reinert 2019');
+    // Anchor-specific surface.
+    expect(body).toContain('Source');
+    expect(body).toContain('PMID 12345');
+    expect(body).toContain('href="https://pubmed.ncbi.nlm.nih.gov/12345/"');
+    expect(body).toContain('Content hash');
+    // Provenance — created_by links to the contributor profile.
+    expect(body).toContain(`href="/contributor/${f.aliceId}"`);
+    // Breadcrumb links back to the home sub-topic.
+    expect(body).toContain(`href="/sub-topic/${f.mrdId}"`);
+    // Neighbor list links to the excerpt's node page.
+    expect(body).toContain(`href="/node/${f.excerptId}"`);
+    expect(body).toContain('Neighbors');
+  });
+
+  it('renders the node-detail page for an excerpt with its quoted span', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/node/${f.excerptId}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('Postoperative ctDNA detection');
+    expect(body).toContain('Quoted span');
+    expect(body).toContain('<blockquote class="excerpt-span">postoperative ctDNA</blockquote>');
+    // The reverse edge to the anchor renders too.
+    expect(body).toContain(`href="/node/${f.anchorId}"`);
+  });
+
+  it('404s on an unknown node id', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/node/nod_does_not_exist`);
+    expect(res.status).toBe(404);
+    const body = await res.text();
+    expect(body).toContain('Not found');
+  });
+});
+
+describe('GET /contributor/:id (slice 5c)', () => {
+  it('renders display fields + tier list, never raw demonstrated/recent', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    // Seed a rep entry for alice directly — curator-accepted
+    // proposals don't always grant rep through the testbed clock,
+    // and we want the tier list populated deterministically. The
+    // tier mapping under default 0/0 thresholds collapses any
+    // non-negative entry to `contributing`.
+    const now = f.server.clock.now();
+    const subTopic = f.server.store.subTopics.get(f.mrdId);
+    if (!subTopic) throw new Error('mrd sub-topic vanished from store');
+    const causeId = subTopic.cause_id;
+    f.server.store.reputations.set(`${f.aliceId}|${causeId}|${f.mrdId}`, {
+      identity_id: f.aliceId,
+      cause_id: causeId,
+      sub_topic_id: f.mrdId,
+      demonstrated: 1.0,
+      recent: 1.0,
+      updated_at: now,
+    });
+    const res = await fetch(`${f.webUrl}/contributor/${f.aliceId}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('alice');
+    expect(body).toContain(f.aliceId);
+    expect(body).toContain('Eligibility tiers');
+    expect(body).toContain('actively contributing');
+    expect(body).toContain(`href="/sub-topic/${f.mrdId}"`);
+    // The page must not surface raw numeric reputation. The wire
+    // shape guarantees absence; the page-level check confirms no
+    // accidental leakage through formatting.
+    expect(body).not.toMatch(/\b1\.0\b/);
+    expect(body).not.toMatch(/demonstrated|recent/i);
+  });
+
+  it('surfaces a revocation notice when the contributor identity is revoked', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    // Revoke a *different* identity than the web-reader caller so
+    // the resolveCaller step doesn't trip.
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    f.server.store.identities.set(bob.id, {
+      ...f.server.store.identities.get(bob.id)!,
+      status: 'revoked',
+    });
+    const res = await fetch(`${f.webUrl}/contributor/${bob.id}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('bob');
+    expect(body).toContain("This contributor's identity has been revoked");
+    expect(body).toContain('No contribution history yet');
+  });
+
+  it('renders the empty-state when the contributor has no rep entries', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const res = await fetch(`${f.webUrl}/contributor/${carol.id}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('carol');
+    expect(body).toContain('No contribution history yet');
+  });
+
+  it('404s on an unknown contributor id', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/contributor/idn_unknown`);
+    expect(res.status).toBe(404);
+    const body = await res.text();
+    expect(body).toContain('Not found');
   });
 });
 

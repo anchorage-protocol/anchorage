@@ -1,7 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { ServerError, SubTopicId } from '@anchorage/contracts';
+import { IdentityId, NodeId, ServerError, SubTopicId } from '@anchorage/contracts';
+import { renderContributorPage } from './pages/contributor.js';
 import { renderHomePage } from './pages/home.js';
 import { notFoundBody } from './pages/layout.js';
+import { renderNodePage } from './pages/node.js';
 import { renderSubTopicPage } from './pages/sub-topic.js';
 import type { AnchorageReader } from './reader.js';
 import { renderDocument } from './render.js';
@@ -16,6 +18,8 @@ import { baselineStylesheet } from './styles.js';
 // Routes:
 //   GET /                  → home page (cause list)
 //   GET /sub-topic/:id     → sub-topic page
+//   GET /node/:id          → node-detail page (slice 5c)
+//   GET /contributor/:id   → contributor profile (slice 5c)
 //   GET /healthz           → liveness probe (JSON `{ ok: true }`)
 //
 // Refusal mapping. A `ServerError` thrown by the reader (e.g. an
@@ -89,6 +93,32 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
         return;
       }
 
+      const nodeIdRaw = matchNodeRoute(pathname);
+      if (nodeIdRaw !== undefined) {
+        const parsed = NodeId.safeParse(nodeIdRaw);
+        if (!parsed.success) {
+          sendHtmlNotFound(res, 'Unknown node', `No node at ${pathname}.`, method);
+          return;
+        }
+        const neighborhood = await reader.getNodeNeighborhood(parsed.data);
+        log('web.page.node', { node_id: parsed.data });
+        sendHtml(res, 200, renderNodePage(neighborhood), method);
+        return;
+      }
+
+      const contributorIdRaw = matchContributorRoute(pathname);
+      if (contributorIdRaw !== undefined) {
+        const parsed = IdentityId.safeParse(contributorIdRaw);
+        if (!parsed.success) {
+          sendHtmlNotFound(res, 'Unknown contributor', `No contributor at ${pathname}.`, method);
+          return;
+        }
+        const profile = await reader.getContributorProfile(parsed.data);
+        log('web.page.contributor', { identity_id: parsed.data });
+        sendHtml(res, 200, renderContributorPage(profile), method);
+        return;
+      }
+
       sendHtmlNotFound(res, 'Page not found', `No page at ${pathname}.`, method);
     } catch (err) {
       if (err instanceof ServerError) {
@@ -116,12 +146,24 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
   };
 }
 
-// Match `/sub-topic/:id`. Returns the raw id segment (validated by
-// the schema at the call site) or undefined when the path doesn't
-// match. Exported for testability of the routing surface in
-// isolation from the reader.
+// Path-matching helpers. Each takes a pathname and returns the raw
+// id segment (validated by the schema at the call site) or undefined
+// when the path doesn't match. Exported for testability of the
+// routing surface in isolation from the reader.
+
 export function matchSubTopicRoute(pathname: string): string | undefined {
-  const prefix = '/sub-topic/';
+  return matchSingleSegmentRoute(pathname, '/sub-topic/');
+}
+
+export function matchNodeRoute(pathname: string): string | undefined {
+  return matchSingleSegmentRoute(pathname, '/node/');
+}
+
+export function matchContributorRoute(pathname: string): string | undefined {
+  return matchSingleSegmentRoute(pathname, '/contributor/');
+}
+
+function matchSingleSegmentRoute(pathname: string, prefix: string): string | undefined {
   if (!pathname.startsWith(prefix)) return undefined;
   const rest = pathname.slice(prefix.length);
   if (rest.length === 0 || rest.includes('/')) return undefined;

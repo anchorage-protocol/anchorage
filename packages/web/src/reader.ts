@@ -1,5 +1,9 @@
 import type {
   CauseDirectory,
+  ContributorProfile,
+  IdentityId,
+  NodeId,
+  NodeNeighborhood,
   QueryFrontierOutput,
   Subgraph,
   SubTopicDetail,
@@ -45,6 +49,13 @@ export interface AnchorageReader {
   // `subgraph://{sub-topic-id}` resource. Active nodes + edges scoped
   // to the sub-topic.
   getSubgraph(id: SubTopicId): Promise<Subgraph>;
+  // `node://{id}` resource. Node + immediate active edges + hydrated
+  // neighbors. Drives the node-detail page (slice 5c).
+  getNodeNeighborhood(id: NodeId): Promise<NodeNeighborhood>;
+  // `contributor://{id}` resource. Public contributor profile +
+  // per-(cause, sub-topic) tier projection (PRD §Reputation). Drives
+  // the contributor profile page (slice 5c).
+  getContributorProfile(id: IdentityId): Promise<ContributorProfile>;
   // `query_frontier` read-path tool, scoped to a sub-topic for the
   // sub-topic page's work-to-be-done section.
   queryFrontier(subTopicId: SubTopicId): Promise<QueryFrontierOutput>;
