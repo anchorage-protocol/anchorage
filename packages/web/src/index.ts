@@ -8,6 +8,7 @@
 // runtime; the server composes the two.
 export { renderContributorPage } from './pages/contributor.js';
 export { renderHomePage } from './pages/home.js';
+export { renderManuscriptPage } from './pages/manuscript.js';
 export { renderNodePage } from './pages/node.js';
 export { renderSubTopicPage, type SubTopicPageData } from './pages/sub-topic.js';
 export type { AnchorageReader } from './reader.js';
@@ -16,6 +17,7 @@ export { baselineStylesheet } from './styles.js';
 export {
   buildWebHandler,
   matchContributorRoute,
+  matchManuscriptRoute,
   matchNodeRoute,
   matchSubTopicRoute,
   type WebHandler,

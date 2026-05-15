@@ -3,6 +3,7 @@ import { IdentityId, NodeId, ServerError, SubTopicId } from '@anchorage/contract
 import { renderContributorPage } from './pages/contributor.js';
 import { renderHomePage } from './pages/home.js';
 import { notFoundBody } from './pages/layout.js';
+import { renderManuscriptPage } from './pages/manuscript.js';
 import { renderNodePage } from './pages/node.js';
 import { renderSubTopicPage } from './pages/sub-topic.js';
 import type { AnchorageReader } from './reader.js';
@@ -20,6 +21,7 @@ import { baselineStylesheet } from './styles.js';
 //   GET /sub-topic/:id     → sub-topic page
 //   GET /node/:id          → node-detail page (slice 5c)
 //   GET /contributor/:id   → contributor profile (slice 5c)
+//   GET /manuscript/:id    → manuscript projection (slice 6b)
 //   GET /healthz           → liveness probe (JSON `{ ok: true }`)
 //
 // Refusal mapping. A `ServerError` thrown by the reader (e.g. an
@@ -106,6 +108,19 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
         return;
       }
 
+      const manuscriptIdRaw = matchManuscriptRoute(pathname);
+      if (manuscriptIdRaw !== undefined) {
+        const parsed = SubTopicId.safeParse(manuscriptIdRaw);
+        if (!parsed.success) {
+          sendHtmlNotFound(res, 'Unknown sub-topic', `No manuscript at ${pathname}.`, method);
+          return;
+        }
+        const manuscript = await reader.getManuscript(parsed.data);
+        log('web.page.manuscript', { sub_topic_id: parsed.data });
+        sendHtml(res, 200, renderManuscriptPage(manuscript), method);
+        return;
+      }
+
       const contributorIdRaw = matchContributorRoute(pathname);
       if (contributorIdRaw !== undefined) {
         const parsed = IdentityId.safeParse(contributorIdRaw);
@@ -161,6 +176,10 @@ export function matchNodeRoute(pathname: string): string | undefined {
 
 export function matchContributorRoute(pathname: string): string | undefined {
   return matchSingleSegmentRoute(pathname, '/contributor/');
+}
+
+export function matchManuscriptRoute(pathname: string): string | undefined {
+  return matchSingleSegmentRoute(pathname, '/manuscript/');
 }
 
 function matchSingleSegmentRoute(pathname: string, prefix: string): string | undefined {

@@ -56,6 +56,8 @@ export function renderSubTopicPage(data: SubTopicPageData): string {
     </div>
   </div>
 
+  <p class="manuscript-link"><a href="/manuscript/${detail.sub_topic.id}">Read the manuscript projection &rarr;</a></p>
+
   <h2>Active nodes</h2>
   ${renderNodeList(subgraph.nodes)}
 

@@ -384,6 +384,101 @@ describe('GET /contributor/:id (slice 5c)', () => {
   });
 });
 
+describe('GET /manuscript/:id (slice 6b)', () => {
+  it('renders the four fixed-order sections with citations and a credited contributor', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/manuscript/${f.mrdId}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/text\/html/);
+    const body = await res.text();
+    // The four sections appear in fixed order — content-order
+    // assertion is the load-bearing property here.
+    const sourcesIdx = body.indexOf('Sources');
+    const quotationsIdx = body.indexOf('Quotations');
+    const synthesisIdx = body.indexOf('Synthesis');
+    const openQuestionsIdx = body.indexOf('Open questions');
+    expect(sourcesIdx).toBeGreaterThan(-1);
+    expect(sourcesIdx).toBeLessThan(quotationsIdx);
+    expect(quotationsIdx).toBeLessThan(synthesisIdx);
+    expect(synthesisIdx).toBeLessThan(openQuestionsIdx);
+    // The included anchor + excerpt cite back to /node/:id and the
+    // proposer attributes to /contributor/:id.
+    expect(body).toContain(`href="/node/${f.anchorId}"`);
+    expect(body).toContain(`href="/node/${f.excerptId}"`);
+    expect(body).toContain(`href="/contributor/${f.aliceId}"`);
+    // Anchor surface (external_ref link) and excerpt quoted span
+    // render in place.
+    expect(body).toContain('PMID 12345');
+    expect(body).toContain('postoperative ctDNA');
+    // Contributor credit section names alice with a non-zero unit
+    // figure (proposed two nodes).
+    expect(body).toContain('Contributors');
+    expect(body).toContain('alice');
+    expect(body).toContain('units');
+  });
+
+  it('renders the empty-state per section when the sub-graph is empty', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/manuscript/${f.oligoId}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('No anchors yet');
+    expect(body).toContain('No excerpts yet');
+    expect(body).toContain('No synthesis claims yet');
+    expect(body).toContain('No open questions yet');
+    expect(body).toContain('No credited contributors yet');
+  });
+
+  it('404s on an unknown sub-topic id', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/manuscript/stp_does_not_exist`);
+    expect(res.status).toBe(404);
+    const body = await res.text();
+    expect(body).toContain('Not found');
+  });
+
+  it('keeps revoked proposers visible in the credit list with the revoked flag', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    // Have a different identity (bob) propose so revoking him does
+    // not trip the web-reader caller's authentication.
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const proposal = await f.server.tools.proposeAnchor(
+      { identity_id: bob.id },
+      {
+        cause_id: f.server.store.subTopics.get(f.oligoId)!.cause_id,
+        home_sub_topic_id: f.oligoId,
+        content: 'bob anchor',
+        external_ref: { kind: 'pmid', value: '99' },
+      },
+    );
+    f.server.curator.acceptProposal(proposal.proposal_id);
+    f.server.store.identities.set(bob.id, {
+      ...f.server.store.identities.get(bob.id)!,
+      status: 'revoked',
+    });
+    const res = await fetch(`${f.webUrl}/manuscript/${f.oligoId}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('bob');
+    expect(body).toContain('(revoked)');
+  });
+});
+
+describe('GET /sub-topic/:id (manuscript link)', () => {
+  it('exposes a link to /manuscript/:id from the sub-topic page (slice 6b)', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/sub-topic/${f.mrdId}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain(`href="/manuscript/${f.mrdId}"`);
+  });
+});
+
 describe('method not allowed', () => {
   it('405s POST / since the web is read-only', async () => {
     const f = await fixture();

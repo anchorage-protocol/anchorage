@@ -235,6 +235,66 @@ footer.site a { color: var(--fg-muted); }
   font-size: 0.9rem;
   color: var(--fg-muted);
 }
+
+.manuscript-link {
+  font-family: var(--sans);
+  margin: 0.5rem 0 1rem 0;
+}
+.manuscript-lede {
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--fg-muted);
+}
+.manuscript-section {
+  margin: 0.5rem 0 1.25rem 1.25rem;
+  padding: 0;
+}
+.manuscript-section li {
+  margin: 0.75rem 0;
+}
+.manuscript-parents {
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  margin: 0.25rem 0 0 0;
+}
+.manuscript-attribution {
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  margin: 0.25rem 0 0 0;
+}
+
+.credit-list {
+  list-style: decimal;
+  margin: 0.5rem 0 0.75rem 1.5rem;
+  padding: 0;
+}
+.credit-list li {
+  margin: 0.4rem 0;
+}
+.credit-name {
+  font-family: var(--sans);
+  font-weight: 500;
+}
+.credit-units {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--fg);
+  margin-left: 0.5rem;
+}
+.credit-breakdown {
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  margin-left: 0.5rem;
+}
+.revoked-flag {
+  font-family: var(--sans);
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  margin-left: 0.4rem;
+}
 `;
 
 export const baselineStylesheet: Raw = raw(CSS);

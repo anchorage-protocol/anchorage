@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { escapeHtml, html, raw, renderDocument } from './render.js';
-import { matchContributorRoute, matchNodeRoute, matchSubTopicRoute } from './web.js';
+import {
+  matchContributorRoute,
+  matchManuscriptRoute,
+  matchNodeRoute,
+  matchSubTopicRoute,
+} from './web.js';
 
 // Slice 5b — `@anchorage/web` package unit tests. The runtime
 // dependency graph is one-way (web → contracts only at runtime), so
@@ -53,8 +58,16 @@ describe('route matchers', () => {
   it('matchContributorRoute returns the id segment for /contributor/:id', () => {
     expect(matchContributorRoute('/contributor/idn_abc')).toBe('idn_abc');
   });
+  it('matchManuscriptRoute returns the id segment for /manuscript/:id', () => {
+    expect(matchManuscriptRoute('/manuscript/sub-topic_01HXXXX')).toBe('sub-topic_01HXXXX');
+  });
   it('returns undefined for unrelated paths', () => {
-    for (const m of [matchSubTopicRoute, matchNodeRoute, matchContributorRoute]) {
+    for (const m of [
+      matchSubTopicRoute,
+      matchNodeRoute,
+      matchContributorRoute,
+      matchManuscriptRoute,
+    ]) {
       expect(m('/')).toBeUndefined();
       expect(m('/something/else')).toBeUndefined();
     }
@@ -63,10 +76,12 @@ describe('route matchers', () => {
     expect(matchSubTopicRoute('/sub-topic/abc/extra')).toBeUndefined();
     expect(matchNodeRoute('/node/')).toBeUndefined();
     expect(matchContributorRoute('/contributor/abc/extra')).toBeUndefined();
+    expect(matchManuscriptRoute('/manuscript/abc/extra')).toBeUndefined();
   });
   it('decodes percent-encoded segments', () => {
     expect(matchSubTopicRoute('/sub-topic/abc%20def')).toBe('abc def');
     expect(matchNodeRoute('/node/abc%20def')).toBe('abc def');
     expect(matchContributorRoute('/contributor/abc%20def')).toBe('abc def');
+    expect(matchManuscriptRoute('/manuscript/abc%20def')).toBe('abc def');
   });
 });
