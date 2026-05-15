@@ -61,6 +61,15 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  packages/web:
+    dependencies:
+      '@anchorage/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@anchorage/server':
+        specifier: workspace:*
+        version: link:../server
+
 packages:
 
   '@biomejs/biome@2.4.14':
