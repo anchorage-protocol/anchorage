@@ -231,11 +231,12 @@ describe('Review and read-path tool I/O', () => {
 
 describe('ToolName registry', () => {
   // The expected list mirrors the PRD's MCP tool surface (Capacity &
-  // assignment + contributor-initiated proposals + read-path tools).
-  // Adding a tool to ToolName without updating this list would silently
-  // drift the spec from the wired registry — the per-name parse check
-  // is necessary but not sufficient on its own; the count + options
-  // exhaustiveness assertion below is what catches that case.
+  // assignment + contributor-initiated proposals + read-path tools +
+  // curator-only tools). Adding a tool to ToolName without updating
+  // this list would silently drift the spec from the wired registry —
+  // the per-name parse check is necessary but not sufficient on its
+  // own; the count + options exhaustiveness assertion below is what
+  // catches that case.
   const expected = [
     'set_capacity',
     'request_assignment',
@@ -253,6 +254,14 @@ describe('ToolName registry', () => {
     'query_proposals',
     'fetch_calibration_batch',
     'query_reputation',
+    'curator_accept_proposal',
+    'curator_reject_proposal',
+    'curator_defer_sub_topic',
+    'curator_revoke_identity',
+    'curator_archive_stale_proposals',
+    'curator_expire_stale_assignments',
+    'curator_decline_patterns',
+    'curator_identity_clusters',
   ] as const;
 
   it('parses every expected tool name', () => {

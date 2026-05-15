@@ -35,6 +35,17 @@ export const ServerErrorCode = z.enum([
   // epoch and retry signin," same shape as `rate_limited`, but at
   // a different layer of the four-layer sybil-resistance stack.
   'issuance_cap',
+  // Caller is authenticated but the tool requires a role the caller
+  // does not hold. PRD §MCP tool surface (Curator-only tools): the
+  // `curator_*` tools refuse with this code when the resolved
+  // identity's `role` is not `'curator'`. Distinct from
+  // `unauthorized` (the token did not resolve to an active identity
+  // at all) — a contributor calling a curator tool is *authenticated*
+  // but not *authorized for this tool*, and the recovery path is
+  // "have an operator promote your identity" rather than "obtain a
+  // valid token." Conflating the two would mislead a contributor
+  // whose signin is fine into re-authenticating.
+  'permission_denied',
 ]);
 export type ServerErrorCode = z.infer<typeof ServerErrorCode>;
 

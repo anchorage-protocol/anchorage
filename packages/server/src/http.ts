@@ -336,6 +336,8 @@ function serverErrorStatus(code: ServerErrorCode): number {
   switch (code) {
     case 'unauthorized':
       return 401;
+    case 'permission_denied':
+      return 403;
     case 'not_found':
       return 404;
     case 'rate_limited':

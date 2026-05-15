@@ -1,7 +1,16 @@
 import { z } from 'zod';
 import { AssignmentTask, WorkKind } from './assignments.js';
 import { FrontierItem, FrontierKind } from './frontier.js';
-import { AssignmentId, CauseId, NodeId, ProposalId, ReviewVoteId, SubTopicId } from './ids.js';
+import { PrincipalStatus } from './identity.js';
+import {
+  AssignmentId,
+  CauseId,
+  IdentityId,
+  NodeId,
+  ProposalId,
+  ReviewVoteId,
+  SubTopicId,
+} from './ids.js';
 import { ExternalRef, QuotedSpan } from './nodes.js';
 import { Proposal, ProposalPayload, ProposalStatus } from './proposals.js';
 import { ReviewDecision } from './reviews.js';
@@ -237,12 +246,146 @@ export type ReputationEntry = z.infer<typeof ReputationEntry>;
 export const QueryReputationOutput = z.object({ entries: z.array(ReputationEntry) }).strict();
 export type QueryReputationOutput = z.infer<typeof QueryReputationOutput>;
 
+// ──── Curator-only tools ────
+//
+// The curator-only MCP surface: the wire-level path for the in-process
+// `server.curator.*` namespace. PRD §The contribution flow (Resolve
+// step) and PRD §Reviewer assignment (step 4) commit curator escalation
+// as part of the governance machinery; slice 4b seated the `'curator'`
+// role on `Identity`; slice 7a wires the over-the-wire path.
+//
+// Authorization is enforced at the MCP dispatch layer (`mcp.ts`,
+// `wrapCurator`): the resolved caller's identity is re-fetched from
+// the store on every call and the role asserted to be `'curator'`,
+// refusing with `permission_denied` otherwise. The seam (role check
+// at the wire, not inside the in-process `server.curator.*` methods)
+// keeps the testbed and admin-CLI paths — which legitimately invoke
+// curator behavior without a wire-level caller — unchanged, and pins
+// the role-gate as a transport-layer concern in the same posture as
+// `unauthorized` resolution at the Authenticator seam.
+
+export const CuratorAcceptProposalInput = z.object({ proposal_id: ProposalId }).strict();
+export type CuratorAcceptProposalInput = z.infer<typeof CuratorAcceptProposalInput>;
+// `acceptProposal` returns whichever id the proposal materialized: a
+// node_id for graph-creating kinds, a sub_topic_id for sub_topic, or
+// neither for in-place mutations (membership, supersedes,
+// change_of_home). Both ids are optional; clients pattern-match.
+export const CuratorAcceptProposalOutput = z
+  .object({ node_id: NodeId.optional(), sub_topic_id: SubTopicId.optional() })
+  .strict();
+export type CuratorAcceptProposalOutput = z.infer<typeof CuratorAcceptProposalOutput>;
+
+export const CuratorRejectProposalInput = z.object({ proposal_id: ProposalId }).strict();
+export type CuratorRejectProposalInput = z.infer<typeof CuratorRejectProposalInput>;
+export const CuratorRejectProposalOutput = ok;
+export type CuratorRejectProposalOutput = z.infer<typeof CuratorRejectProposalOutput>;
+
+export const CuratorDeferSubTopicInput = z.object({ proposal_id: ProposalId }).strict();
+export type CuratorDeferSubTopicInput = z.infer<typeof CuratorDeferSubTopicInput>;
+export const CuratorDeferSubTopicOutput = z.object({ sub_topic_id: SubTopicId }).strict();
+export type CuratorDeferSubTopicOutput = z.infer<typeof CuratorDeferSubTopicOutput>;
+
+// Idempotent: revoking an already-revoked identity is a no-op rather
+// than an error — `changed: false` says "we found it but the
+// transition was a no-op", same posture as the admin-CLI revoke
+// path. PRD §Identity (Roles, revocation cascade): a revoked
+// identity stays browsable as graph history but loses write access
+// across the agent-as-delegate fan-out.
+export const CuratorRevokeIdentityInput = z.object({ identity_id: IdentityId }).strict();
+export type CuratorRevokeIdentityInput = z.infer<typeof CuratorRevokeIdentityInput>;
+export const CuratorRevokeIdentityOutput = z
+  .object({ identity_id: IdentityId, status: PrincipalStatus, changed: z.boolean() })
+  .strict();
+export type CuratorRevokeIdentityOutput = z.infer<typeof CuratorRevokeIdentityOutput>;
+
+export const CuratorArchiveStaleProposalsInput = z
+  .object({ window_seconds: z.number().positive(), cause_id: CauseId.optional() })
+  .strict();
+export type CuratorArchiveStaleProposalsInput = z.infer<typeof CuratorArchiveStaleProposalsInput>;
+export const CuratorArchiveStaleProposalsOutput = z
+  .object({ proposal_ids: z.array(ProposalId) })
+  .strict();
+export type CuratorArchiveStaleProposalsOutput = z.infer<typeof CuratorArchiveStaleProposalsOutput>;
+
+export const CuratorExpireStaleAssignmentsInput = z
+  .object({ window_seconds: z.number().positive(), cause_id: CauseId.optional() })
+  .strict();
+export type CuratorExpireStaleAssignmentsInput = z.infer<typeof CuratorExpireStaleAssignmentsInput>;
+export const CuratorExpireStaleAssignmentsOutput = z
+  .object({ assignment_ids: z.array(AssignmentId) })
+  .strict();
+export type CuratorExpireStaleAssignmentsOutput = z.infer<
+  typeof CuratorExpireStaleAssignmentsOutput
+>;
+
+// `declinePatterns` projection (PRD §Reviewer assignment, Rate-limit
+// accounting): per-reviewer offer / decline / rate within a cause,
+// already small-sample-filtered through `min_offers` (curator picks
+// a stricter floor if they want; the v0 default is 3 — below which
+// decline rate is meaningless noise). Specific thresholds remain
+// operationally private; the projection shape is public.
+export const DeclinePatternEntry = z
+  .object({
+    identity_id: IdentityId,
+    offers: z.number().int().nonnegative(),
+    declines: z.number().int().nonnegative(),
+    decline_rate: z.number().min(0).max(1),
+  })
+  .strict();
+export type DeclinePatternEntry = z.infer<typeof DeclinePatternEntry>;
+export const CuratorDeclinePatternsInput = z
+  .object({
+    cause_id: CauseId,
+    min_offers: z.number().int().nonnegative().optional(),
+    min_rate: z.number().min(0).max(1).optional(),
+  })
+  .strict();
+export type CuratorDeclinePatternsInput = z.infer<typeof CuratorDeclinePatternsInput>;
+export const CuratorDeclinePatternsOutput = z
+  .object({ entries: z.array(DeclinePatternEntry) })
+  .strict();
+export type CuratorDeclinePatternsOutput = z.infer<typeof CuratorDeclinePatternsOutput>;
+
+// `identityClusters` projection (PRD §Identity bullet 4, cross-cause
+// identity clustering): identity pairs whose behavioral fingerprint
+// across causes suggests coordination. Two metrics ride along
+// (`cross_cause_count`, `shared_proposal_count`) so the curator can
+// read what's driving the signal; the curator decides what counts as
+// a coalition vs. coincidence.
+export const IdentityClusterPair = z
+  .object({
+    identity_a: IdentityId,
+    identity_b: IdentityId,
+    cross_cause_count: z.number().int().nonnegative(),
+    shared_proposal_count: z.number().int().nonnegative(),
+  })
+  .strict();
+export type IdentityClusterPair = z.infer<typeof IdentityClusterPair>;
+export const CuratorIdentityClustersInput = z
+  .object({
+    window_seconds: z.number().positive().optional(),
+    min_signal: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+export type CuratorIdentityClustersInput = z.infer<typeof CuratorIdentityClustersInput>;
+export const CuratorIdentityClustersOutput = z
+  .object({ pairs: z.array(IdentityClusterPair) })
+  .strict();
+export type CuratorIdentityClustersOutput = z.infer<typeof CuratorIdentityClustersOutput>;
+
 // ──── Tool name registry ────
 //
 // The full set of tool names exposed by the MCP server. Useful for the
 // server's tool-dispatch table and for the testbed's harness, both of
 // which need to know what tool a name resolves to without crawling the
 // schema list.
+//
+// Names cluster by surface: capacity / assignment, propose_*,
+// cast_review_vote, the read-path `query_*` and `fetch_*`, and the
+// curator-only `curator_*` block (slice 7a). The `curator_` prefix
+// names the role gate at the wire — a contributor calling any name
+// in that block refuses with `permission_denied`, same posture as
+// `unauthorized` at the Authenticator seam.
 export const ToolName = z.enum([
   'set_capacity',
   'request_assignment',
@@ -260,5 +403,13 @@ export const ToolName = z.enum([
   'query_proposals',
   'fetch_calibration_batch',
   'query_reputation',
+  'curator_accept_proposal',
+  'curator_reject_proposal',
+  'curator_defer_sub_topic',
+  'curator_revoke_identity',
+  'curator_archive_stale_proposals',
+  'curator_expire_stale_assignments',
+  'curator_decline_patterns',
+  'curator_identity_clusters',
 ]);
 export type ToolName = z.infer<typeof ToolName>;

@@ -31,6 +31,7 @@ import {
   type NodeId,
   type NodeNeighborhood,
   type OpenQuestionNode,
+  type PrincipalStatus,
   type Proposal,
   type ProposalId,
   type ProposalPayload,
@@ -3779,6 +3780,31 @@ export class Server {
         throw new ServerError('invalid_state', 'sub_topic deferral did not materialize a SubTopic');
       }
       return { sub_topic_id: created.id };
+    },
+
+    // Flip an identity to `revoked`. PRD §Identity (Roles, revocation
+    // cascade): the revoked identity stays browsable as graph history
+    // (the curator-side projections still surface its prior activity)
+    // but loses write access — `resolveCaller` rejects further tool
+    // invocations at the Authenticator seam (`unauthorized`,
+    // status !== 'active'), and the per-(cause, sub-topic) reputation
+    // ledger continues to read the existing entries without accruing
+    // new ones. Idempotent: re-revoking is a no-op rather than an
+    // error (the operator running a runbook twice should not be
+    // surprised; matches the `revoke-identity` admin-CLI subcommand,
+    // which delegates here as of slice 7a).
+    revokeIdentity: (
+      identityId: IdentityId,
+    ): { identity_id: IdentityId; status: PrincipalStatus; changed: boolean } => {
+      const identity = this.store.identities.get(identityId);
+      if (!identity) {
+        throw new ServerError('not_found', `identity not found: ${identityId}`);
+      }
+      if (identity.status === 'revoked') {
+        return { identity_id: identity.id, status: 'revoked', changed: false };
+      }
+      this.store.identities.set(identity.id, { ...identity, status: 'revoked' });
+      return { identity_id: identity.id, status: 'revoked', changed: true };
     },
   };
 

@@ -3,6 +3,23 @@ import {
   AcceptAssignmentOutput,
   CastReviewVoteInput,
   CastReviewVoteOutput,
+  type CauseId,
+  CuratorAcceptProposalInput,
+  CuratorAcceptProposalOutput,
+  CuratorArchiveStaleProposalsInput,
+  CuratorArchiveStaleProposalsOutput,
+  CuratorDeclinePatternsInput,
+  CuratorDeclinePatternsOutput,
+  CuratorDeferSubTopicInput,
+  CuratorDeferSubTopicOutput,
+  CuratorExpireStaleAssignmentsInput,
+  CuratorExpireStaleAssignmentsOutput,
+  CuratorIdentityClustersInput,
+  CuratorIdentityClustersOutput,
+  CuratorRejectProposalInput,
+  CuratorRejectProposalOutput,
+  CuratorRevokeIdentityInput,
+  CuratorRevokeIdentityOutput,
   DeclineAssignmentInput,
   DeclineAssignmentOutput,
   FetchCalibrationBatchInput,
@@ -39,7 +56,7 @@ import {
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import type { Caller } from './auth.js';
+import { type Caller, resolveCaller } from './auth.js';
 import { ServerError } from './errors.js';
 import type { Server } from './server.js';
 
@@ -80,6 +97,27 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
     version: options.serverInfo?.version ?? PROTOCOL_VERSION,
   });
 
+  // Role discovery at build time. Used to gate which tools get
+  // registered on this session: a contributor's `tools/list` response
+  // omits the curator-only block entirely, matching what they could
+  // call. Two motivations:
+  //   1. The discovery surface tracks the authorization surface —
+  //      seeing a tool you can't call is misleading, and the role-
+  //      filtered wire makes "is this tool callable?" answerable
+  //      from `tools/list` alone.
+  //   2. Cassette byte-stability — the testbed's LLM-backed
+  //      contributor archetypes pin Anthropic API request bodies
+  //      against a golden cassette, and the tool definitions sent
+  //      to Anthropic come from `mcpClient.listTools()`. Hiding
+  //      curator tools from non-curator sessions keeps the request
+  //      bytes byte-identical to pre-slice-7a, so pre-existing
+  //      cassettes replay unchanged.
+  // The wire-level role check (`wrapCurator`) is still authoritative
+  // — a curator whose role changes mid-connection would still be
+  // refused on the next call. The build-time check is a discovery
+  // filter, not a security gate.
+  const callerRole = resolveCaller(server.store, caller).identity.role;
+
   // Wrap a Server.tools.* method into an MCP tool callback. Wraps
   // ServerError into a tool error result; lets other throws bubble
   // up as protocol errors.
@@ -101,6 +139,55 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
   ): (input: I) => Promise<CallToolResult> {
     return async (input: I): Promise<CallToolResult> => {
       try {
+        const result = await handler(caller, input);
+        return {
+          structuredContent: result as Record<string, unknown>,
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } catch (err) {
+        if (err instanceof ServerError) {
+          const payload = { code: err.code, message: err.message };
+          return {
+            isError: true,
+            content: [{ type: 'text', text: JSON.stringify(payload) }],
+          };
+        }
+        throw err;
+      }
+    };
+  }
+
+  // Curator-tool wrapper. Wire-level role gate (slice 7a, PRD §MCP
+  // tool surface — Curator-only tools): re-resolves the caller on
+  // every call (so an identity revoked mid-connection refuses on the
+  // next invocation, parallel to how `resolveCaller` already handles
+  // revocation downstream of `wrap`) and asserts the resolved
+  // identity's role is `'curator'`. A contributor calling any
+  // `curator_*` tool refuses with `permission_denied` — distinct
+  // from `unauthorized` (which means "token did not resolve to an
+  // active identity"); a contributor *is* authenticated, they are
+  // not authorized for *this* tool. The seam stays at the wire so
+  // the in-process `server.curator.*` namespace remains usable by
+  // the admin CLI and the testbed harness, which legitimately
+  // operate without a wire-level caller.
+  //
+  // Handler shape parallels `wrap` (same Caller signature) so the
+  // curator-tool registrations look like every other registration;
+  // the curator surface itself ignores the Caller parameter today,
+  // but threading it through keeps the option open for per-curator
+  // audit recording later without rewiring.
+  function wrapCurator<I, O>(
+    handler: (caller: Caller, input: I) => O | Promise<O>,
+  ): (input: I) => Promise<CallToolResult> {
+    return async (input: I): Promise<CallToolResult> => {
+      try {
+        const { identity } = resolveCaller(server.store, caller);
+        if (identity.role !== 'curator') {
+          throw new ServerError(
+            'permission_denied',
+            `curator role required (caller role is ${identity.role})`,
+          );
+        }
         const result = await handler(caller, input);
         return {
           structuredContent: result as Record<string, unknown>,
@@ -299,6 +386,143 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
     },
     wrap(server.tools.queryReputation),
   );
+
+  // ── Curator-only tools ──────────────────────────────────────────
+  // Wire-level path for the in-process `server.curator.*` surface.
+  // PRD §MCP tool surface (Curator-only tools), PRD §The contribution
+  // flow (Resolve step), PRD §Reviewer assignment (step 4: curator
+  // escalation). Two-layer gating:
+  //   - Discovery: only registered when `callerRole === 'curator'`,
+  //     so a contributor's `tools/list` omits the block entirely.
+  //   - Authorization: `wrapCurator` re-resolves the caller on
+  //     every call and refuses with `permission_denied` if the role
+  //     is no longer `'curator'` (mid-connection demotion is rare in
+  //     v0 — role is admin-only — but the wire-level check is the
+  //     authoritative gate and the discovery filter is a hint).
+  if (callerRole === 'curator') {
+    mcp.registerTool(
+      'curator_accept_proposal',
+      {
+        description:
+          'Accept a staged proposal; materializes the underlying node / edge / sub-topic. Curator role required.',
+        inputSchema: CuratorAcceptProposalInput.shape,
+        outputSchema: CuratorAcceptProposalOutput.shape,
+      },
+      wrapCurator((_caller, input: CuratorAcceptProposalInput) =>
+        server.curator.acceptProposal(input.proposal_id),
+      ),
+    );
+
+    mcp.registerTool(
+      'curator_reject_proposal',
+      {
+        description:
+          'Close a staged proposal as rejected without materializing it. Rep-neutral curator override. Curator role required.',
+        inputSchema: CuratorRejectProposalInput.shape,
+        outputSchema: CuratorRejectProposalOutput.shape,
+      },
+      wrapCurator((_caller, input: CuratorRejectProposalInput) => {
+        server.curator.rejectProposal(input.proposal_id);
+        return { ok: true as const };
+      }),
+    );
+
+    mcp.registerTool(
+      'curator_defer_sub_topic',
+      {
+        description:
+          'Defer a staged sub-topic proposal: materialize as a proposed (not active) SubTopic. Curator role required.',
+        inputSchema: CuratorDeferSubTopicInput.shape,
+        outputSchema: CuratorDeferSubTopicOutput.shape,
+      },
+      wrapCurator((_caller, input: CuratorDeferSubTopicInput) =>
+        server.curator.deferSubTopic(input.proposal_id),
+      ),
+    );
+
+    mcp.registerTool(
+      'curator_revoke_identity',
+      {
+        description:
+          'Flip an identity to revoked. Idempotent: already-revoked returns changed=false. Curator role required.',
+        inputSchema: CuratorRevokeIdentityInput.shape,
+        outputSchema: CuratorRevokeIdentityOutput.shape,
+      },
+      wrapCurator((_caller, input: CuratorRevokeIdentityInput) =>
+        server.curator.revokeIdentity(input.identity_id),
+      ),
+    );
+
+    mcp.registerTool(
+      'curator_archive_stale_proposals',
+      {
+        description:
+          'Archive staged proposals whose last vote is older than window_seconds (status -> unresolved-archived). Curator role required.',
+        inputSchema: CuratorArchiveStaleProposalsInput.shape,
+        outputSchema: CuratorArchiveStaleProposalsOutput.shape,
+      },
+      wrapCurator((_caller, input: CuratorArchiveStaleProposalsInput) => {
+        const opts: { window_seconds: number; cause_id?: CauseId } = {
+          window_seconds: input.window_seconds,
+        };
+        if (input.cause_id !== undefined) opts.cause_id = input.cause_id;
+        const ids = server.curator.archiveStaleProposals(opts);
+        return { proposal_ids: ids };
+      }),
+    );
+
+    mcp.registerTool(
+      'curator_expire_stale_assignments',
+      {
+        description:
+          'Expire offered/accepted assignments idle longer than window_seconds (status -> expired). Curator role required.',
+        inputSchema: CuratorExpireStaleAssignmentsInput.shape,
+        outputSchema: CuratorExpireStaleAssignmentsOutput.shape,
+      },
+      wrapCurator((_caller, input: CuratorExpireStaleAssignmentsInput) => {
+        const opts: { window_seconds: number; cause_id?: CauseId } = {
+          window_seconds: input.window_seconds,
+        };
+        if (input.cause_id !== undefined) opts.cause_id = input.cause_id;
+        const ids = server.curator.expireStaleAssignments(opts);
+        return { assignment_ids: ids };
+      }),
+    );
+
+    mcp.registerTool(
+      'curator_decline_patterns',
+      {
+        description:
+          'Per-reviewer offer/decline/rate within a cause, small-sample-filtered. Curator role required.',
+        inputSchema: CuratorDeclinePatternsInput.shape,
+        outputSchema: CuratorDeclinePatternsOutput.shape,
+      },
+      wrapCurator((_caller, input: CuratorDeclinePatternsInput) => {
+        const options: { min_offers?: number; min_rate?: number } = {};
+        if (input.min_offers !== undefined) options.min_offers = input.min_offers;
+        if (input.min_rate !== undefined) options.min_rate = input.min_rate;
+        const entries = server.curator.declinePatterns(input.cause_id, options);
+        return { entries };
+      }),
+    );
+
+    mcp.registerTool(
+      'curator_identity_clusters',
+      {
+        description:
+          'Cross-cause identity-clustering projection over shared-proposal vote co-occurrence. Curator role required.',
+        inputSchema: CuratorIdentityClustersInput.shape,
+        outputSchema: CuratorIdentityClustersOutput.shape,
+      },
+      wrapCurator((_caller, input: CuratorIdentityClustersInput) => {
+        const options: { window_seconds?: number; min_signal?: number } = {};
+        if (input.window_seconds !== undefined) options.window_seconds = input.window_seconds;
+        if (input.min_signal !== undefined) options.min_signal = input.min_signal;
+        const pairs = server.curator.identityClusters(options);
+        return { pairs };
+      }),
+    );
+  }
 
   // ── Read-path resources ─────────────────────────────────────────
   // PRD §Read-path tools and resources commits four MCP resources as

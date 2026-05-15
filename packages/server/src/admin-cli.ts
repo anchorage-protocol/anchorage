@@ -197,19 +197,11 @@ async function runRevokeIdentity(
   const rawId = requireFlag(flags, 'identity-id');
   const { server, close } = deps.makeServer(dbPath);
   try {
-    const identity = server.store.identities.get(rawId as IdentityId);
-    if (!identity) {
-      throw new ServerError('not_found', `identity not found: ${rawId}`);
-    }
-    if (identity.status === 'revoked') {
-      // Idempotent: re-revoking is a no-op rather than an error.
-      // The operator running this twice (e.g. from a runbook) should
-      // not be surprised.
-      deps.stdout(JSON.stringify({ identity_id: identity.id, status: 'revoked', changed: false }));
-      return { exit_code: 0 };
-    }
-    server.store.identities.set(identity.id, { ...identity, status: 'revoked' });
-    deps.stdout(JSON.stringify({ identity_id: identity.id, status: 'revoked', changed: true }));
+    // Delegate to the in-process curator surface so the admin-CLI path
+    // and the `curator_revoke_identity` MCP tool (slice 7a) cannot
+    // drift on the revocation semantics (idempotency, error shape).
+    const result = server.curator.revokeIdentity(rawId as IdentityId);
+    deps.stdout(JSON.stringify(result));
     return { exit_code: 0 };
   } finally {
     close();

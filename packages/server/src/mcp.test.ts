@@ -69,13 +69,47 @@ describe('mcp transport', () => {
     'query_proposals',
     'fetch_calibration_batch',
     'query_reputation',
+    'curator_accept_proposal',
+    'curator_reject_proposal',
+    'curator_defer_sub_topic',
+    'curator_revoke_identity',
+    'curator_archive_stale_proposals',
+    'curator_expire_stale_assignments',
+    'curator_decline_patterns',
+    'curator_identity_clusters',
   ] as const;
 
   it('lists every registered tool (exhaustive — no drift between MCP wrapper and ToolName)', async () => {
-    const { client } = await fixtureWithClient();
-    const { tools } = await client.listTools();
-    const names = tools.map((t) => t.name);
-    expect([...names].sort()).toEqual([...REGISTERED_TOOL_NAMES].sort());
+    // The exhaustive check now spans two sessions: a contributor's
+    // `tools/list` omits the curator block (discovery filter), so
+    // the wiring-vs-spec invariant is "the union across roles equals
+    // ToolName". The role split is a feature (PRD §MCP tool surface,
+    // Curator-only tools); a single-session assertion would silently
+    // fail on the contributor side and re-introduce drift.
+    const { client: contribClient } = await fixtureWithClient();
+    const contribNames = (await contribClient.listTools()).tools.map((t) => t.name);
+    // Spin up a curator session against the same Server.
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('cx'),
+      verifier: new FakeVerifier(),
+    });
+    const curator = server.bootstrap.mintIdentity({ display_name: 'carol', role: 'curator' });
+    const { secret } = server.bootstrap.bindAgentCredential({
+      identity_id: curator.id,
+      label: 'carol-desktop',
+    });
+    const curatorMcp = buildMcpServer(server, { token: secret });
+    const curatorClient = new Client({ name: 'curator-client', version: '0.0.0' });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([curatorMcp.connect(st), curatorClient.connect(ct)]);
+    const curatorNames = (await curatorClient.listTools()).tools.map((t) => t.name);
+
+    const union = new Set([...contribNames, ...curatorNames]);
+    expect([...union].sort()).toEqual([...REGISTERED_TOOL_NAMES].sort());
+    // And the role split itself: contributor sees no curator_*.
+    expect(contribNames.some((n) => n.startsWith('curator_'))).toBe(false);
+    expect(curatorNames.some((n) => n.startsWith('curator_'))).toBe(true);
   });
 
   it('round-trips propose_anchor, returning the proposal_id in structuredContent', async () => {
@@ -309,5 +343,213 @@ describe('authenticator seam', () => {
     // doesn't care how the status got to `revoked`.
     server.store.identities.set(identity.id, { ...identity, status: 'revoked' });
     expect(() => buildMcpServer(server, { token: secret })).toThrow(ServerError);
+  });
+});
+
+// Slice 7a: curator-only MCP tool surface. PRD §MCP tool surface
+// (Curator-only tools) commits the eight `curator_*` tools that wrap
+// the in-process `server.curator.*` surface, with role enforcement
+// at the MCP wrapper (`wrapCurator`). A contributor calling any of
+// them refuses with `permission_denied`; a curator round-trips end-
+// to-end. The seam pins both halves so contributor-vs-curator drift
+// surfaces at test time, not at production runtime.
+describe('curator tool surface', () => {
+  async function curatorFixture() {
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('c'),
+      verifier: new FakeVerifier(),
+    });
+    // Contributor (default-role) + curator (harness-provider mint,
+    // role explicitly 'curator'). Both bind a bearer credential —
+    // production-shaped path through the Authenticator seam.
+    const contributor = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const { secret: contribSecret } = server.bootstrap.bindAgentCredential({
+      identity_id: contributor.id,
+      label: 'alice-desktop',
+    });
+    const curator = server.bootstrap.mintIdentity({
+      display_name: 'carol',
+      role: 'curator',
+    });
+    const { secret: curatorSecret } = server.bootstrap.bindAgentCredential({
+      identity_id: curator.id,
+      label: 'carol-desktop',
+    });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'ctDNA-MRD',
+      description: 'mrd',
+      scope_query: 'ctDNA',
+    });
+
+    async function connect(secret: string, name: string) {
+      const mcp = buildMcpServer(server, { token: secret });
+      const client = new Client({ name, version: '0.0.0' });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([mcp.connect(st), client.connect(ct)]);
+      return client;
+    }
+
+    const contribClient = await connect(contribSecret, 'contrib');
+    const curatorClient = await connect(curatorSecret, 'curator');
+
+    return { server, contributor, curator, cause, subTopic, contribClient, curatorClient };
+  }
+
+  function errorPayload(result: Awaited<ReturnType<Client['callTool']>>): {
+    code?: string;
+    message?: string;
+  } {
+    const textBlock = (result.content as { type: string; text?: string }[]).find(
+      (b) => b.type === 'text',
+    );
+    return JSON.parse(textBlock?.text ?? '{}') as { code?: string; message?: string };
+  }
+
+  it("a contributor's tools/list omits every curator_* tool (discovery filter)", async () => {
+    const { contribClient, curatorClient } = await curatorFixture();
+    const contribTools = (await contribClient.listTools()).tools.map((t) => t.name);
+    const curatorTools = (await curatorClient.listTools()).tools.map((t) => t.name);
+    // Contributor session: zero curator_* names.
+    expect(contribTools.filter((n) => n.startsWith('curator_'))).toEqual([]);
+    // Curator session: exactly the eight curator tools committed in
+    // PRD §MCP tool surface (Curator-only tools).
+    expect(curatorTools.filter((n) => n.startsWith('curator_')).sort()).toEqual(
+      [
+        'curator_accept_proposal',
+        'curator_archive_stale_proposals',
+        'curator_decline_patterns',
+        'curator_defer_sub_topic',
+        'curator_expire_stale_assignments',
+        'curator_identity_clusters',
+        'curator_reject_proposal',
+        'curator_revoke_identity',
+      ].sort(),
+    );
+    // Read- and write-path tools survive on both sides — the filter
+    // is curator-scoped, not a wholesale wire change.
+    for (const t of ['propose_anchor', 'cast_review_vote', 'query_frontier']) {
+      expect(contribTools).toContain(t);
+      expect(curatorTools).toContain(t);
+    }
+  });
+
+  it('lets a curator accept a staged proposal end-to-end', async () => {
+    const { server, contributor, curatorClient, cause, subTopic } = await curatorFixture();
+    const proposal = await server.tools.proposeAnchor(
+      { identity_id: contributor.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'orphan',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    const result = await curatorClient.callTool({
+      name: 'curator_accept_proposal',
+      arguments: { proposal_id: proposal.proposal_id },
+    });
+    expect(result.isError).toBeFalsy();
+    const { node_id } = result.structuredContent as { node_id?: string };
+    expect(node_id).toMatch(/^nod_/);
+    expect(server.store.proposals.get(proposal.proposal_id)?.status).toBe('accepted');
+  });
+
+  it('lets a curator reject a staged proposal without materializing it', async () => {
+    const { server, contributor, curatorClient, cause, subTopic } = await curatorFixture();
+    const proposal = await server.tools.proposeAnchor(
+      { identity_id: contributor.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'orphan',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    const result = await curatorClient.callTool({
+      name: 'curator_reject_proposal',
+      arguments: { proposal_id: proposal.proposal_id },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(server.store.proposals.get(proposal.proposal_id)?.status).toBe('rejected');
+  });
+
+  it('curator_revoke_identity round-trips and is idempotent on re-revoke', async () => {
+    const { server, contributor, curatorClient } = await curatorFixture();
+    const first = await curatorClient.callTool({
+      name: 'curator_revoke_identity',
+      arguments: { identity_id: contributor.id },
+    });
+    expect(first.isError).toBeFalsy();
+    expect(first.structuredContent).toEqual({
+      identity_id: contributor.id,
+      status: 'revoked',
+      changed: true,
+    });
+    expect(server.store.identities.get(contributor.id)?.status).toBe('revoked');
+
+    const second = await curatorClient.callTool({
+      name: 'curator_revoke_identity',
+      arguments: { identity_id: contributor.id },
+    });
+    expect(second.isError).toBeFalsy();
+    expect(second.structuredContent).toEqual({
+      identity_id: contributor.id,
+      status: 'revoked',
+      changed: false,
+    });
+  });
+
+  it('curator_decline_patterns and curator_identity_clusters return empty result on a fresh cause', async () => {
+    const { curatorClient, cause } = await curatorFixture();
+    const declines = await curatorClient.callTool({
+      name: 'curator_decline_patterns',
+      arguments: { cause_id: cause.id },
+    });
+    expect(declines.isError).toBeFalsy();
+    expect(declines.structuredContent).toEqual({ entries: [] });
+
+    const clusters = await curatorClient.callTool({
+      name: 'curator_identity_clusters',
+      arguments: {},
+    });
+    expect(clusters.isError).toBeFalsy();
+    expect(clusters.structuredContent).toEqual({ pairs: [] });
+  });
+
+  it('wire-level permission_denied when a curator session is demoted to contributor mid-connection', async () => {
+    // The role gate inside `wrapCurator` re-resolves the caller from
+    // the store on every call. Demoting the curator after the
+    // connection is established must propagate to the next tool
+    // invocation: the tool stays *registered* on the session (the
+    // discovery filter is a build-time hint, not the gate), but the
+    // call refuses with `permission_denied` — distinct from the
+    // `unauthorized` seam refusal that fires when the identity is
+    // revoked outright.
+    const { server, curator, curatorClient, cause } = await curatorFixture();
+    server.store.identities.set(curator.id, { ...curator, role: 'contributor' });
+    const result = await curatorClient.callTool({
+      name: 'curator_decline_patterns',
+      arguments: { cause_id: cause.id },
+    });
+    expect(result.isError).toBe(true);
+    expect(errorPayload(result).code).toBe('permission_denied');
+  });
+
+  it('refuses a curator whose identity was revoked mid-connection (re-resolution per call)', async () => {
+    // Same re-resolution path, but for the outright revocation case —
+    // `resolveCaller` refuses at the Authenticator seam with
+    // `unauthorized` (status !== 'active'); the role check never
+    // runs because the call refuses one step earlier.
+    const { server, curator, curatorClient, cause } = await curatorFixture();
+    server.store.identities.set(curator.id, { ...curator, status: 'revoked' });
+    const result = await curatorClient.callTool({
+      name: 'curator_decline_patterns',
+      arguments: { cause_id: cause.id },
+    });
+    expect(result.isError).toBe(true);
+    expect(errorPayload(result).code).toBe('unauthorized');
   });
 });
