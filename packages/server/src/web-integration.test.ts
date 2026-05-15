@@ -1,12 +1,12 @@
 import { createServer, type Server as NodeHttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { IdentityId, NodeId, SubTopicId } from '@anchorage/contracts';
+import type { CauseId, IdentityId, NodeId, SubTopicId } from '@anchorage/contracts';
 import { buildWebHandler } from '@anchorage/web';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HarnessAuthenticator } from './auth.js';
 import { FakeClock } from './clock.js';
 import { SeededIdGen } from './id-gen.js';
-import { InProcessReader } from './reader.js';
+import { InProcessCuratorReader, InProcessReader } from './reader.js';
 import { Server } from './server.js';
 import { FakeVerifier } from './verifier.js';
 
@@ -498,5 +498,236 @@ describe('unknown routes', () => {
     const body = await res.text();
     expect(body).toContain('<!doctype html>');
     expect(body).toContain('Page not found');
+  });
+});
+
+// Slice 7b — curator console end-to-end. The web tier mounts the
+// `/curator/*` namespace only when a curator-side reader is wired.
+// Without it the routes 404 by absence; with it, the four pages
+// (index, queue, decline-patterns, identity-clusters) render
+// against a curator-role caller, and the underlying server methods
+// re-assert curator role on every call (so revocation or role-
+// demotion mid-flight surfaces as `permission_denied` → 403 on the
+// next request without a restart).
+//
+// The fixture wires both readers — public + curator — so the curator
+// console index page (which lists active causes via the public
+// reader for filter links) renders correctly.
+
+interface CuratorFixture {
+  server: Server;
+  webUrl: string;
+  webServer: NodeHttpServer;
+  causeId: CauseId;
+  curatorId: IdentityId;
+  contributorId: IdentityId;
+  // A staged proposal Alice creates so the moderation queue has
+  // exactly one item to render.
+  stagedProposalId: string;
+}
+
+async function curatorFixture(): Promise<CuratorFixture> {
+  const server = freshServer();
+
+  // Public reader: contributor-role; the public web's anonymous-
+  // browse posture from slice 5b.
+  const webReader = server.bootstrap.mintIdentity({ display_name: 'web-reader' });
+  // Curator reader: curator-role, harness-provider (only harness-
+  // provider mints can hold the curator role per PRD §Identity
+  // Roles; the admin CLI's `mint-curator` walks the same code path).
+  const curator = server.bootstrap.mintIdentity({
+    display_name: 'carol',
+    role: 'curator',
+  });
+  // Contributor whose proposals + assignments + votes drive the
+  // queue / decline-patterns / identity-clusters projections.
+  const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+
+  const cause = server.bootstrap.createCause({
+    name: 'Colon cancer',
+    description: 'CRC',
+  });
+  const mrd = server.bootstrap.seedSubTopic({
+    cause_id: cause.id,
+    name: 'ctDNA-MRD',
+    description: 'ctDNA',
+    scope_query: 'ctDNA',
+  });
+
+  // One staged proposal so the moderation queue has content.
+  const anchor = await server.tools.proposeAnchor(
+    { identity_id: alice.id },
+    {
+      cause_id: cause.id,
+      home_sub_topic_id: mrd.id,
+      content: 'orphan',
+      external_ref: { kind: 'pmid', value: '1' },
+    },
+  );
+
+  const auth = new HarnessAuthenticator(server.store);
+  const publicCaller = auth.authenticate(webReader.id);
+  const curatorCaller = auth.authenticate(curator.id);
+
+  const reader = new InProcessReader({ server, caller: publicCaller });
+  const cReader = new InProcessCuratorReader({ server, caller: curatorCaller });
+  const handler = buildWebHandler({
+    reader,
+    curatorReader: cReader,
+    log: () => {},
+    onError: () => {},
+  });
+  const httpServer = createServer((req, res) => {
+    void handler(req, res);
+  });
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once('error', reject);
+    httpServer.once('listening', resolve);
+    httpServer.listen(0, '127.0.0.1');
+  });
+  const addr = httpServer.address() as AddressInfo;
+  return {
+    server,
+    webUrl: `http://127.0.0.1:${addr.port}`,
+    webServer: httpServer,
+    causeId: cause.id,
+    curatorId: curator.id,
+    contributorId: alice.id,
+    stagedProposalId: anchor.proposal_id,
+  };
+}
+
+describe('curator console (slice 7b)', () => {
+  it('GET /curator renders the curator index with per-cause filter links', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/text\/html/);
+    const body = await res.text();
+    expect(body).toContain('Curator console');
+    expect(body).toContain('Moderation queue');
+    expect(body).toContain('Decline patterns');
+    expect(body).toContain('Identity clusters');
+    // Per-cause filter links into the queue and the decline-patterns
+    // view: the index reads the public cause directory for these.
+    expect(body).toContain(`/curator/queue?cause_id=${f.causeId}`);
+    expect(body).toContain(`/curator/decline-patterns/${f.causeId}`);
+    expect(body).toContain('/curator/identity-clusters');
+  });
+
+  it('GET /curator/queue lists every staged proposal', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator/queue`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('Moderation queue');
+    // The single staged proposal Alice created.
+    expect(body).toContain(f.stagedProposalId);
+    // The proposer is linkified into their contributor page.
+    expect(body).toContain(`/contributor/${f.contributorId}`);
+    // The "all causes" copy fires when no filter is applied.
+    expect(body).toContain('across all causes');
+  });
+
+  it('GET /curator/queue?cause_id=... filters the queue by cause', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator/queue?cause_id=${f.causeId}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain(f.stagedProposalId);
+    expect(body).toContain(f.causeId);
+  });
+
+  it('GET /curator/queue with an unknown cause_id 404s', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator/queue?cause_id=cau_does_not_exist`);
+    // The filter is applied server-side regardless of cause
+    // existence (the queue is empty for the filter, but the page
+    // renders fine). Empty-state messaging fires.
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('No staged proposals');
+  });
+
+  it('GET /curator/decline-patterns/:cause_id renders the empty-state for a fresh cause', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator/decline-patterns/${f.causeId}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('Decline patterns');
+    // No reviewers have hit the offers floor yet.
+    expect(body).toContain('No entries above the small-sample floor');
+  });
+
+  it('GET /curator/decline-patterns/:cause_id 404s on an unknown cause', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator/decline-patterns/cau_unknown`);
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /curator/identity-clusters renders the empty-state on a fresh graph', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator/identity-clusters`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('Identity clusters');
+    expect(body).toContain('No pairs above the cross-cause signal floor');
+  });
+
+  it('/curator/* routes 404 when no curator reader is configured', async () => {
+    // No `curatorReader` passed → /curator/* unmounted by absence.
+    const server = freshServer();
+    const webReader = server.bootstrap.mintIdentity({ display_name: 'web-reader' });
+    const auth = new HarnessAuthenticator(server.store);
+    const caller = auth.authenticate(webReader.id);
+    const handler = buildWebHandler({
+      reader: new InProcessReader({ server, caller }),
+      log: () => {},
+      onError: () => {},
+    });
+    const httpServer = createServer((req, res) => {
+      void handler(req, res);
+    });
+    await new Promise<void>((resolve, reject) => {
+      httpServer.once('error', reject);
+      httpServer.once('listening', resolve);
+      httpServer.listen(0, '127.0.0.1');
+    });
+    webServer = httpServer;
+    const addr = httpServer.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    for (const path of [
+      '/curator',
+      '/curator/queue',
+      '/curator/decline-patterns/cau_x',
+      '/curator/identity-clusters',
+    ]) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.status).toBe(404);
+    }
+  });
+
+  it('returns 403 when the curator caller is demoted mid-flight', async () => {
+    // The role gate inside `server.resources.requireCurator` re-
+    // resolves the caller on every call. Demoting the curator
+    // identity after the server is up must propagate to the next
+    // request as `permission_denied` → 403, parallel to how
+    // `wrapCurator` refuses on the MCP path.
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const curator = f.server.store.identities.get(f.curatorId);
+    if (!curator) throw new Error('curator vanished');
+    f.server.store.identities.set(curator.id, { ...curator, role: 'contributor' });
+    const res = await fetch(`${f.webUrl}/curator/queue`);
+    expect(res.status).toBe(403);
+    const body = await res.text();
+    expect(body).toContain('Forbidden');
   });
 });

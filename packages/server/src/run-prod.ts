@@ -5,7 +5,7 @@ import { type GithubApi, GithubApiHttp, GithubOAuthAuthenticator } from './auth-
 import { ServerError } from './errors.js';
 import { type AnchorageHttpServer, startHttpServer } from './http.js';
 import { LiveFetchVerifier } from './live-fetch-verifier.js';
-import { InProcessReader } from './reader.js';
+import { InProcessCuratorReader, InProcessReader } from './reader.js';
 import { Server } from './server.js';
 import { SqliteStore } from './sqlite-store.js';
 import type { Verifier } from './verifier.js';
@@ -54,6 +54,22 @@ export interface ProdConfig {
   // surface stays MCP-only — the testbed-only and local-only
   // postures land on that branch.
   web_reader_identity_id?: IdentityId;
+  // Slice 7b — curator-console wiring. The identity id of an active
+  // curator-role identity (`anchorage-admin mint-curator`) the
+  // web handler holds as the privileged caller for the
+  // `/curator/*` routes. When omitted, those routes are not
+  // mounted (404 by absence) — the public anonymous-browse
+  // posture stays as 5b's. The operator gates network access to
+  // `/curator/*` upstream (reverse-proxy ACL, basic auth, VPN);
+  // the in-process role check inside `server.resources.*` re-
+  // asserts curator role on every call so a mid-flight revocation
+  // (or a misconfigured non-curator id) refuses with
+  // `permission_denied` → 403 without a restart. Setting this
+  // without `web_reader_identity_id` is a configuration error and
+  // refuses at boot — the curator console depends on the public
+  // reader for cause-list rendering (the curator index page lists
+  // causes for filter links), so the public tier must also be up.
+  web_curator_identity_id?: IdentityId;
 }
 
 export interface GithubConfig {
@@ -109,9 +125,24 @@ export function parseProdConfig(env: NodeJS.ProcessEnv): ProdConfig {
       ? (web_reader_identity_id_raw as IdentityId)
       : undefined;
 
+  const web_curator_identity_id_raw = env['ANCHORAGE_WEB_CURATOR_IDENTITY'];
+  const web_curator_identity_id =
+    web_curator_identity_id_raw && web_curator_identity_id_raw.length > 0
+      ? (web_curator_identity_id_raw as IdentityId)
+      : undefined;
+  if (web_curator_identity_id !== undefined && web_reader_identity_id === undefined) {
+    throw new ServerError(
+      'invalid_input',
+      'ANCHORAGE_WEB_CURATOR_IDENTITY requires ANCHORAGE_WEB_READER_IDENTITY (curator console depends on the public reader for cause-list rendering)',
+    );
+  }
+
   const config: ProdConfig = { db_path, host, port };
   if (github !== undefined) config.github = github;
   if (web_reader_identity_id !== undefined) config.web_reader_identity_id = web_reader_identity_id;
+  if (web_curator_identity_id !== undefined) {
+    config.web_curator_identity_id = web_curator_identity_id;
+  }
   return config;
 }
 
@@ -207,7 +238,46 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
     }
     const caller: Caller = { identity_id: identity.id };
     const reader = new InProcessReader({ server, caller });
-    webHandler = buildWebHandler({ reader, log });
+
+    // Slice 7b — curator console. Same boot-time validation shape
+    // as the public reader plus a role assertion: the curator
+    // reader identity must hold `role === 'curator'`, otherwise
+    // the deployment would silently mount `/curator/*` against
+    // an identity whose `requireCurator` check refuses on every
+    // request — load-bearing to fail at boot instead. The
+    // operator mints the identity via `anchorage-admin
+    // mint-curator` and passes the printed `identity_id`.
+    let curatorReader: InProcessCuratorReader | undefined;
+    if (deps.config.web_curator_identity_id !== undefined) {
+      const curatorId = deps.config.web_curator_identity_id;
+      const curatorIdentity = server.store.identities.get(curatorId);
+      if (!curatorIdentity) {
+        throw new ServerError(
+          'invalid_input',
+          `ANCHORAGE_WEB_CURATOR_IDENTITY does not name an existing identity: ${curatorId}`,
+        );
+      }
+      if (curatorIdentity.status !== 'active') {
+        throw new ServerError(
+          'invalid_input',
+          `ANCHORAGE_WEB_CURATOR_IDENTITY identity is ${curatorIdentity.status}: ${curatorId}`,
+        );
+      }
+      if (curatorIdentity.role !== 'curator') {
+        throw new ServerError(
+          'invalid_input',
+          `ANCHORAGE_WEB_CURATOR_IDENTITY identity does not hold curator role: ${curatorId} (role=${curatorIdentity.role})`,
+        );
+      }
+      const curatorCaller: Caller = { identity_id: curatorIdentity.id };
+      curatorReader = new InProcessCuratorReader({ server, caller: curatorCaller });
+    }
+
+    webHandler = buildWebHandler({
+      reader,
+      ...(curatorReader ? { curatorReader } : {}),
+      log,
+    });
   }
 
   const http = await startHttpServer({
@@ -224,6 +294,7 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
     db_path: deps.config.db_path,
     github_oauth: deps.config.github !== undefined,
     web_tier: webHandler !== undefined,
+    curator_console: deps.config.web_curator_identity_id !== undefined,
   });
 
   let closed = false;

@@ -3345,7 +3345,117 @@ export class Server {
 
       return { sub_topic: subTopic, cause, sections, contributors };
     },
+
+    // ── Curator-only read projections (slice 7b) ────────────────────
+    // The web tier's curator console (PRD §Curator console) reads
+    // through these. Each re-resolves the caller from the store on
+    // every call (so a mid-flight identity revocation lands on the
+    // next page load without a restart) and asserts the resolved
+    // identity's role is `'curator'`, refusing with the typed
+    // `permission_denied` code otherwise — the same wire-level role
+    // gate `wrapCurator` (slice 7a) uses for the curator MCP tools,
+    // re-applied at the read-projection seam so the web tier and
+    // the MCP tool path use the same authorization.
+    //
+    // The projections delegate to `server.curator.*` (the in-process
+    // namespace 7a's MCP tools already wrap), so the read-data
+    // semantics are byte-identical to the MCP curator-tool path —
+    // the web console and a curator-as-agent using `curator_*` tools
+    // observe the same numbers by construction. Operational privacy
+    // (decline-rate thresholds, cluster-signal floors) stays where
+    // the in-process namespace puts it.
+
+    // Moderation queue: every `staged` proposal, the curator's
+    // work surface. Filterable by cause so the curator working a
+    // specific cause does not have to wade through cross-cause
+    // backlog. Sub-topic-level filtering is not exposed here in v0
+    // — staged proposals route to reviewers by sub-topic at
+    // assignment time; the curator's queue is one level up.
+    getCuratorQueue: async (
+      caller: Caller,
+      options?: { cause_id?: CauseId },
+    ): Promise<{ proposals: Proposal[] }> => {
+      this.requireCurator(caller);
+      const filterCause = options?.cause_id;
+      const proposals: Proposal[] = [];
+      for (const proposal of this.store.proposals.values()) {
+        if (proposal.status !== 'staged') continue;
+        if (filterCause !== undefined) {
+          const route = this.locateProposalForReview(proposal);
+          if (!route || route.cause_id !== filterCause) continue;
+        }
+        proposals.push(proposal);
+      }
+      // Oldest first — the queue is a backlog, and the curator works
+      // the long-stale items first by convention.
+      proposals.sort((a, b) => {
+        if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+        return a.id.localeCompare(b.id);
+      });
+      return { proposals };
+    },
+
+    // Per-(cause, reviewer) cumulative decline rate. Same projection
+    // shape (and same small-sample floor) as the
+    // `curator_decline_patterns` MCP tool returns; the in-process
+    // namespace is the single computation path.
+    getCuratorDeclinePatterns: async (
+      caller: Caller,
+      causeId: CauseId,
+      options?: { min_offers?: number; min_rate?: number },
+    ): Promise<{
+      entries: Array<{
+        identity_id: IdentityId;
+        offers: number;
+        declines: number;
+        decline_rate: number;
+      }>;
+    }> => {
+      this.requireCurator(caller);
+      const inner: { min_offers?: number; min_rate?: number } = {};
+      if (options?.min_offers !== undefined) inner.min_offers = options.min_offers;
+      if (options?.min_rate !== undefined) inner.min_rate = options.min_rate;
+      const entries = this.curator.declinePatterns(causeId, inner);
+      return { entries };
+    },
+
+    // Cross-cause identity-clustering projection. Same delegation
+    // pattern as `getCuratorDeclinePatterns`.
+    getCuratorIdentityClusters: async (
+      caller: Caller,
+      options?: { window_seconds?: number; min_signal?: number },
+    ): Promise<{
+      pairs: Array<{
+        identity_a: IdentityId;
+        identity_b: IdentityId;
+        cross_cause_count: number;
+        shared_proposal_count: number;
+      }>;
+    }> => {
+      this.requireCurator(caller);
+      const inner: { window_seconds?: number; min_signal?: number } = {};
+      if (options?.window_seconds !== undefined) inner.window_seconds = options.window_seconds;
+      if (options?.min_signal !== undefined) inner.min_signal = options.min_signal;
+      const pairs = this.curator.identityClusters(inner);
+      return { pairs };
+    },
   };
+
+  // Helper for the curator-only read projections (slice 7b). Re-
+  // resolves the caller through the store (revocation honored mid-
+  // flight) and asserts curator role; refuses with the typed
+  // `permission_denied` code otherwise, matching the wire-level
+  // gate `wrapCurator` enforces at the MCP layer for slice 7a's
+  // curator tools.
+  private requireCurator(caller: Caller): void {
+    const { identity } = resolveCaller(this.store, caller);
+    if (identity.role !== 'curator') {
+      throw new ServerError(
+        'permission_denied',
+        `curator role required (caller role is ${identity.role})`,
+      );
+    }
+  }
 
   // Tier mapping for the public contributor projection (PRD
   // §Reputation). The three v0 tiers are derived from the per-(cause,

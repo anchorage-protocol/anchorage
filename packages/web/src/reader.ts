@@ -1,10 +1,12 @@
 import type {
   CauseDirectory,
+  CauseId,
   ContributorProfile,
   IdentityId,
   Manuscript,
   NodeId,
   NodeNeighborhood,
+  Proposal,
   QueryFrontierOutput,
   Subgraph,
   SubTopicDetail,
@@ -64,4 +66,52 @@ export interface AnchorageReader {
   // (outline + cited claims + credited contributors). Drives the
   // manuscript page (slice 6b).
   getManuscript(id: SubTopicId): Promise<Manuscript>;
+}
+
+// Curator-only reader (slice 7b). Mounted by the web tier as a
+// separate seam from `AnchorageReader` so the public anonymous-browse
+// path and the curator-console path use different identities even
+// though both run in-process: a curator-role caller backs this
+// reader, and the underlying `server.resources.*` curator-side
+// methods (`getCuratorQueue`, `getCuratorDeclinePatterns`,
+// `getCuratorIdentityClusters`) re-assert the role on every call
+// via `requireCurator`. Refuses with the typed `permission_denied`
+// code if a non-curator caller is wired in by configuration error,
+// which the web handler surfaces as 403; the run-prod boot path
+// also validates the curator role up-front so a misconfigured
+// deployment fails loudly at startup rather than per-request.
+//
+// The split-interface posture is deliberate: passing both readers
+// through `WebHandlerOpts` keeps the curator console gated by
+// configuration (no curator reader → no `/curator/*` routes at all,
+// 404 by route absence) rather than by per-request branching, and
+// type-prevents a mistake where a public page accidentally renders
+// curator-projection data.
+export interface AnchorageCuratorReader {
+  // `server.resources.getCuratorQueue` — the moderation queue: every
+  // staged proposal, optionally filtered by cause.
+  getCuratorQueue(options?: { cause_id?: CauseId }): Promise<{ proposals: Proposal[] }>;
+  // `server.resources.getCuratorDeclinePatterns` — per-reviewer
+  // offer/decline/rate within a cause, small-sample-filtered.
+  getCuratorDeclinePatterns(
+    causeId: CauseId,
+    options?: { min_offers?: number; min_rate?: number },
+  ): Promise<{
+    entries: Array<{
+      identity_id: IdentityId;
+      offers: number;
+      declines: number;
+      decline_rate: number;
+    }>;
+  }>;
+  // `server.resources.getCuratorIdentityClusters` — cross-cause
+  // identity-clustering projection.
+  getCuratorIdentityClusters(options?: { window_seconds?: number; min_signal?: number }): Promise<{
+    pairs: Array<{
+      identity_a: IdentityId;
+      identity_b: IdentityId;
+      cross_cause_count: number;
+      shared_proposal_count: number;
+    }>;
+  }>;
 }

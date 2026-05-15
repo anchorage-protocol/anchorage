@@ -1,16 +1,18 @@
 import type {
   CauseDirectory,
+  CauseId,
   ContributorProfile,
   IdentityId,
   Manuscript,
   NodeId,
   NodeNeighborhood,
+  Proposal,
   QueryFrontierOutput,
   Subgraph,
   SubTopicDetail,
   SubTopicId,
 } from '@anchorage/contracts';
-import type { AnchorageReader } from '@anchorage/web';
+import type { AnchorageCuratorReader, AnchorageReader } from '@anchorage/web';
 import type { Caller } from './auth.js';
 import type { Server } from './server.js';
 
@@ -75,5 +77,58 @@ export class InProcessReader implements AnchorageReader {
 
   async getManuscript(id: SubTopicId): Promise<Manuscript> {
     return this.server.resources.getManuscript(this.caller, id);
+  }
+}
+
+// Slice 7b — curator-side reader. Same shape as `InProcessReader` but
+// holds a curator-role caller and exposes the curator-only read
+// projections from `server.resources.*`. The split-reader posture
+// (public reader → public routes; curator reader → /curator/*
+// routes) matches the deliberate split-interface seam in
+// `AnchorageReader` / `AnchorageCuratorReader` over in `@anchorage/web`:
+// the curator console is mounted by configuration (no curator
+// reader → no /curator/* routes at all) and refuses by type, not by
+// per-request branching. The underlying server methods also re-
+// assert the role on every call so a mid-flight revocation lands on
+// the next page load without a restart.
+export class InProcessCuratorReader implements AnchorageCuratorReader {
+  private readonly server: Server;
+  private readonly caller: Caller;
+
+  constructor(opts: InProcessReaderOpts) {
+    this.server = opts.server;
+    this.caller = opts.caller;
+  }
+
+  async getCuratorQueue(options?: { cause_id?: CauseId }): Promise<{ proposals: Proposal[] }> {
+    return this.server.resources.getCuratorQueue(this.caller, options);
+  }
+
+  async getCuratorDeclinePatterns(
+    causeId: CauseId,
+    options?: { min_offers?: number; min_rate?: number },
+  ): Promise<{
+    entries: Array<{
+      identity_id: IdentityId;
+      offers: number;
+      declines: number;
+      decline_rate: number;
+    }>;
+  }> {
+    return this.server.resources.getCuratorDeclinePatterns(this.caller, causeId, options);
+  }
+
+  async getCuratorIdentityClusters(options?: {
+    window_seconds?: number;
+    min_signal?: number;
+  }): Promise<{
+    pairs: Array<{
+      identity_a: IdentityId;
+      identity_b: IdentityId;
+      cross_cause_count: number;
+      shared_proposal_count: number;
+    }>;
+  }> {
+    return this.server.resources.getCuratorIdentityClusters(this.caller, options);
   }
 }

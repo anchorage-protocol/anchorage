@@ -627,3 +627,142 @@ describe('curator.expireStaleAssignments', () => {
     expect(f.server.store.assignments.get(a.assignment_id)?.status).toBe('expired');
   });
 });
+
+// Slice 7b — curator-side read projections on `server.resources.*`.
+// These wrap the same in-process `server.curator.*` namespace the
+// MCP curator tools wrap, with one added concern: a role check.
+// The wire-level `wrapCurator` (slice 7a) gates the MCP tool path;
+// `requireCurator` gates the web-tier read path. Both refuse with
+// the typed `permission_denied` code so the web handler can map
+// it to 403 the same way the HTTP transport does for the MCP
+// path.
+describe('curator-side resource read projections (slice 7b)', () => {
+  function curatorFixture(): {
+    server: Server;
+    contributorCaller: Caller;
+    curatorCaller: Caller;
+    cause_id: ReturnType<Server['bootstrap']['createCause']>['id'];
+    sub_topic_id: ReturnType<Server['bootstrap']['seedSubTopic']>['id'];
+  } {
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('t7b'),
+      verifier: new FakeVerifier(),
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const carol = server.bootstrap.mintIdentity({
+      display_name: 'carol',
+      role: 'curator',
+    });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
+    const st = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'ctDNA-MRD',
+      description: 'x',
+      scope_query: 'x',
+    });
+    return {
+      server,
+      contributorCaller: { identity_id: alice.id },
+      curatorCaller: { identity_id: carol.id },
+      cause_id: cause.id,
+      sub_topic_id: st.id,
+    };
+  }
+
+  it('getCuratorQueue refuses a non-curator caller with permission_denied', async () => {
+    const f = curatorFixture();
+    await expect(f.server.resources.getCuratorQueue(f.contributorCaller)).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+  });
+
+  it('getCuratorQueue returns every staged proposal, oldest first', async () => {
+    const f = curatorFixture();
+    // Two anchor proposals staged across the clock; the queue
+    // returns them in creation order.
+    const first = await f.server.tools.proposeAnchor(f.contributorCaller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'first',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const second = await f.server.tools.proposeAnchor(f.contributorCaller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'second',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const queue = await f.server.resources.getCuratorQueue(f.curatorCaller);
+    expect(queue.proposals.map((p) => p.id)).toEqual([first.proposal_id, second.proposal_id]);
+    // Accepting one removes it from the queue.
+    f.server.curator.acceptProposal(first.proposal_id);
+    const after = await f.server.resources.getCuratorQueue(f.curatorCaller);
+    expect(after.proposals.map((p) => p.id)).toEqual([second.proposal_id]);
+  });
+
+  it('getCuratorQueue filters by cause_id when provided', async () => {
+    const f = curatorFixture();
+    const otherCause = f.server.bootstrap.createCause({ name: 'AMR', description: 'x' });
+    const otherSt = f.server.bootstrap.seedSubTopic({
+      cause_id: otherCause.id,
+      name: 'amr-st',
+      description: 'x',
+      scope_query: 'x',
+    });
+    await f.server.tools.proposeAnchor(f.contributorCaller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'in-cause',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    await f.server.tools.proposeAnchor(f.contributorCaller, {
+      cause_id: otherCause.id,
+      home_sub_topic_id: otherSt.id,
+      content: 'other-cause',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    const inCause = await f.server.resources.getCuratorQueue(f.curatorCaller, {
+      cause_id: f.cause_id,
+    });
+    expect(inCause.proposals).toHaveLength(1);
+    expect(inCause.proposals[0]?.payload.kind).toBe('anchor');
+    const inOther = await f.server.resources.getCuratorQueue(f.curatorCaller, {
+      cause_id: otherCause.id,
+    });
+    expect(inOther.proposals).toHaveLength(1);
+  });
+
+  it('getCuratorDeclinePatterns and getCuratorIdentityClusters refuse non-curators', async () => {
+    const f = curatorFixture();
+    await expect(
+      f.server.resources.getCuratorDeclinePatterns(f.contributorCaller, f.cause_id),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+    await expect(
+      f.server.resources.getCuratorIdentityClusters(f.contributorCaller),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+  });
+
+  it('getCuratorDeclinePatterns and getCuratorIdentityClusters delegate to curator namespace', async () => {
+    // Same data as the in-process namespace would return — the
+    // resource path is a role-gated wrapper, not a re-implementation.
+    const f = curatorFixture();
+    const declines = await f.server.resources.getCuratorDeclinePatterns(
+      f.curatorCaller,
+      f.cause_id,
+    );
+    expect(declines.entries).toEqual(f.server.curator.declinePatterns(f.cause_id));
+    const clusters = await f.server.resources.getCuratorIdentityClusters(f.curatorCaller);
+    expect(clusters.pairs).toEqual(f.server.curator.identityClusters());
+  });
+
+  it('refuses a curator whose identity was revoked (unauthorized at the seam)', async () => {
+    const f = curatorFixture();
+    const carol = f.server.store.identities.get(f.curatorCaller.identity_id);
+    if (!carol) throw new Error('curator vanished');
+    f.server.store.identities.set(carol.id, { ...carol, status: 'revoked' });
+    await expect(f.server.resources.getCuratorQueue(f.curatorCaller)).rejects.toMatchObject({
+      code: 'unauthorized',
+    });
+  });
+});

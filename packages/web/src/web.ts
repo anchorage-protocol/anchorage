@@ -1,12 +1,16 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { IdentityId, NodeId, ServerError, SubTopicId } from '@anchorage/contracts';
+import { CauseId, IdentityId, NodeId, ServerError, SubTopicId } from '@anchorage/contracts';
 import { renderContributorPage } from './pages/contributor.js';
+import { renderCuratorDeclinePatternsPage } from './pages/curator-decline-patterns.js';
+import { renderCuratorIdentityClustersPage } from './pages/curator-identity-clusters.js';
+import { renderCuratorIndexPage } from './pages/curator-index.js';
+import { renderCuratorQueuePage } from './pages/curator-queue.js';
 import { renderHomePage } from './pages/home.js';
 import { notFoundBody } from './pages/layout.js';
 import { renderManuscriptPage } from './pages/manuscript.js';
 import { renderNodePage } from './pages/node.js';
 import { renderSubTopicPage } from './pages/sub-topic.js';
-import type { AnchorageReader } from './reader.js';
+import type { AnchorageCuratorReader, AnchorageReader } from './reader.js';
 import { renderDocument } from './render.js';
 import { baselineStylesheet } from './styles.js';
 
@@ -17,24 +21,48 @@ import { baselineStylesheet } from './styles.js';
 // reader reads, an HTML page goes out.
 //
 // Routes:
-//   GET /                  → home page (cause list)
-//   GET /sub-topic/:id     → sub-topic page
-//   GET /node/:id          → node-detail page (slice 5c)
-//   GET /contributor/:id   → contributor profile (slice 5c)
-//   GET /manuscript/:id    → manuscript projection (slice 6b)
-//   GET /healthz           → liveness probe (JSON `{ ok: true }`)
+//   GET /                                        → home page (cause list)
+//   GET /sub-topic/:id                           → sub-topic page
+//   GET /node/:id                                → node-detail page (slice 5c)
+//   GET /contributor/:id                         → contributor profile (slice 5c)
+//   GET /manuscript/:id                          → manuscript projection (slice 6b)
+//   GET /curator                                 → curator console index (slice 7b, gated)
+//   GET /curator/queue?cause_id=...              → moderation queue (slice 7b, gated)
+//   GET /curator/decline-patterns/:cause_id      → decline-patterns view (slice 7b, gated)
+//   GET /curator/identity-clusters               → identity-clusters view (slice 7b, gated)
+//   GET /healthz                                 → liveness probe (JSON `{ ok: true }`)
 //
 // Refusal mapping. A `ServerError` thrown by the reader (e.g. an
 // unresolvable sub-topic id, an unauthorized caller — though the
 // web service's caller is validated at boot) is caught at the top
 // level and rendered as an HTML page (404 for `not_found`,
-// 400 for `invalid_input`, 500 otherwise) so the browser sees a
-// real page rather than a JSON blob. The `/healthz` probe is a
-// JSON endpoint by convention (load balancers parse JSON liveness
-// checks more often than HTML); everything else stays HTML.
+// 400 for `invalid_input`, 403 for `permission_denied`,
+// 500 otherwise) so the browser sees a real page rather than a JSON
+// blob. The `/healthz` probe is a JSON endpoint by convention (load
+// balancers parse JSON liveness checks more often than HTML);
+// everything else stays HTML.
+//
+// Curator console gating (slice 7b). When `curatorReader` is omitted
+// from the build, the `/curator/*` routes return 404 by route
+// absence — no curator data crosses the wire on a misconfigured
+// deployment. When configured, the route mount-point exists; the
+// upstream operator is responsible for restricting which network
+// origin reaches `/curator/*` (reverse-proxy ACL, basic auth, VPN,
+// etc.). The in-process reader holds a curator-role caller for the
+// lifetime of the deployment, and `server.resources.*`'s
+// `requireCurator` check re-asserts the role on every call so a
+// mid-flight identity revocation (`anchorage-admin revoke-identity`
+// or a curator firing `curator_revoke_identity` on themselves)
+// surfaces as `permission_denied` → 403 on the next request without
+// a restart.
 
 export interface WebHandlerOpts {
   reader: AnchorageReader;
+  // Curator-side reader (slice 7b). Optional: omit to leave the
+  // `/curator/*` routes unmounted (404 by route absence). When
+  // present, mounts the curator console pages, all read-only —
+  // actions still run through MCP via the curator's agent.
+  curatorReader?: AnchorageCuratorReader;
   // Outbound info log sink. Defaults to `console.log`. Production
   // deployments inject structured-log sinks.
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -48,6 +76,7 @@ export type WebHandler = (req: IncomingMessage, res: ServerResponse) => Promise<
 
 export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
   const reader = opts.reader;
+  const curatorReader = opts.curatorReader;
   const log = opts.log ?? defaultLog;
   const onError = opts.onError ?? defaultOnError;
 
@@ -134,6 +163,91 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
         return;
       }
 
+      // Curator console (slice 7b). The whole `/curator/*` namespace
+      // is gated by `curatorReader` being configured — without it
+      // the routes 404 by absence, so a deployment that didn't
+      // wire a curator identity never leaks curator-side data
+      // even by accident. The operator gates network access to
+      // /curator/* upstream; the in-process reader holds a curator-
+      // role caller for the lifetime of the deployment.
+      if (curatorReader !== undefined) {
+        if (pathname === '/curator' || pathname === '/curator/') {
+          const directory = await reader.getCauseDirectory();
+          log('web.page.curator.index', { causes: directory.causes.length });
+          sendHtml(res, 200, renderCuratorIndexPage(directory), method);
+          return;
+        }
+        if (pathname === '/curator/queue') {
+          const causeIdRaw = url.searchParams.get('cause_id');
+          let causeId: CauseId | undefined;
+          if (causeIdRaw !== null && causeIdRaw.length > 0) {
+            const parsed = CauseId.safeParse(causeIdRaw);
+            if (!parsed.success) {
+              sendHtmlNotFound(res, 'Unknown cause', `No cause with id ${causeIdRaw}.`, method);
+              return;
+            }
+            causeId = parsed.data;
+          }
+          const queue = await curatorReader.getCuratorQueue(
+            causeId !== undefined ? { cause_id: causeId } : undefined,
+          );
+          log('web.page.curator.queue', {
+            proposal_count: queue.proposals.length,
+            cause_id: causeId,
+          });
+          sendHtml(
+            res,
+            200,
+            renderCuratorQueuePage({
+              proposals: queue.proposals,
+              ...(causeId !== undefined ? { cause_id: causeId } : {}),
+            }),
+            method,
+          );
+          return;
+        }
+        const declineCauseIdRaw = matchCuratorDeclinePatternsRoute(pathname);
+        if (declineCauseIdRaw !== undefined) {
+          const parsed = CauseId.safeParse(declineCauseIdRaw);
+          if (!parsed.success) {
+            sendHtmlNotFound(res, 'Unknown cause', `No cause at ${pathname}.`, method);
+            return;
+          }
+          const directory = await reader.getCauseDirectory();
+          const causeEntry = directory.causes.find((c) => c.cause.id === parsed.data);
+          if (!causeEntry) {
+            sendHtmlNotFound(
+              res,
+              'Unknown cause',
+              `No active cause with id ${parsed.data}.`,
+              method,
+            );
+            return;
+          }
+          const declines = await curatorReader.getCuratorDeclinePatterns(parsed.data);
+          log('web.page.curator.decline_patterns', {
+            cause_id: parsed.data,
+            entry_count: declines.entries.length,
+          });
+          sendHtml(
+            res,
+            200,
+            renderCuratorDeclinePatternsPage({
+              cause: causeEntry.cause,
+              entries: declines.entries,
+            }),
+            method,
+          );
+          return;
+        }
+        if (pathname === '/curator/identity-clusters') {
+          const clusters = await curatorReader.getCuratorIdentityClusters();
+          log('web.page.curator.identity_clusters', { pair_count: clusters.pairs.length });
+          sendHtml(res, 200, renderCuratorIdentityClustersPage(clusters), method);
+          return;
+        }
+      }
+
       sendHtmlNotFound(res, 'Page not found', `No page at ${pathname}.`, method);
     } catch (err) {
       if (err instanceof ServerError) {
@@ -143,6 +257,17 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
         }
         if (err.code === 'invalid_input') {
           sendHtmlError(res, 400, 'Bad request', err.message, method);
+          return;
+        }
+        if (err.code === 'permission_denied') {
+          // Slice 7b — a curator route reached the handler but the
+          // underlying reader refused the role check. This means
+          // the curator reader was wired with a non-curator-role
+          // identity (configuration error) or the curator's role
+          // was revoked mid-flight. Both surface as 403 to the
+          // browser; the operator sees the stack via onError.
+          onError(err, { method, pathname });
+          sendHtmlError(res, 403, 'Forbidden', err.message, method);
           return;
         }
         // Other typed codes (unauthorized, invalid_state, ...) fall
@@ -180,6 +305,16 @@ export function matchContributorRoute(pathname: string): string | undefined {
 
 export function matchManuscriptRoute(pathname: string): string | undefined {
   return matchSingleSegmentRoute(pathname, '/manuscript/');
+}
+
+// Slice 7b — curator decline-patterns route. The cause_id is a
+// single segment under `/curator/decline-patterns/`. Identity and
+// node routes use the same shape against their respective prefixes;
+// kept as a parallel helper so the curator-route matcher tests can
+// pin the path surface in isolation from the reader, the way the
+// existing matchers do.
+export function matchCuratorDeclinePatternsRoute(pathname: string): string | undefined {
+  return matchSingleSegmentRoute(pathname, '/curator/decline-patterns/');
 }
 
 function matchSingleSegmentRoute(pathname: string, prefix: string): string | undefined {

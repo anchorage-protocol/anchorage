@@ -85,6 +85,32 @@ describe('parseProdConfig', () => {
     expect(cfg.web_reader_identity_id).toBe('idn_abc');
   });
 
+  it('omits web_curator_identity_id when ANCHORAGE_WEB_CURATOR_IDENTITY is unset', () => {
+    const cfg = parseProdConfig({
+      ANCHORAGE_DB_PATH: '/tmp/x.db',
+      ANCHORAGE_WEB_READER_IDENTITY: 'idn_abc',
+    });
+    expect(cfg.web_curator_identity_id).toBeUndefined();
+  });
+
+  it('populates web_curator_identity_id when both reader env vars are set', () => {
+    const cfg = parseProdConfig({
+      ANCHORAGE_DB_PATH: '/tmp/x.db',
+      ANCHORAGE_WEB_READER_IDENTITY: 'idn_abc',
+      ANCHORAGE_WEB_CURATOR_IDENTITY: 'idn_curator',
+    });
+    expect(cfg.web_curator_identity_id).toBe('idn_curator');
+  });
+
+  it('refuses ANCHORAGE_WEB_CURATOR_IDENTITY without ANCHORAGE_WEB_READER_IDENTITY', () => {
+    expect(() =>
+      parseProdConfig({
+        ANCHORAGE_DB_PATH: '/tmp/x.db',
+        ANCHORAGE_WEB_CURATOR_IDENTITY: 'idn_curator',
+      }),
+    ).toThrow(/requires ANCHORAGE_WEB_READER_IDENTITY/);
+  });
+
   it('refuses non-positive integer tunables', () => {
     expect(() =>
       parseProdConfig({
@@ -261,6 +287,93 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
     } finally {
       seedStore.close();
     }
+  });
+
+  it('mounts the curator console when ANCHORAGE_WEB_CURATOR_IDENTITY names an active curator', async () => {
+    const dbPath = join(tmp, 'anchorage.db');
+    const seedStore = new SqliteStore({ path: dbPath });
+    let readerId: IdentityId;
+    let curatorId: IdentityId;
+    try {
+      const seedServer = new Server({ store: seedStore });
+      readerId = seedServer.bootstrap.mintIdentity({ display_name: 'web-reader' }).id;
+      curatorId = seedServer.bootstrap.mintIdentity({
+        display_name: 'carol',
+        role: 'curator',
+      }).id;
+    } finally {
+      seedStore.close();
+    }
+    handle = await runProdServer({
+      config: {
+        db_path: dbPath,
+        host: '127.0.0.1',
+        port: 0,
+        web_reader_identity_id: readerId,
+        web_curator_identity_id: curatorId,
+      },
+      verifier: new FakeVerifier(),
+      log: () => {},
+    });
+    const res = await fetch(`${handle.http.url}/curator`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/text\/html/);
+    const body = await res.text();
+    expect(body).toContain('Curator console');
+  });
+
+  it('refuses at boot when ANCHORAGE_WEB_CURATOR_IDENTITY does not hold curator role', async () => {
+    const dbPath = join(tmp, 'anchorage.db');
+    const seedStore = new SqliteStore({ path: dbPath });
+    let readerId: IdentityId;
+    let contributorId: IdentityId;
+    try {
+      const seedServer = new Server({ store: seedStore });
+      readerId = seedServer.bootstrap.mintIdentity({ display_name: 'web-reader' }).id;
+      // Default role contributor — caught at the boot-time check
+      // before any request is served.
+      contributorId = seedServer.bootstrap.mintIdentity({ display_name: 'not-a-curator' }).id;
+    } finally {
+      seedStore.close();
+    }
+    await expect(
+      runProdServer({
+        config: {
+          db_path: dbPath,
+          host: '127.0.0.1',
+          port: 0,
+          web_reader_identity_id: readerId,
+          web_curator_identity_id: contributorId,
+        },
+        verifier: new FakeVerifier(),
+        log: () => {},
+      }),
+    ).rejects.toThrow(/does not hold curator role/);
+  });
+
+  it('refuses at boot when ANCHORAGE_WEB_CURATOR_IDENTITY names an unknown identity', async () => {
+    const dbPath = join(tmp, 'anchorage.db');
+    const seedStore = new SqliteStore({ path: dbPath });
+    let readerId: IdentityId;
+    try {
+      const seedServer = new Server({ store: seedStore });
+      readerId = seedServer.bootstrap.mintIdentity({ display_name: 'web-reader' }).id;
+    } finally {
+      seedStore.close();
+    }
+    await expect(
+      runProdServer({
+        config: {
+          db_path: dbPath,
+          host: '127.0.0.1',
+          port: 0,
+          web_reader_identity_id: readerId,
+          web_curator_identity_id: 'idn_does_not_exist' as IdentityId,
+        },
+        verifier: new FakeVerifier(),
+        log: () => {},
+      }),
+    ).rejects.toThrow(/does not name an existing identity/);
   });
 
   it('closes the SQLite store on shutdown (durability across reopen)', async () => {

@@ -7,16 +7,21 @@
 // `@anchorage/web` depends only on `@anchorage/contracts` at
 // runtime; the server composes the two.
 export { renderContributorPage } from './pages/contributor.js';
+export { renderCuratorDeclinePatternsPage } from './pages/curator-decline-patterns.js';
+export { renderCuratorIdentityClustersPage } from './pages/curator-identity-clusters.js';
+export { renderCuratorIndexPage } from './pages/curator-index.js';
+export { renderCuratorQueuePage } from './pages/curator-queue.js';
 export { renderHomePage } from './pages/home.js';
 export { renderManuscriptPage } from './pages/manuscript.js';
 export { renderNodePage } from './pages/node.js';
 export { renderSubTopicPage, type SubTopicPageData } from './pages/sub-topic.js';
-export type { AnchorageReader } from './reader.js';
+export type { AnchorageCuratorReader, AnchorageReader } from './reader.js';
 export { escapeHtml, html, Raw, raw, renderDocument } from './render.js';
 export { baselineStylesheet } from './styles.js';
 export {
   buildWebHandler,
   matchContributorRoute,
+  matchCuratorDeclinePatternsRoute,
   matchManuscriptRoute,
   matchNodeRoute,
   matchSubTopicRoute,

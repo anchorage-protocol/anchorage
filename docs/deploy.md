@@ -32,6 +32,7 @@ Three things, in order:
 | `ANCHORAGE_ISSUANCE_EPOCH_SECONDS` | no | `Infinity` (gate inert) | Epoch window for the issuance cap, in seconds. Pair with the cap above. |
 | `ANCHORAGE_ATTESTATION_AGE_DAYS_FOR_LEVEL2` | no | `30` | GitHub account age threshold for attestation level 2 (PRD §Identity bullet 1). Override only with a specific reason. |
 | `ANCHORAGE_WEB_READER_IDENTITY` | no | — | Identity id of the operator-minted "web reader" (an `anchorage-admin mint-reader` mint, see *Bootstrap* below). When set, the runtime mounts the read-only web tier on the same HTTP listener: `/` renders the home page (cause list), `/sub-topic/{id}` renders a sub-topic detail page. When unset, the web routes do not exist and the listener serves only `/mcp`, `/auth/github/*`, and `/healthz` — the MCP-only deployment posture. |
+| `ANCHORAGE_WEB_CURATOR_IDENTITY` | no | — | Identity id of an active `curator`-role identity (an `anchorage-admin mint-curator` mint, see *Bootstrap: enabling the curator console* below). When set, the runtime mounts the `/curator/*` console pages — moderation queue, decline-patterns view, identity-clusters view — gated by this in-process curator caller. When unset, every `/curator/*` route 404s by absence. Requires `ANCHORAGE_WEB_READER_IDENTITY` to also be set (the curator index lists active causes via the public reader for filter links); boot refuses otherwise. |
 
 The runtime refuses to start on any malformed value — bad ports, negative tunables, missing `ANCHORAGE_DB_PATH`. This is loud-failure on purpose; silent fallbacks would mask a misconfigured production launch.
 
@@ -132,6 +133,27 @@ The web tier is opt-in: omit `ANCHORAGE_WEB_READER_IDENTITY` and the deployment 
 
    The web reader is freely revocable through `anchorage-admin revoke-identity`; revocation observed mid-flight is honored on the next browse request (the `Server` re-resolves the caller through the store on every call, PRD §Identity, Authenticator seam). On revocation, the web handler starts returning HTML 500s until the operator mints a fresh reader and updates the env.
 
+## Bootstrap: enabling the curator console (slice 7b)
+
+The curator console at `/curator/*` is an additional opt-in on top of the public web tier. PRD §Curator console commits the read-only posture: the curator visits the console to see what's queued or flagged and then directs their MCP agent (Claude Desktop, Cursor, custom client) to fire the `curator_*` tools (slice 7a) — there are no action buttons in the web view. Enable in two steps.
+
+1. Mint a *curator* identity for the web tier. This is a curator-role harness identity (only harness-provider mints can hold the curator role, PRD §Identity Roles — the same invariant `mint-curator` already enforces).
+
+   ```bash
+   docker exec -it anchorage \
+     pnpm --filter @anchorage/server run admin mint-curator \
+       --db=/data/anchorage.db \
+       --display-name="anchorage.science curator console"
+   ```
+
+   Output is a single JSON line carrying both the `identity_id` and a one-shot bearer secret (the secret is for a curator-as-agent who fires the `curator_*` MCP tools; for the web console specifically you only need the `identity_id`). Stash the secret in a secrets manager if the same identity will also drive the curator agent.
+
+2. Set `ANCHORAGE_WEB_CURATOR_IDENTITY` to that `identity_id`, keep `ANCHORAGE_WEB_READER_IDENTITY` set, and restart the runtime. On boot, the runtime validates the identity exists, is active, and holds the curator role — all three are caught at boot rather than per-request. The `/curator/*` routes then mount: `/curator` (index), `/curator/queue` (moderation queue, optional `?cause_id=` filter), `/curator/decline-patterns/{cause_id}` (per-cause decline rates), `/curator/identity-clusters` (cross-cause vote-coordination fingerprints).
+
+3. **Gate `/curator/*` upstream.** The console contains operationally-private data — per-reviewer decline rates, cross-cause identity-pair signals. The Anchorage runtime does *not* expose login or per-request authentication for these routes in v0: the in-process curator caller is the single privileged identity behind the namespace, and anyone who can hit `/curator/*` will see the content. The operational posture PRD §Curator console commits is: the operator restricts which network origin reaches `/curator/*` upstream — reverse-proxy ACL (NGINX `allow`/`deny`, Caddy `route` with `@curator`), basic auth at the edge, Cloudflare Access policy, VPN-only egress, or whatever the deployment's network primitives offer. The web handler itself enforces no second factor. A misconfigured deployment that exposes `/curator/*` to the public internet leaks the projections; gate before mount.
+
+4. Revocation is freely available — `anchorage-admin revoke-identity` against the curator's `identity_id`, or the curator firing `curator_revoke_identity` against themselves. `server.resources.requireCurator` re-resolves the caller on every call, so the next page load after revocation refuses with `permission_denied` → 403. (A demotion to contributor role surfaces the same way.) To rotate, mint a fresh curator, update the env, restart.
+
 ## Backups
 
 The SQLite file is the source of truth. Loss of the file is loss of the instance. Two reasonable approaches:
@@ -145,8 +167,9 @@ The SQLite file is small enough through the single-cause phase that either appro
 
 The runtime emits structured logs via the injected log sink. The default sink is `console.log` (line-per-event with a fields object). Production deployments should pipe stdout into whatever the host's log pipeline expects (Fly's log shipper, journald, Loki, etc.) and parse on the event names:
 
-- `anchorage.server.started` — emitted once per boot, with `url`, `db_path`, `github_oauth: boolean`, `web_tier: boolean`.
+- `anchorage.server.started` — emitted once per boot, with `url`, `db_path`, `github_oauth: boolean`, `web_tier: boolean`, `curator_console: boolean`.
 - `web.page.home` / `web.page.sub_topic` — emitted on every served web page (slice 5b). Carries the cause count or sub-topic id respectively. No PII; the web reader is shared across all anonymous traffic.
+- `web.page.curator.index` / `web.page.curator.queue` / `web.page.curator.decline_patterns` / `web.page.curator.identity_clusters` — emitted on every served curator-console page (slice 7b). Carries projection-shape counts (cause count, proposal count, entry count, pair count) and the cause_id filter where applicable.
 - `anchorage.server.stopped` — emitted once per graceful shutdown.
 - `auth.github.start` / `auth.github.complete` — one per device-code flow attempt (metadata only: `user_code`, `status` — never the secret).
 - `http error <method> <path>` — emitted on uncaught throws inside the HTTP handler.
