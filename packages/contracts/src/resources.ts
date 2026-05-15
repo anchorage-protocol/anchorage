@@ -2,8 +2,8 @@ import { z } from 'zod';
 import { Cause, SubTopic } from './cause.js';
 import { Edge } from './edges.js';
 import { PrincipalStatus } from './identity.js';
-import { CauseId, IdentityId, SubTopicId } from './ids.js';
-import { Node } from './nodes.js';
+import { CauseId, IdentityId, NodeId, SubTopicId } from './ids.js';
+import { ExternalRef, Node, NodeKind, QuotedSpan } from './nodes.js';
 import { Timestamp } from './timestamps.js';
 
 // MCP-resource read-path shapes (PRD §Read-path tools and resources).
@@ -198,12 +198,139 @@ export const ContributorProfile = z
   .strict();
 export type ContributorProfile = z.infer<typeof ContributorProfile>;
 
+// ── manuscript://{sub-topic-id} — outline + cited claims + credited contributors
+// ─────────────────────────────────────────────────────────────────
+// PRD §Manuscript projection: "a derived view of a sub-topic's graph
+// plus editorial choices (section order, narrative voice, scope of
+// inclusion). Projections are not a separate truth ledger — they are
+// a function of (graph state, projection config)." Slice 6a commits
+// the v0 *implicit default* projection config — no separate
+// `ProjectionConfig` graph record yet (versioned configs as
+// governance artifacts is a later slice; PRD §Manuscript projection
+// commits the shape without yet committing the persisted record).
+// The v0 default:
+//
+//   - Scope of inclusion: every active node whose home is the
+//     sub-topic OR whose scope_memberships include it — the same
+//     node set `subgraph://` returns. The convex-hull substrate is
+//     what gets projected; staged/rejected work stays in the
+//     proposal queue.
+//   - Section order: a fixed sequence — `sources` (anchors,
+//     ordered by created_at), `quotations` (excerpts, by created_at
+//     then id), `synthesis` (synthesis nodes, by induced-subgraph
+//     parent count descending then created_at), `open_questions`
+//     (by created_at). The order is content-shape-driven:
+//     a manuscript reads source → quotation → synthesis → question,
+//     and the v0 walk is faithful to the graph rather than
+//     re-narrating it.
+//   - Narrative voice: none — v0 surfaces each included node's own
+//     `content` verbatim. Narrative composition is a Phase 3
+//     surface; v0 is a faithful projection.
+//
+// Credit attribution (PRD §Credit) shape: for each included node,
+// the proposer accrues the proposer weight; reviewers whose
+// `cast_review_vote` aligned with the converged outcome (accept,
+// since rejected nodes are excluded by scope) accrue the reviewer
+// weight (smaller than the proposer weight, per PRD §Credit:
+// "weighted lower than proposers"). Each contribution is scaled by
+// a survivor factor (nodes that survived supersedes events count
+// more) and a load-bearing factor (nodes participating in more
+// derives edges in the induced subgraph count more). Specific
+// numeric weights are testbed-tunable knobs on `ReviewConfig`
+// (PRD §Credit: "Specific weights are deferred to the testbed").
+// Revoked-status contributors remain in the credit list with the
+// status flagged — PRD §Identity commits "past contributions
+// remain in the graph with the revocation flagged."
+
+export const ManuscriptSectionKind = z.enum([
+  'sources',
+  'quotations',
+  'synthesis',
+  'open_questions',
+]);
+export type ManuscriptSectionKind = z.infer<typeof ManuscriptSectionKind>;
+
+// Per-node projection entry. The shape carries the kind-specific
+// fields the manuscript renderer needs without forcing it to
+// re-fetch each node — `external_ref` for anchors so a citation
+// line resolves without a second read, `quoted_span` for excerpts
+// so the quotation renders with its offset, `parent_node_ids`
+// (restricted to the *included* set) for syntheses and open
+// questions so the chain-of-claim is visible inside the projection.
+export const ManuscriptCitation = z
+  .object({
+    node_id: NodeId,
+    kind: NodeKind,
+    content: z.string(),
+    // anchors only
+    external_ref: ExternalRef.optional(),
+    // anchors only — sha256 of fetched source content
+    content_hash: z.string().optional(),
+    // excerpts only
+    quoted_span: QuotedSpan.optional(),
+    // syntheses + open_questions only — derives parents, restricted
+    // to the included node set so a click-through resolves inside
+    // the manuscript view; out-of-scope parents are dropped.
+    parent_node_ids: z.array(NodeId),
+    // proposer's identity id; the public profile resolves through
+    // `contributor://{id}`.
+    proposer_id: IdentityId,
+  })
+  .strict();
+export type ManuscriptCitation = z.infer<typeof ManuscriptCitation>;
+
+export const ManuscriptSection = z
+  .object({
+    kind: ManuscriptSectionKind,
+    title: z.string(),
+    items: z.array(ManuscriptCitation),
+  })
+  .strict();
+export type ManuscriptSection = z.infer<typeof ManuscriptSection>;
+
+// One credited contributor on the manuscript. `display_name` and
+// `status` come from the same `PublicContributor` projection the
+// contributor profile uses — the credit list is the public-safe
+// view of authorship. `units` is the projected credit value
+// computed by the v0 credit function; `proposed_node_count` and
+// `reviewed_node_count` break the figure down so a reader can see
+// where the credit came from without the projection having to
+// expose individual weights.
+export const CreditAttribution = z
+  .object({
+    contributor_id: IdentityId,
+    display_name: z.string(),
+    status: PrincipalStatus,
+    units: z.number().nonnegative(),
+    proposed_node_count: z.number().int().nonnegative(),
+    reviewed_node_count: z.number().int().nonnegative(),
+  })
+  .strict();
+export type CreditAttribution = z.infer<typeof CreditAttribution>;
+
+export const Manuscript = z
+  .object({
+    sub_topic: SubTopic,
+    cause: Cause,
+    sections: z.array(ManuscriptSection),
+    contributors: z.array(CreditAttribution),
+  })
+  .strict();
+export type Manuscript = z.infer<typeof Manuscript>;
+
 // ── Resource-name registry ───────────────────────────────────────
 // The full set of resource scheme names exposed by the MCP server.
 // Parallel to `ToolName`: the harness and any introspecting client
 // can enumerate the read-path surface without crawling the SDK's
 // registration table. Schemes match the URI prefix (`cause://`,
 // `sub-topic://{id}`, `node://{id}`, `subgraph://{sub-topic-id}`,
-// `contributor://{id}`).
-export const ResourceName = z.enum(['cause', 'sub-topic', 'node', 'subgraph', 'contributor']);
+// `contributor://{id}`, `manuscript://{sub-topic-id}`).
+export const ResourceName = z.enum([
+  'cause',
+  'sub-topic',
+  'node',
+  'subgraph',
+  'contributor',
+  'manuscript',
+]);
 export type ResourceName = z.infer<typeof ResourceName>;

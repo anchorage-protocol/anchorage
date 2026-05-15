@@ -113,13 +113,14 @@ describe('PublicReputation / ContributorProfile', () => {
 });
 
 describe('ResourceName registry', () => {
-  // The expected list mirrors the five MCP resources committed by PRD
+  // The expected list mirrors the six MCP resources committed by PRD
   // §Read-path tools and resources (slice 5a: cause, sub-topic, node,
-  // subgraph; slice 5c: contributor). Drift between the enum and the
-  // wired MCP `registerResource` calls is caught at the wrapper level
-  // (the exhaustive test in packages/server/src/mcp-resources.test.ts);
-  // this is the contracts-side complement.
-  const expected = ['cause', 'sub-topic', 'node', 'subgraph', 'contributor'] as const;
+  // subgraph; slice 5c: contributor; slice 6a: manuscript). Drift
+  // between the enum and the wired MCP `registerResource` calls is
+  // caught at the wrapper level (the exhaustive test in
+  // packages/server/src/mcp-resources.test.ts); this is the
+  // contracts-side complement.
+  const expected = ['cause', 'sub-topic', 'node', 'subgraph', 'contributor', 'manuscript'] as const;
 
   it('parses every expected resource name', () => {
     for (const name of expected) {
@@ -132,6 +133,6 @@ describe('ResourceName registry', () => {
   });
 
   it('rejects an unknown resource name', () => {
-    expect(() => ResourceName.parse('manuscript')).toThrow();
+    expect(() => ResourceName.parse('not-a-resource')).toThrow();
   });
 });

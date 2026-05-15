@@ -2,6 +2,7 @@ import type {
   CauseDirectory,
   ContributorProfile,
   IdentityId,
+  Manuscript,
   NodeId,
   NodeNeighborhood,
   QueryFrontierOutput,
@@ -70,5 +71,9 @@ export class InProcessReader implements AnchorageReader {
 
   async queryFrontier(subTopicId: SubTopicId): Promise<QueryFrontierOutput> {
     return this.server.tools.queryFrontier(this.caller, { sub_topic_id: subTopicId });
+  }
+
+  async getManuscript(id: SubTopicId): Promise<Manuscript> {
+    return this.server.resources.getManuscript(this.caller, id);
   }
 }

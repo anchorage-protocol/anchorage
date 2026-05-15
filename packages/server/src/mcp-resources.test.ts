@@ -1,6 +1,7 @@
 import {
   CauseDirectory,
   ContributorProfile,
+  Manuscript,
   NodeNeighborhood,
   type ResourceName,
   Subgraph,
@@ -109,6 +110,7 @@ describe('mcp resources (PRD §Read-path tools and resources)', () => {
     'node',
     'subgraph',
     'contributor',
+    'manuscript',
   ] as const;
 
   it('exposes every resource scheme committed by the PRD (exhaustive — no drift between MCP wrapper and ResourceName)', async () => {
@@ -432,6 +434,307 @@ describe('mcp resources (PRD §Read-path tools and resources)', () => {
           data: { code: 'not_found' },
         },
       );
+    });
+  });
+
+  describe('manuscript://{sub-topic-id} — projection (slice 6a)', () => {
+    // PRD §Manuscript projection: a derived view of the sub-topic
+    // graph (outline + cited claims) plus contributor credit via
+    // PRD §Credit. The v0 implicit default config groups active
+    // nodes into four sections; credit attribution combines proposer
+    // weight + accepted-aligned reviewer weight, scaled by
+    // survivor + load-bearing factors. Specific weights are
+    // testbed-tunable knobs on `ReviewConfig`.
+
+    it('returns sections in fixed order with the right item-kind mapping', async () => {
+      const f = await fixture();
+      const { anchorId, excerptId } = await seedAcceptedPair(f);
+      // Add a synthesis grounded on the excerpt + an open_question
+      // on the same parent so all four sections have content.
+      const synth = await f.server.tools.proposeSynthesis(
+        { identity_id: f.alice.id },
+        {
+          cause_id: f.crc.id,
+          home_sub_topic_id: f.mrd.id,
+          parent_ids: [excerptId],
+          content: 'synthesis claim',
+          kind: 'synthesis',
+        },
+      );
+      const sr = f.server.curator.acceptProposal(synth.proposal_id);
+      const oq = await f.server.tools.proposeSynthesis(
+        { identity_id: f.alice.id },
+        {
+          cause_id: f.crc.id,
+          home_sub_topic_id: f.mrd.id,
+          parent_ids: [excerptId],
+          content: 'an open question',
+          kind: 'open_question',
+        },
+      );
+      const oqr = f.server.curator.acceptProposal(oq.proposal_id);
+
+      const result = await f.client.readResource({
+        uri: `manuscript://${f.mrd.id}`,
+      });
+      expect(result.contents[0]?.mimeType).toBe('application/json');
+      const parsed = Manuscript.parse(parseJsonResource(result.contents));
+      expect(parsed.sub_topic.id).toBe(f.mrd.id);
+      expect(parsed.cause.id).toBe(f.crc.id);
+      // Section order is part of the v0 contract.
+      expect(parsed.sections.map((s) => s.kind)).toEqual([
+        'sources',
+        'quotations',
+        'synthesis',
+        'open_questions',
+      ]);
+      const byKind = new Map(parsed.sections.map((s) => [s.kind, s.items]));
+      expect(byKind.get('sources')?.map((i) => i.node_id)).toEqual([anchorId]);
+      expect(byKind.get('quotations')?.map((i) => i.node_id)).toEqual([excerptId]);
+      expect(byKind.get('synthesis')?.map((i) => i.node_id)).toEqual([sr.node_id]);
+      expect(byKind.get('open_questions')?.map((i) => i.node_id)).toEqual([oqr.node_id]);
+    });
+
+    it('carries kind-specific fields on each citation (external_ref + content_hash on anchors, quoted_span on excerpts, parents on syntheses)', async () => {
+      const f = await fixture();
+      const { anchorId, excerptId } = await seedAcceptedPair(f);
+      const synth = await f.server.tools.proposeSynthesis(
+        { identity_id: f.alice.id },
+        {
+          cause_id: f.crc.id,
+          home_sub_topic_id: f.mrd.id,
+          parent_ids: [excerptId],
+          content: 'claim X',
+          kind: 'synthesis',
+        },
+      );
+      const sr = f.server.curator.acceptProposal(synth.proposal_id);
+
+      const parsed = Manuscript.parse(
+        parseJsonResource(
+          (await f.client.readResource({ uri: `manuscript://${f.mrd.id}` })).contents,
+        ),
+      );
+      const sources = parsed.sections.find((s) => s.kind === 'sources');
+      const anchor = sources?.items[0];
+      expect(anchor?.node_id).toBe(anchorId);
+      expect(anchor?.external_ref).toEqual({ kind: 'pmid', value: '1' });
+      expect(anchor?.content_hash).toBeDefined();
+      expect(anchor?.content_hash?.length).toBeGreaterThan(0);
+      // Anchor has no derives parents — empty array, not omitted.
+      expect(anchor?.parent_node_ids).toEqual([]);
+
+      const quotations = parsed.sections.find((s) => s.kind === 'quotations');
+      const excerpt = quotations?.items[0];
+      expect(excerpt?.quoted_span).toEqual({ text: 'span', offset: 0 });
+      // Excerpt parents-via-derives include the anchor.
+      expect(excerpt?.parent_node_ids).toEqual([anchorId]);
+
+      const synthesis = parsed.sections.find((s) => s.kind === 'synthesis');
+      const synthesisItem = synthesis?.items[0];
+      expect(synthesisItem?.node_id).toBe(sr.node_id);
+      expect(synthesisItem?.parent_node_ids).toEqual([excerptId]);
+      expect(synthesisItem?.quoted_span).toBeUndefined();
+      expect(synthesisItem?.external_ref).toBeUndefined();
+    });
+
+    it('attributes proposer credit at full weight and accepted-aligned reviewer credit at the reduced weight', async () => {
+      // Build a fresh server so we can pin specific credit weights
+      // and avoid coupling to the assignment-driven default reputation
+      // gates. Use distinct identities for proposer and reviewer so
+      // both lines of credit are observable.
+      const server = new Server({
+        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+        idGen: new SeededIdGen('cred'),
+        verifier: new FakeVerifier(),
+        review: {
+          credit_proposer_weight: 1.0,
+          credit_reviewer_weight: 0.25,
+          credit_survivor_bonus_per_supersede: 0,
+          credit_load_bonus_per_induced_derives: 0,
+        },
+      });
+      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+      const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+      const { secret } = server.bootstrap.bindAgentCredential({
+        identity_id: alice.id,
+        label: 'desk',
+      });
+      const crc = server.bootstrap.createCause({ name: 'CRC', description: 'cc' });
+      const mrd = server.bootstrap.seedSubTopic({
+        cause_id: crc.id,
+        name: 'mrd',
+        description: 'm',
+        scope_query: 'm',
+      });
+      const anchor = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: crc.id,
+          home_sub_topic_id: mrd.id,
+          content: 'a content',
+          external_ref: { kind: 'pmid', value: '1' },
+        },
+      );
+      // Bob casts an accept vote on Alice's proposal before curator
+      // acceptance materializes the node. After acceptance, the
+      // projection should credit Bob as an accepted-aligned reviewer.
+      await server.tools.castReviewVote(
+        { identity_id: bob.id },
+        {
+          proposal_id: anchor.proposal_id,
+          decision: 'accept',
+          rationale: 'looks right',
+        },
+      );
+      server.curator.acceptProposal(anchor.proposal_id);
+
+      const mcp = buildMcpServer(server, { token: secret });
+      const client = new Client({ name: 't', version: '0.0.0' });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([mcp.connect(st), client.connect(ct)]);
+      const parsed = Manuscript.parse(
+        parseJsonResource((await client.readResource({ uri: `manuscript://${mrd.id}` })).contents),
+      );
+
+      const byContributor = new Map(parsed.contributors.map((c) => [c.contributor_id, c]));
+      expect(byContributor.get(alice.id)?.units).toBeCloseTo(1.0);
+      expect(byContributor.get(alice.id)?.proposed_node_count).toBe(1);
+      expect(byContributor.get(alice.id)?.reviewed_node_count).toBe(0);
+      expect(byContributor.get(bob.id)?.units).toBeCloseTo(0.25);
+      expect(byContributor.get(bob.id)?.proposed_node_count).toBe(0);
+      expect(byContributor.get(bob.id)?.reviewed_node_count).toBe(1);
+      // Proposer-self-votes shouldn't double-count: a proposer who
+      // also votes accept on their own proposal still only accrues
+      // proposer credit.
+      expect(byContributor.get(alice.id)?.reviewed_node_count).toBe(0);
+      // Contributor list is sorted by units descending.
+      expect(parsed.contributors.map((c) => c.contributor_id)).toEqual([alice.id, bob.id]);
+    });
+
+    it('applies the load-bearing multiplier from the induced subgraph (an anchor with a child excerpt counts more than a peripheral anchor)', async () => {
+      const server = new Server({
+        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+        idGen: new SeededIdGen('load'),
+        verifier: new FakeVerifier(),
+        review: {
+          credit_proposer_weight: 1.0,
+          credit_reviewer_weight: 0,
+          credit_survivor_bonus_per_supersede: 0,
+          credit_load_bonus_per_induced_derives: 1.0,
+        },
+      });
+      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+      const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+      const { secret } = server.bootstrap.bindAgentCredential({
+        identity_id: alice.id,
+        label: 'd',
+      });
+      const crc = server.bootstrap.createCause({ name: 'CRC', description: 'c' });
+      const mrd = server.bootstrap.seedSubTopic({
+        cause_id: crc.id,
+        name: 'mrd',
+        description: 'm',
+        scope_query: 'm',
+      });
+      // Alice's anchor with an excerpt child (induced derives degree 1).
+      const a1 = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: crc.id,
+          home_sub_topic_id: mrd.id,
+          content: 'anchor 1',
+          external_ref: { kind: 'pmid', value: '11' },
+        },
+      );
+      const a1r = server.curator.acceptProposal(a1.proposal_id);
+      const e = await server.tools.proposeExcerpt(
+        { identity_id: alice.id },
+        {
+          cause_id: crc.id,
+          home_sub_topic_id: mrd.id,
+          parent_anchor_id: a1r.node_id!,
+          content: 'span content',
+          quoted_span: { text: 'span', offset: 0 },
+        },
+      );
+      server.curator.acceptProposal(e.proposal_id);
+      // Bob's peripheral anchor with no children (induced derives degree 0).
+      const a2 = await server.tools.proposeAnchor(
+        { identity_id: bob.id },
+        {
+          cause_id: crc.id,
+          home_sub_topic_id: mrd.id,
+          content: 'anchor 2',
+          external_ref: { kind: 'pmid', value: '12' },
+        },
+      );
+      server.curator.acceptProposal(a2.proposal_id);
+
+      const mcp = buildMcpServer(server, { token: secret });
+      const client = new Client({ name: 't', version: '0.0.0' });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([mcp.connect(st), client.connect(ct)]);
+      const parsed = Manuscript.parse(
+        parseJsonResource((await client.readResource({ uri: `manuscript://${mrd.id}` })).contents),
+      );
+      const byContributor = new Map(parsed.contributors.map((c) => [c.contributor_id, c]));
+      // Alice: anchor-with-excerpt-child (mult 1 + 1*1 = 2) + excerpt
+      //        (mult 1 + 1*1 = 2) → 1.0*2 + 1.0*2 = 4.0.
+      expect(byContributor.get(alice.id)?.units).toBeCloseTo(4.0);
+      // Bob: peripheral anchor (mult 1 + 0 = 1) → 1.0*1 = 1.0.
+      expect(byContributor.get(bob.id)?.units).toBeCloseTo(1.0);
+    });
+
+    it('returns empty sections + contributors for a sub-topic with no active nodes', async () => {
+      const f = await fixture();
+      const parsed = Manuscript.parse(
+        parseJsonResource(
+          (await f.client.readResource({ uri: `manuscript://${f.oligo.id}` })).contents,
+        ),
+      );
+      expect(parsed.sections.every((s) => s.items.length === 0)).toBe(true);
+      expect(parsed.contributors).toEqual([]);
+    });
+
+    it('keeps revoked contributors in the credit list with the status flagged', async () => {
+      const f = await fixture();
+      // Have a *different* identity than the caller propose so the
+      // revocation doesn't trip the caller's own Authenticator gate.
+      const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+      const anchor = await f.server.tools.proposeAnchor(
+        { identity_id: bob.id },
+        {
+          cause_id: f.crc.id,
+          home_sub_topic_id: f.mrd.id,
+          content: 'bob anchor',
+          external_ref: { kind: 'pmid', value: '7' },
+        },
+      );
+      f.server.curator.acceptProposal(anchor.proposal_id);
+      // Revoke bob; the past contribution remains in the credit list
+      // (PRD §Identity: past contributions remain in the graph with
+      // the revocation flagged).
+      f.server.store.identities.set(bob.id, {
+        ...f.server.store.identities.get(bob.id)!,
+        status: 'revoked',
+      });
+      const parsed = Manuscript.parse(
+        parseJsonResource(
+          (await f.client.readResource({ uri: `manuscript://${f.mrd.id}` })).contents,
+        ),
+      );
+      const bobEntry = parsed.contributors.find((c) => c.contributor_id === bob.id);
+      expect(bobEntry).toBeDefined();
+      expect(bobEntry?.status).toBe('revoked');
+    });
+
+    it('refuses with not_found for an unknown sub-topic id', async () => {
+      const { client } = await fixture();
+      await expect(client.readResource({ uri: 'manuscript://stp_missing' })).rejects.toMatchObject({
+        code: -32602,
+        data: { code: 'not_found' },
+      });
     });
   });
 

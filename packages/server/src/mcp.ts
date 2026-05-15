@@ -414,6 +414,32 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
     },
   );
 
+  // manuscript://{sub-topic-id} — outline + cited claims + credited
+  // contributors. PRD §Manuscript projection (slice 6a). The
+  // projection is a deterministic function of the active subgraph
+  // plus the per-(cause, sub-topic) credit weights on
+  // `ReviewConfig` — no separate projection-config graph record yet
+  // (the versioned-config-as-governance-artifact path that PRD
+  // §Manuscript projection commits is a later slice).
+  mcp.registerResource(
+    'manuscript',
+    new ResourceTemplate('manuscript://{sub_topic_id}', { list: undefined }),
+    {
+      description:
+        'Manuscript projection of a sub-topic: outline (sources, quotations, synthesis, open questions) + credited contributors.',
+      mimeType: 'application/json',
+    },
+    async (uri, variables): Promise<ReadResourceResult> => {
+      try {
+        const id = SubTopicId.parse(String(variables['sub_topic_id']));
+        const result = await server.resources.getManuscript(caller, id);
+        return jsonResource(uri.toString(), result);
+      } catch (err) {
+        resourceError(err);
+      }
+    },
+  );
+
   // contributor://{id} — public contributor profile + tier projection.
   // The anonymous-browse-safe read-other-contributor surface (slice
   // 5c). PRD §Reputation: "Eligibility tiers public; numeric

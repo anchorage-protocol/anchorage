@@ -2,6 +2,7 @@ import type {
   CauseDirectory,
   ContributorProfile,
   IdentityId,
+  Manuscript,
   NodeId,
   NodeNeighborhood,
   QueryFrontierOutput,
@@ -59,4 +60,8 @@ export interface AnchorageReader {
   // `query_frontier` read-path tool, scoped to a sub-topic for the
   // sub-topic page's work-to-be-done section.
   queryFrontier(subTopicId: SubTopicId): Promise<QueryFrontierOutput>;
+  // `manuscript://{sub-topic-id}` resource. Sub-topic projection
+  // (outline + cited claims + credited contributors). Drives the
+  // manuscript page (slice 6b).
+  getManuscript(id: SubTopicId): Promise<Manuscript>;
 }

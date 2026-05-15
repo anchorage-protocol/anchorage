@@ -13,6 +13,7 @@ import {
   type CauseDirectory,
   type CauseId,
   type ContributorProfile,
+  type CreditAttribution,
   DeclineAssignmentInput,
   type DeclineAssignmentOutput,
   type DerivesEdge,
@@ -23,6 +24,9 @@ import {
   type FrontierItem,
   type Identity,
   type IdentityId,
+  type Manuscript,
+  type ManuscriptCitation,
+  type ManuscriptSection,
   type Node,
   type NodeId,
   type NodeNeighborhood,
@@ -632,6 +636,36 @@ export interface ReviewConfig {
   // the filter inert and preserves existing-scenario behavior;
   // finite values opt in for the testbed's corpus-composition sweeps.
   corpus_confirmation_depth_floor: number;
+  // Manuscript projection credit weights (PRD §Credit). Specific
+  // numeric weights are testbed-tunable; v0 defaults below capture
+  // the *shape* PRD §Credit commits to — proposers count more than
+  // reviewers, survivorship and load-bearing scale the contribution
+  // per-node. The defaults are non-zero by construction because
+  // there is no "baseline behavior" to preserve here (the projection
+  // is new); the testbed will sweep them once a Phase-2 corpus
+  // exists to read deltas off of.
+  //
+  //   - `credit_proposer_weight`: base units a proposer accrues
+  //     for an included node before survivor/load scaling.
+  //   - `credit_reviewer_weight`: base units a converged-aligned
+  //     reviewer accrues for an included node. Strictly smaller
+  //     than the proposer weight per PRD §Credit ("weighted lower
+  //     than proposers").
+  //   - `credit_survivor_bonus_per_supersede`: added to the per-
+  //     contribution multiplier for each active supersedes edge
+  //     terminating at this node (i.e., each predecessor this node
+  //     replaced and that the graph still records). Captures the
+  //     PRD §Credit "survivorship weighting" factor.
+  //   - `credit_load_bonus_per_induced_derives`: added to the per-
+  //     contribution multiplier for each active derives edge in the
+  //     *induced* subgraph (both endpoints in the included node
+  //     set) where this node is either endpoint. Captures the PRD
+  //     §Credit "load-bearing weighting" factor — a node that
+  //     participates in more in-scope chains counts more.
+  credit_proposer_weight: number;
+  credit_reviewer_weight: number;
+  credit_survivor_bonus_per_supersede: number;
+  credit_load_bonus_per_induced_derives: number;
 }
 
 const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
@@ -669,6 +703,10 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   rate_limit_actions_per_epoch: Number.POSITIVE_INFINITY,
   rate_limit_epoch_seconds: Number.POSITIVE_INFINITY,
   corpus_confirmation_depth_floor: 0,
+  credit_proposer_weight: 1.0,
+  credit_reviewer_weight: 0.25,
+  credit_survivor_bonus_per_supersede: 0.5,
+  credit_load_bonus_per_induced_derives: 0.25,
 };
 
 export interface ServerDeps {
@@ -3018,6 +3056,293 @@ export class Server {
         },
         reputation: { entries },
       };
+    },
+
+    // `manuscript://{sub-topic-id}` — outline + cited claims + credited
+    // contributors. PRD §Manuscript projection (slice 6a in
+    // [ROADMAP §Phase 2](../../ROADMAP.md#phase-2)). The projection
+    // walks the active sub-graph the sub-topic owns (same node set
+    // `getSubgraph` returns: home OR scope-member, status='active'),
+    // groups nodes by kind into four fixed sections, and computes
+    // credit attribution from node provenance + accepted-aligned
+    // review votes against the PRD §Credit shape — proposer at full
+    // weight, reviewers (whose vote aligned with the converged
+    // accept) at a smaller weight, both scaled by per-node survivor
+    // and load-bearing factors. Specific weights are in `ReviewConfig`
+    // and are testbed-tunable.
+    //
+    // The walk is deterministic by construction: sections appear in
+    // fixed order, items within each section are sorted (anchors
+    // and excerpts and open_questions by created_at then id;
+    // syntheses by induced-subgraph derives degree descending, then
+    // created_at), and contributors are sorted by units descending,
+    // then display_name, then id. Cassette-replay equality through
+    // this resource is therefore well-defined.
+    //
+    // Unknown sub-topic ids refuse `not_found` to match every other
+    // resource in the family. Like `getSubgraph`, the sub-topic
+    // itself is resolved regardless of status (a proposed-but-not-
+    // yet-accepted or archived sub-topic remains a valid URI; the
+    // projection just produces an empty result if no active nodes
+    // exist).
+    getManuscript: async (caller: Caller, subTopicId: SubTopicId): Promise<Manuscript> => {
+      resolveCaller(this.store, caller);
+      const subTopic = this.store.subTopics.get(subTopicId);
+      if (!subTopic) {
+        throw new ServerError('not_found', `sub-topic not found: ${subTopicId}`);
+      }
+      const cause = this.store.causes.get(subTopic.cause_id);
+      if (!cause) {
+        throw new ServerError(
+          'invalid_state',
+          `sub-topic ${subTopicId} references missing cause ${subTopic.cause_id}`,
+        );
+      }
+
+      // Included node set: active nodes whose home OR scope memberships
+      // include the sub-topic. Same scope rule as `getSubgraph` — the
+      // convex-hull substrate is what the projection draws on.
+      const includedNodes: Node[] = [];
+      const includedNodeIds = new Set<NodeId>();
+      for (const n of this.store.nodes.values()) {
+        if (n.status !== 'active') continue;
+        if (n.home_sub_topic_id === subTopicId || n.scope_memberships.includes(subTopicId)) {
+          includedNodes.push(n);
+          includedNodeIds.add(n.id);
+        }
+      }
+
+      // Induced edge set: derives + supersedes edges whose endpoints
+      // are both in the included set, restricted to `active` status.
+      // The induced set is what scales the load-bearing factor —
+      // edges out to nodes the projection doesn't include don't
+      // count toward "load-bearing within this projection."
+      const inducedDerivesByNode = new Map<NodeId, number>();
+      const inducedSupersedesIntoNode = new Map<NodeId, number>();
+      // derivesParentsByChild: child node id → parent node ids in the
+      // included set, in created_at order; surfaced on syntheses /
+      // open_questions so the chain-of-claim is visible in the
+      // projection.
+      const derivesParentsByChild = new Map<NodeId, NodeId[]>();
+      const derivesEdgesByChild = new Map<NodeId, Edge[]>();
+      for (const e of this.store.edges.values()) {
+        if (e.status !== 'active') continue;
+        if (!includedNodeIds.has(e.from) || !includedNodeIds.has(e.to)) continue;
+        if (e.kind === 'derives') {
+          inducedDerivesByNode.set(e.from, (inducedDerivesByNode.get(e.from) ?? 0) + 1);
+          inducedDerivesByNode.set(e.to, (inducedDerivesByNode.get(e.to) ?? 0) + 1);
+          const arr = derivesEdgesByChild.get(e.to) ?? [];
+          arr.push(e);
+          derivesEdgesByChild.set(e.to, arr);
+        } else if (e.kind === 'supersedes') {
+          // Survivor is the `to` endpoint (PRD §Edges: `supersedes`
+          // is old → replacement).
+          inducedSupersedesIntoNode.set(e.to, (inducedSupersedesIntoNode.get(e.to) ?? 0) + 1);
+        }
+      }
+      for (const [child, edges] of derivesEdgesByChild) {
+        edges.sort((a, b) => {
+          if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+          return a.id.localeCompare(b.id);
+        });
+        derivesParentsByChild.set(
+          child,
+          edges.map((e) => e.from),
+        );
+      }
+
+      // Per-node credit multiplier — combines the survivor and load-
+      // bearing factors so the proposer/reviewer base weights scale
+      // together. A peripheral leaf with no supersedes events keeps
+      // a 1.0 multiplier; the more induced edges and surviving
+      // predecessors a node has, the more its contribution counts.
+      const multiplierForNode = (nodeId: NodeId): number => {
+        const survivors = inducedSupersedesIntoNode.get(nodeId) ?? 0;
+        const induced = inducedDerivesByNode.get(nodeId) ?? 0;
+        return (
+          1 +
+          survivors * this.review.credit_survivor_bonus_per_supersede +
+          induced * this.review.credit_load_bonus_per_induced_derives
+        );
+      };
+
+      // Section walk. Order is fixed (sources → quotations →
+      // synthesis → open_questions); within each section the
+      // iteration order is deterministic (created_at, then id) for
+      // anchors, excerpts, and open_questions. Syntheses sort by
+      // induced-subgraph derives degree descending (the load-bearing
+      // signal made visible in the outline ordering), then by
+      // created_at for ties.
+      const byKind = {
+        anchor: [] as AnchorNode[],
+        excerpt: [] as ExcerptNode[],
+        synthesis: [] as SynthesisNode[],
+        open_question: [] as OpenQuestionNode[],
+      };
+      for (const n of includedNodes) {
+        if (n.kind === 'anchor') byKind.anchor.push(n);
+        else if (n.kind === 'excerpt') byKind.excerpt.push(n);
+        else if (n.kind === 'synthesis') byKind.synthesis.push(n);
+        else if (n.kind === 'open_question') byKind.open_question.push(n);
+      }
+      const byCreatedAtThenId = (a: Node, b: Node): number => {
+        if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+        return a.id.localeCompare(b.id);
+      };
+      byKind.anchor.sort(byCreatedAtThenId);
+      byKind.excerpt.sort(byCreatedAtThenId);
+      byKind.open_question.sort(byCreatedAtThenId);
+      byKind.synthesis.sort((a, b) => {
+        const da = inducedDerivesByNode.get(a.id) ?? 0;
+        const db = inducedDerivesByNode.get(b.id) ?? 0;
+        if (da !== db) return db - da;
+        return byCreatedAtThenId(a, b);
+      });
+
+      const toCitation = (n: Node): ManuscriptCitation => {
+        const parents = derivesParentsByChild.get(n.id) ?? [];
+        if (n.kind === 'anchor') {
+          return {
+            node_id: n.id,
+            kind: 'anchor',
+            content: n.content,
+            external_ref: n.external_ref,
+            content_hash: n.content_hash,
+            parent_node_ids: parents,
+            proposer_id: n.created_by,
+          };
+        }
+        if (n.kind === 'excerpt') {
+          return {
+            node_id: n.id,
+            kind: 'excerpt',
+            content: n.content,
+            quoted_span: n.quoted_span,
+            parent_node_ids: parents,
+            proposer_id: n.created_by,
+          };
+        }
+        return {
+          node_id: n.id,
+          kind: n.kind,
+          content: n.content,
+          parent_node_ids: parents,
+          proposer_id: n.created_by,
+        };
+      };
+
+      const sections: ManuscriptSection[] = [
+        { kind: 'sources', title: 'Sources', items: byKind.anchor.map(toCitation) },
+        { kind: 'quotations', title: 'Quotations', items: byKind.excerpt.map(toCitation) },
+        { kind: 'synthesis', title: 'Synthesis', items: byKind.synthesis.map(toCitation) },
+        {
+          kind: 'open_questions',
+          title: 'Open questions',
+          items: byKind.open_question.map(toCitation),
+        },
+      ];
+
+      // Credit attribution. For each included node, the proposer
+      // accrues `credit_proposer_weight * multiplier`; reviewers who
+      // voted `accept` on the proposal that materialized the node
+      // accrue `credit_reviewer_weight * multiplier`. Locating the
+      // materializing proposal: nodes carry a `created_by` +
+      // `created_at`, and the proposal whose acceptance produced the
+      // node is the one whose `materialized_node_id` (if persisted)
+      // matches — but we don't persist that link. Instead, we index
+      // accepted proposals by their fulfillment-time node payload:
+      // (proposer_id, payload kind, content) is sufficient to match
+      // the node back to its proposal under the v0 schema where
+      // every accepted node-creating proposal materializes exactly
+      // one node, and `(proposer_id, content)` is unique per
+      // proposal (the proposer can't propose two anchors with
+      // identical content/external_ref payload — the verifier
+      // rejects the duplicate at the tool boundary). Cleaner-but-
+      // heavier alternatives (persisting `proposal_id` on `Node`)
+      // are deferred to the slice-7 operational tooling pass.
+      const proposalsByMaterializedNodeId = new Map<NodeId, Proposal>();
+      // Inverted index: (proposer_id, kind, content) → accepted
+      // proposal. Sufficient under v0's no-duplicate-content
+      // invariant at the tool boundary (the verifier rejects a
+      // duplicate excerpt/anchor at write time).
+      const proposalByContentKey = new Map<string, Proposal>();
+      for (const p of this.store.proposals.values()) {
+        if (p.status !== 'accepted') continue;
+        const k = p.payload.kind;
+        if (k !== 'anchor' && k !== 'excerpt' && k !== 'synthesis' && k !== 'open_question') {
+          continue;
+        }
+        const key = `${p.proposer_id}|${k}|${p.payload.content}`;
+        proposalByContentKey.set(key, p);
+      }
+      const proposalForNode = (n: Node): Proposal | undefined => {
+        return proposalByContentKey.get(`${n.created_by}|${n.kind}|${n.content}`);
+      };
+      // Cache the linkage so the survivor / load lookup and the
+      // contributor walk share a single resolution.
+      for (const n of includedNodes) {
+        const p = proposalForNode(n);
+        if (p) proposalsByMaterializedNodeId.set(n.id, p);
+      }
+
+      const creditByContributor = new Map<
+        IdentityId,
+        { units: number; proposed: Set<NodeId>; reviewed: Set<NodeId> }
+      >();
+      const accrue = (id: IdentityId, units: number, nodeId: NodeId, role: 'p' | 'r'): void => {
+        let entry = creditByContributor.get(id);
+        if (!entry) {
+          entry = { units: 0, proposed: new Set(), reviewed: new Set() };
+          creditByContributor.set(id, entry);
+        }
+        entry.units += units;
+        if (role === 'p') entry.proposed.add(nodeId);
+        else entry.reviewed.add(nodeId);
+      };
+
+      for (const n of includedNodes) {
+        const mult = multiplierForNode(n.id);
+        accrue(n.created_by, this.review.credit_proposer_weight * mult, n.id, 'p');
+        const proposal = proposalsByMaterializedNodeId.get(n.id);
+        if (!proposal) continue;
+        // Reviewer credit: any vote with `decision === 'accept'` on
+        // the materializing proposal aligns with the converged
+        // outcome (the node is in the included set, which is
+        // active-only — so the proposal's terminal state is
+        // accepted). Self-votes by the proposer (which the review
+        // pipeline already filters at assignment time) are skipped
+        // here as a defense-in-depth.
+        const reviewerSeen = new Set<IdentityId>();
+        for (const v of this.store.reviewVotes.values()) {
+          if (v.proposal_id !== proposal.id) continue;
+          if (v.decision !== 'accept') continue;
+          if (v.reviewer_id === proposal.proposer_id) continue;
+          if (reviewerSeen.has(v.reviewer_id)) continue;
+          reviewerSeen.add(v.reviewer_id);
+          accrue(v.reviewer_id, this.review.credit_reviewer_weight * mult, n.id, 'r');
+        }
+      }
+
+      const contributors: CreditAttribution[] = [];
+      for (const [identityId, entry] of creditByContributor) {
+        const identity = this.store.identities.get(identityId);
+        if (!identity) continue;
+        contributors.push({
+          contributor_id: identityId,
+          display_name: identity.display_name,
+          status: identity.status,
+          units: entry.units,
+          proposed_node_count: entry.proposed.size,
+          reviewed_node_count: entry.reviewed.size,
+        });
+      }
+      contributors.sort((a, b) => {
+        if (a.units !== b.units) return b.units - a.units;
+        if (a.display_name !== b.display_name) return a.display_name.localeCompare(b.display_name);
+        return a.contributor_id.localeCompare(b.contributor_id);
+      });
+
+      return { sub_topic: subTopic, cause, sections, contributors };
     },
   };
 
