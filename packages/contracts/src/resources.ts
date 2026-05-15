@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import { Cause, SubTopic } from './cause.js';
 import { Edge } from './edges.js';
+import { PrincipalStatus } from './identity.js';
+import { CauseId, IdentityId, SubTopicId } from './ids.js';
 import { Node } from './nodes.js';
+import { Timestamp } from './timestamps.js';
 
 // MCP-resource read-path shapes (PRD §Read-path tools and resources).
 // Resources are the *passive* browsing surface: addressable by URI,
@@ -108,11 +111,99 @@ export const Subgraph = z
   .strict();
 export type Subgraph = z.infer<typeof Subgraph>;
 
+// ── contributor://{id} — public contributor profile + tier projection
+// ─────────────────────────────────────────────────────────────────
+// The anonymous-browse-safe projection of a contributor: a
+// deliberately narrow `PublicContributor` (id, display_name,
+// created_at, status — *not* `identity_provider`,
+// `identity_provider_subject`, `attestation_level`, or `role`, all of
+// which leak operationally-private signal or PII) and a per-(cause,
+// sub-topic) tier label.
+//
+// PRD §Reputation: "Eligibility tiers public; numeric reputation
+// private." Slice 5c commits the v0 tier mapping — *three* tiers
+// derived from the contributor's (`demonstrated`, `recent`) reputation
+// values *for the specific (cause, sub-topic)* against the server's
+// review-config thresholds (`assignment_min_demonstrated`,
+// `assignment_min_recent`):
+//
+//   - `none`           — no entry for this (cause, sub-topic), OR
+//                        `demonstrated < assignment_min_demonstrated`.
+//                        Public-facing: "not yet in the reviewer
+//                        pool here." Matches the demonstrated gate's
+//                        opposite null-policy (PRD §Reputation,
+//                        Two-component reputation): unproven
+//                        identities are *by construction* not in
+//                        the pool.
+//   - `quiet`          — `demonstrated >= threshold` but
+//                        `recent < assignment_min_recent`. The
+//                        proven-but-currently-dormant tier — the
+//                        episodic-expert case PRD §Reputation
+//                        commits ("the part-time clinician is
+//                        exactly the contributor we want") in a
+//                        between-windows state. Visible to readers
+//                        as past contribution that hasn't lapsed
+//                        out of the demonstrated ledger.
+//   - `contributing`   — both gates pass. The active-pool tier:
+//                        the contributor would not be filtered at
+//                        `request_assignment` on the reputation
+//                        gates for this (cause, sub-topic).
+//
+// When both gates are inert at the server (`assignment_min_*` set
+// to 0 — the default), every entry with non-negative components
+// renders as `contributing` and the projection collapses to "has
+// any rep here, yes or no." The tier richness scales with the
+// operator's chosen thresholds, by construction — no separate
+// tier-threshold knob layered on top.
+//
+// The numeric components are *not* in the wire shape. The
+// contributor's own `query_reputation` tool returns numbers (the
+// contributor needs them to reason about where they sit relative
+// to gates); the public projection here is the read-other-
+// contributor surface and is intentionally tier-only.
+export const PublicReputationTier = z.enum(['none', 'quiet', 'contributing']);
+export type PublicReputationTier = z.infer<typeof PublicReputationTier>;
+
+export const PublicReputationEntry = z
+  .object({
+    cause_id: CauseId,
+    sub_topic_id: SubTopicId,
+    tier: PublicReputationTier,
+  })
+  .strict();
+export type PublicReputationEntry = z.infer<typeof PublicReputationEntry>;
+
+export const PublicReputation = z
+  .object({
+    entries: z.array(PublicReputationEntry),
+  })
+  .strict();
+export type PublicReputation = z.infer<typeof PublicReputation>;
+
+export const PublicContributor = z
+  .object({
+    id: IdentityId,
+    display_name: z.string().min(1).max(100),
+    created_at: Timestamp,
+    status: PrincipalStatus,
+  })
+  .strict();
+export type PublicContributor = z.infer<typeof PublicContributor>;
+
+export const ContributorProfile = z
+  .object({
+    contributor: PublicContributor,
+    reputation: PublicReputation,
+  })
+  .strict();
+export type ContributorProfile = z.infer<typeof ContributorProfile>;
+
 // ── Resource-name registry ───────────────────────────────────────
 // The full set of resource scheme names exposed by the MCP server.
 // Parallel to `ToolName`: the harness and any introspecting client
 // can enumerate the read-path surface without crawling the SDK's
 // registration table. Schemes match the URI prefix (`cause://`,
-// `sub-topic://{id}`, `node://{id}`, `subgraph://{sub-topic-id}`).
-export const ResourceName = z.enum(['cause', 'sub-topic', 'node', 'subgraph']);
+// `sub-topic://{id}`, `node://{id}`, `subgraph://{sub-topic-id}`,
+// `contributor://{id}`).
+export const ResourceName = z.enum(['cause', 'sub-topic', 'node', 'subgraph', 'contributor']);
 export type ResourceName = z.infer<typeof ResourceName>;

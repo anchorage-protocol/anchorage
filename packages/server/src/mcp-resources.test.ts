@@ -1,5 +1,6 @@
 import {
   CauseDirectory,
+  ContributorProfile,
   NodeNeighborhood,
   type ResourceName,
   Subgraph,
@@ -102,7 +103,13 @@ describe('mcp resources (PRD §Read-path tools and resources)', () => {
   // exhaustive assertion catches drift between the wrapper's
   // registerResource calls and the contracts-side ResourceName enum
   // — the same drift the tool exhaustiveness test catches for ToolName.
-  const REGISTERED_RESOURCE_NAMES = ['cause', 'sub-topic', 'node', 'subgraph'] as const;
+  const REGISTERED_RESOURCE_NAMES = [
+    'cause',
+    'sub-topic',
+    'node',
+    'subgraph',
+    'contributor',
+  ] as const;
 
   it('exposes every resource scheme committed by the PRD (exhaustive — no drift between MCP wrapper and ResourceName)', async () => {
     const { client } = await fixture();
@@ -269,6 +276,162 @@ describe('mcp resources (PRD §Read-path tools and resources)', () => {
         code: -32602,
         data: { code: 'not_found' },
       });
+    });
+  });
+
+  describe('contributor://{id} — public profile + tier projection', () => {
+    // Slice 5c. The shape is deliberately narrow: PublicContributor
+    // carries only display fields; PublicReputation carries tier
+    // labels only — never raw demonstrated/recent values, even when
+    // the caller is the contributor themselves (the
+    // `query_reputation` *tool* is where the raw numbers flow, to
+    // the contributor's own caller). PRD §Reputation:
+    // "Eligibility tiers public; numeric reputation private."
+
+    it('returns PublicContributor (display fields only — no IdP subject, attestation_level, role, or identity_provider)', async () => {
+      const f = await fixture();
+      const result = await f.client.readResource({ uri: `contributor://${f.alice.id}` });
+      const parsed = ContributorProfile.parse(parseJsonResource(result.contents));
+      expect(parsed.contributor.id).toBe(f.alice.id);
+      expect(parsed.contributor.display_name).toBe('alice');
+      expect(parsed.contributor.status).toBe('active');
+      // Operational/PII fields are absent by construction (strict
+      // schema rejects unknown keys; this also asserts they are not
+      // surfaced).
+      const raw = parseJsonResource(result.contents) as Record<string, unknown>;
+      const contributor = raw['contributor'] as Record<string, unknown>;
+      expect(contributor['identity_provider']).toBeUndefined();
+      expect(contributor['identity_provider_subject']).toBeUndefined();
+      expect(contributor['attestation_level']).toBeUndefined();
+      expect(contributor['role']).toBeUndefined();
+    });
+
+    it('returns an empty reputation entry list when the contributor has no rep records', async () => {
+      const f = await fixture();
+      const result = await f.client.readResource({ uri: `contributor://${f.alice.id}` });
+      const parsed = ContributorProfile.parse(parseJsonResource(result.contents));
+      expect(parsed.reputation.entries).toEqual([]);
+    });
+
+    it('maps (demonstrated, recent) to tiers against the server review-config thresholds', async () => {
+      // Construct a server with non-zero thresholds so the tier
+      // mapping has all three branches to exercise. The default
+      // server uses 0/0 (gates inert), under which every entry
+      // collapses to `contributing`; with non-zero thresholds the
+      // `none` and `quiet` branches activate.
+      const server = new Server({
+        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+        idGen: new SeededIdGen('tier'),
+        verifier: new FakeVerifier(),
+        // Non-zero so every branch of `tierFor` is reachable.
+        review: { assignment_min_demonstrated: 1.0, assignment_min_recent: 0.5 },
+      });
+      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+      const { secret } = server.bootstrap.bindAgentCredential({
+        identity_id: alice.id,
+        label: 'desk',
+      });
+      const crc = server.bootstrap.createCause({ name: 'CRC', description: 'cc' });
+      const stA = server.bootstrap.seedSubTopic({
+        cause_id: crc.id,
+        name: 'A',
+        description: 'a',
+        scope_query: 'a',
+      });
+      const stB = server.bootstrap.seedSubTopic({
+        cause_id: crc.id,
+        name: 'B',
+        description: 'b',
+        scope_query: 'b',
+      });
+      const stC = server.bootstrap.seedSubTopic({
+        cause_id: crc.id,
+        name: 'C',
+        description: 'c',
+        scope_query: 'c',
+      });
+      // Inject three rep entries with hand-chosen components covering
+      // each tier branch. Bypassing `bumpReputation` here lets the
+      // test pin the *mapping* without coupling to the reputation
+      // event/decay machinery (which has its own coverage upstream).
+      const now = server.clock.now();
+      server.store.reputations.set(`${alice.id}|${crc.id}|${stA.id}`, {
+        identity_id: alice.id,
+        cause_id: crc.id,
+        sub_topic_id: stA.id,
+        demonstrated: 0.5, // below threshold → none
+        recent: 0.0,
+        updated_at: now,
+      });
+      server.store.reputations.set(`${alice.id}|${crc.id}|${stB.id}`, {
+        identity_id: alice.id,
+        cause_id: crc.id,
+        sub_topic_id: stB.id,
+        demonstrated: 2.0, // above demonstrated, but recent < threshold → quiet
+        recent: 0.1,
+        updated_at: now,
+      });
+      server.store.reputations.set(`${alice.id}|${crc.id}|${stC.id}`, {
+        identity_id: alice.id,
+        cause_id: crc.id,
+        sub_topic_id: stC.id,
+        demonstrated: 2.0,
+        recent: 1.0, // both above → contributing
+        updated_at: now,
+      });
+
+      const mcp = buildMcpServer(server, { token: secret });
+      const client = new Client({ name: 't', version: '0.0.0' });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([mcp.connect(st), client.connect(ct)]);
+
+      const result = await client.readResource({ uri: `contributor://${alice.id}` });
+      const parsed = ContributorProfile.parse(parseJsonResource(result.contents));
+      const byId = new Map(parsed.reputation.entries.map((e) => [e.sub_topic_id, e.tier]));
+      expect(byId.get(stA.id)).toBe('none');
+      expect(byId.get(stB.id)).toBe('quiet');
+      expect(byId.get(stC.id)).toBe('contributing');
+    });
+
+    it('never surfaces raw demonstrated/recent values', async () => {
+      const f = await fixture();
+      // Seed a real bumpReputation through the propose+accept path
+      // so the entry has live decayed values to potentially leak.
+      await seedAcceptedPair(f);
+      const result = await f.client.readResource({ uri: `contributor://${f.alice.id}` });
+      const raw = parseJsonResource(result.contents) as Record<string, unknown>;
+      const reputation = raw['reputation'] as { entries: Record<string, unknown>[] };
+      for (const entry of reputation.entries) {
+        expect(entry['demonstrated']).toBeUndefined();
+        expect(entry['recent']).toBeUndefined();
+        expect(entry['tier']).toBeDefined();
+      }
+    });
+
+    it('resolves revoked contributors (graph history stays browsable)', async () => {
+      const f = await fixture();
+      // Revoke a *different* identity than the caller (alice runs the
+      // browse), so the resource's resolveCaller step doesn't trip
+      // on the caller's own revocation before reaching the lookup.
+      const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+      f.server.store.identities.set(bob.id, {
+        ...f.server.store.identities.get(bob.id)!,
+        status: 'revoked',
+      });
+      const result = await f.client.readResource({ uri: `contributor://${bob.id}` });
+      const parsed = ContributorProfile.parse(parseJsonResource(result.contents));
+      expect(parsed.contributor.id).toBe(bob.id);
+      expect(parsed.contributor.status).toBe('revoked');
+    });
+
+    it('refuses with not_found for an unknown identity id', async () => {
+      const { client } = await fixture();
+      await expect(client.readResource({ uri: 'contributor://idn_missing' })).rejects.toMatchObject(
+        {
+          code: -32602,
+          data: { code: 'not_found' },
+        },
+      );
     });
   });
 

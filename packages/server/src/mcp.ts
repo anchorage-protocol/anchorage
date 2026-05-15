@@ -7,6 +7,7 @@ import {
   DeclineAssignmentOutput,
   FetchCalibrationBatchInput,
   FetchCalibrationBatchOutput,
+  IdentityId,
   NodeId,
   PROTOCOL_VERSION,
   ProposeAnchorInput,
@@ -406,6 +407,33 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
       try {
         const id = SubTopicId.parse(String(variables['sub_topic_id']));
         const result = await server.resources.getSubgraph(caller, id);
+        return jsonResource(uri.toString(), result);
+      } catch (err) {
+        resourceError(err);
+      }
+    },
+  );
+
+  // contributor://{id} — public contributor profile + tier projection.
+  // The anonymous-browse-safe read-other-contributor surface (slice
+  // 5c). PRD §Reputation: "Eligibility tiers public; numeric
+  // reputation private" — the response carries `PublicContributor`
+  // (id, display_name, created_at, status) and a per-(cause,
+  // sub-topic) tier label, never the raw demonstrated/recent
+  // numbers (those flow through `query_reputation` to the
+  // contributor's *own* caller).
+  mcp.registerResource(
+    'contributor',
+    new ResourceTemplate('contributor://{id}', { list: undefined }),
+    {
+      description:
+        'Public contributor profile: display fields + per-(cause, sub-topic) eligibility-tier projection (no raw reputation numbers).',
+      mimeType: 'application/json',
+    },
+    async (uri, variables): Promise<ReadResourceResult> => {
+      try {
+        const id = IdentityId.parse(String(variables['id']));
+        const result = await server.resources.getContributorProfile(caller, id);
         return jsonResource(uri.toString(), result);
       } catch (err) {
         resourceError(err);

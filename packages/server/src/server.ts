@@ -12,6 +12,7 @@ import {
   type Cause,
   type CauseDirectory,
   type CauseId,
+  type ContributorProfile,
   DeclineAssignmentInput,
   type DeclineAssignmentOutput,
   type DerivesEdge,
@@ -43,6 +44,8 @@ import {
   type ProposeSupersedesOutput,
   ProposeSynthesisInput,
   type ProposeSynthesisOutput,
+  type PublicReputationEntry,
+  type PublicReputationTier,
   QueryFrontierInput,
   type QueryFrontierOutput,
   QueryProposalsInput,
@@ -2951,7 +2954,93 @@ export class Server {
       });
       return { sub_topic: subTopic, nodes, edges };
     },
+
+    // `contributor://{id}` — anonymous-browse-safe contributor
+    // projection. Returns a deliberately narrow `PublicContributor`
+    // (id, display_name, created_at, status) and a per-(cause,
+    // sub-topic) tier label for each rep entry. PRD §Reputation
+    // ("Eligibility tiers public; numeric reputation private"): the
+    // raw demonstrated/recent values are reserved for the
+    // contributor's own `query_reputation` tool, where they inform
+    // the contributor's reasoning about their own pool position.
+    // The public projection here is the read-other-contributor
+    // surface and is tier-only by construction.
+    //
+    // The contributor record is resolved regardless of status — a
+    // revoked identity remains browsable as graph history (PRD
+    // §Identity, Revocation: "past contributions remain in the
+    // graph with the revocation flagged"). The page-side decision
+    // about how to surface the `revoked` status lives at the UI.
+    // Unknown identity ids refuse with `not_found` to match the
+    // other resources' shape.
+    //
+    // Reputation entries are decayed-forward to the server's
+    // current clock on read, matching `query_reputation` (PRD
+    // §Reputation: "decay half-lives are applied on read at the
+    // server layer"). The tier mapping itself uses the same
+    // `assignment_min_*` review-config thresholds the gate at
+    // `request_assignment` consumes, so the public tier and the
+    // server-side pool-membership decision agree by construction.
+    getContributorProfile: async (
+      caller: Caller,
+      identityId: IdentityId,
+    ): Promise<ContributorProfile> => {
+      resolveCaller(this.store, caller);
+      const identity = this.store.identities.get(identityId);
+      if (!identity) {
+        throw new ServerError('not_found', `contributor not found: ${identityId}`);
+      }
+      const now = this.clock.now();
+      const entries: PublicReputationEntry[] = [];
+      for (const r of this.store.reputations.values()) {
+        if (r.identity_id !== identity.id) continue;
+        const decayed = this.decayedReputation(r, now);
+        entries.push({
+          cause_id: r.cause_id,
+          sub_topic_id: r.sub_topic_id,
+          tier: this.tierFor(decayed.demonstrated, decayed.recent),
+        });
+      }
+      // Stable order: cause_id, then sub_topic_id alphabetical. Same
+      // determinism rationale as the other resource projections —
+      // testbed cassettes that observe this surface depend on
+      // iteration-order stability.
+      entries.sort((a, b) => {
+        if (a.cause_id !== b.cause_id) return a.cause_id.localeCompare(b.cause_id);
+        return a.sub_topic_id.localeCompare(b.sub_topic_id);
+      });
+      return {
+        contributor: {
+          id: identity.id,
+          display_name: identity.display_name,
+          created_at: identity.created_at,
+          status: identity.status,
+        },
+        reputation: { entries },
+      };
+    },
   };
+
+  // Tier mapping for the public contributor projection (PRD
+  // §Reputation). The three v0 tiers are derived from the per-(cause,
+  // sub-topic) decayed (demonstrated, recent) against the same
+  // `assignment_min_*` review-config thresholds the gate at
+  // `request_assignment` consumes — by construction, the public tier
+  // and the server-side pool-membership decision agree. The mapping
+  // uses *only* the entry's own components (not the per-cause
+  // maximum the assignment gate computes across all sub-topics), so
+  // tiers reflect "this contributor's position *in this specific
+  // sub-topic*" rather than "this contributor's position in this
+  // cause as a whole." That matches PRD §Reputation's
+  // anchored-at-cause-refined-by-sub-topic framing — and matters
+  // because the sub-topic-level tier is what a reader of the
+  // contributor's profile actually cares about: "what does this
+  // person's track record in *ctDNA-MRD* look like?"
+  private tierFor(demonstrated: number, recent: number): PublicReputationTier {
+    if (demonstrated < this.review.assignment_min_demonstrated) return 'none';
+    if (recent < this.review.assignment_min_recent) return 'quiet';
+    return 'contributing';
+  }
 
   readonly curator = {
     // Curator-mediated acceptance. The review loop is wired
