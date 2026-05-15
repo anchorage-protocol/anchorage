@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { IdentityId } from '@anchorage/contracts';
+import type { IdentityId, NodeId } from '@anchorage/contracts';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { FakeGithubApi } from './auth-github.js';
 import { type ProdServerHandle, parseProdConfig, runProdServer } from './run-prod.js';
@@ -126,6 +126,69 @@ describe('parseProdConfig', () => {
         ANCHORAGE_ISSUANCE_EPOCH_SECONDS: '-1',
       }),
     ).toThrow(/ANCHORAGE_ISSUANCE_EPOCH_SECONDS/);
+  });
+
+  // Slice 7c part 2 — re-verification scheduler env knobs travel
+  // together. Setting the interval is the opt-in; the two companions
+  // (max_age_ms, batch_size) are required when it is set, and setting
+  // only one of the companions without the interval refuses at boot.
+  it('omits scheduler config when ANCHORAGE_REVERIFY_INTERVAL_MS is unset', () => {
+    const cfg = parseProdConfig({ ANCHORAGE_DB_PATH: '/tmp/x.db' });
+    expect(cfg.reverify_interval_ms).toBeUndefined();
+    expect(cfg.reverify_max_age_ms).toBeUndefined();
+    expect(cfg.reverify_batch_size).toBeUndefined();
+  });
+
+  it('populates scheduler config when all three knobs are set', () => {
+    const cfg = parseProdConfig({
+      ANCHORAGE_DB_PATH: '/tmp/x.db',
+      ANCHORAGE_REVERIFY_INTERVAL_MS: '3600000',
+      ANCHORAGE_REVERIFY_MAX_AGE_MS: '604800000',
+      ANCHORAGE_REVERIFY_BATCH_SIZE: '16',
+    });
+    expect(cfg.reverify_interval_ms).toBe(3_600_000);
+    expect(cfg.reverify_max_age_ms).toBe(604_800_000);
+    expect(cfg.reverify_batch_size).toBe(16);
+  });
+
+  it('refuses ANCHORAGE_REVERIFY_INTERVAL_MS without max_age', () => {
+    expect(() =>
+      parseProdConfig({
+        ANCHORAGE_DB_PATH: '/tmp/x.db',
+        ANCHORAGE_REVERIFY_INTERVAL_MS: '60000',
+        ANCHORAGE_REVERIFY_BATCH_SIZE: '8',
+      }),
+    ).toThrow(/ANCHORAGE_REVERIFY_MAX_AGE_MS is required/);
+  });
+
+  it('refuses ANCHORAGE_REVERIFY_INTERVAL_MS without batch_size', () => {
+    expect(() =>
+      parseProdConfig({
+        ANCHORAGE_DB_PATH: '/tmp/x.db',
+        ANCHORAGE_REVERIFY_INTERVAL_MS: '60000',
+        ANCHORAGE_REVERIFY_MAX_AGE_MS: '86400000',
+      }),
+    ).toThrow(/ANCHORAGE_REVERIFY_BATCH_SIZE is required/);
+  });
+
+  it('refuses companion knobs without the interval (scheduler must be opt-in)', () => {
+    expect(() =>
+      parseProdConfig({
+        ANCHORAGE_DB_PATH: '/tmp/x.db',
+        ANCHORAGE_REVERIFY_MAX_AGE_MS: '86400000',
+      }),
+    ).toThrow(/require ANCHORAGE_REVERIFY_INTERVAL_MS/);
+  });
+
+  it('refuses non-positive scheduler tunables', () => {
+    expect(() =>
+      parseProdConfig({
+        ANCHORAGE_DB_PATH: '/tmp/x.db',
+        ANCHORAGE_REVERIFY_INTERVAL_MS: '0',
+        ANCHORAGE_REVERIFY_MAX_AGE_MS: '86400000',
+        ANCHORAGE_REVERIFY_BATCH_SIZE: '8',
+      }),
+    ).toThrow(/ANCHORAGE_REVERIFY_INTERVAL_MS/);
   });
 });
 
@@ -374,6 +437,102 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
         log: () => {},
       }),
     ).rejects.toThrow(/does not name an existing identity/);
+  });
+
+  // Slice 7c part 2 — the periodic re-verification scheduler. The
+  // tick path is exercised end-to-end here against the configured
+  // verifier and the SQLite store: stand up the runtime with a
+  // small interval, accept an anchor through the curator path, drift
+  // the verifier mid-run, wait for at least one tick to fire, and
+  // observe the anchor flipped to `unresolvable` in the store.
+  it('ticks the re-verification scheduler when the env knobs are set, flipping drift to unresolvable', async () => {
+    const dbPath = join(tmp, 'anchorage.db');
+    const seedStore = new SqliteStore({ path: dbPath });
+    let curatorId: IdentityId;
+    let anchorId: NodeId;
+    try {
+      const seedServer = new Server({ store: seedStore, verifier: new FakeVerifier() });
+      const alice = seedServer.bootstrap.mintIdentity({ display_name: 'alice' });
+      curatorId = seedServer.bootstrap.mintIdentity({
+        display_name: 'carol',
+        role: 'curator',
+      }).id;
+      const cause = seedServer.bootstrap.createCause({ name: 'CRC', description: 'x' });
+      const st = seedServer.bootstrap.seedSubTopic({
+        cause_id: cause.id,
+        name: 'ctDNA-MRD',
+        description: 'x',
+        scope_query: 'x',
+      });
+      const { proposal_id } = await seedServer.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: cause.id,
+          home_sub_topic_id: st.id,
+          content: 'trial',
+          external_ref: { kind: 'pmid', value: '1' },
+        },
+      );
+      const { node_id } = seedServer.curator.acceptProposal(proposal_id);
+      if (!node_id) throw new Error('expected anchor materialization');
+      anchorId = node_id;
+    } finally {
+      seedStore.close();
+    }
+    // Drifted verifier: same ref now resolves to a different hash, so
+    // every re-verify against pmid:1 sees the mismatch.
+    const drifted = new FakeVerifier(new Set(), new Map([['1', 'fake:pmid:1:drifted']]));
+    handle = await runProdServer({
+      config: {
+        db_path: dbPath,
+        host: '127.0.0.1',
+        port: 0,
+        reverify_interval_ms: 50,
+        reverify_max_age_ms: 1,
+        reverify_batch_size: 16,
+      },
+      verifier: drifted,
+      log: () => {},
+    });
+    // The scheduler ticks every 50ms; one tick is sufficient. Poll
+    // for up to a second so a slow CI doesn't flake.
+    let flipped = false;
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      const res = await fetch(`${handle.http.url}/healthz`);
+      expect(res.status).toBe(200);
+      // Reach into the store via a fresh read against the live SQLite
+      // file: the runtime owns the writer; we open a separate reader
+      // to inspect state without racing the runtime's transaction.
+      const probe = new SqliteStore({ path: dbPath });
+      try {
+        const node = probe.nodes.get(anchorId);
+        if (node && node.kind === 'anchor' && node.status === 'unresolvable') {
+          flipped = true;
+          break;
+        }
+      } finally {
+        probe.close();
+      }
+    }
+    expect(flipped).toBe(true);
+    // Curator was provisioned for completeness but the scheduler
+    // does not need the web tier to be wired — proves the scheduler
+    // runs independently of the web routes.
+    expect(curatorId).toBeDefined();
+  });
+
+  it('does not start the scheduler when only some knobs are set (boot refusal lives in parseProdConfig)', async () => {
+    // Sanity: when the operator omits the interval, the runtime
+    // stands up cleanly without a scheduler, mirroring the
+    // parseProdConfig path that gates the opt-in.
+    handle = await runProdServer({
+      config: { db_path: join(tmp, 'anchorage.db'), host: '127.0.0.1', port: 0 },
+      verifier: new FakeVerifier(),
+      log: () => {},
+    });
+    const res = await fetch(`${handle.http.url}/healthz`);
+    expect(res.status).toBe(200);
   });
 
   it('closes the SQLite store on shutdown (durability across reopen)', async () => {

@@ -70,6 +70,26 @@ export interface ProdConfig {
   // reader for cause-list rendering (the curator index page lists
   // causes for filter links), so the public tier must also be up.
   web_curator_identity_id?: IdentityId;
+  // Slice 7c part 2 — periodic re-verification scheduler. Three
+  // env knobs configure the production tick that drives
+  // `server.curator.reverifyDueAnchors` against the live verifier:
+  //   - `reverify_interval_ms` is the period between ticks. Setting
+  //     this is the opt-in; the other two are required when it is
+  //     set, refused at boot when only one is set (no silent default
+  //     for a load-bearing-against-NCBI cadence — operator picks).
+  //   - `reverify_max_age_ms` is the freshness threshold passed
+  //     through to `reverifyDueAnchors`: anchors whose
+  //     `last_verified_at` predates `now - max_age_ms` are eligible.
+  //   - `reverify_batch_size` caps the per-tick fetch count so a
+  //     large backlog (e.g. first tick after a long quiet window)
+  //     does not turn into a sudden burst against the upstream
+  //     verifier. Backlogs drain across subsequent ticks.
+  // When `reverify_interval_ms` is unset, the scheduler is off and
+  // the re-verification primitive remains available on-demand via
+  // `curator_reverify_anchors` (operators can drive it manually).
+  reverify_interval_ms?: number;
+  reverify_max_age_ms?: number;
+  reverify_batch_size?: number;
 }
 
 export interface GithubConfig {
@@ -137,11 +157,54 @@ export function parseProdConfig(env: NodeJS.ProcessEnv): ProdConfig {
     );
   }
 
+  // Re-verification scheduler. The three knobs travel together —
+  // setting the interval is the opt-in, and the other two are
+  // required when it is set. Refusing at boot when only some are
+  // set avoids the trap of "set the interval, forget max_age,
+  // scheduler runs with an undefined threshold."
+  const reverify_interval_ms = parseOptionalPositiveInt(
+    env['ANCHORAGE_REVERIFY_INTERVAL_MS'],
+    'ANCHORAGE_REVERIFY_INTERVAL_MS',
+  );
+  const reverify_max_age_ms = parseOptionalPositiveInt(
+    env['ANCHORAGE_REVERIFY_MAX_AGE_MS'],
+    'ANCHORAGE_REVERIFY_MAX_AGE_MS',
+  );
+  const reverify_batch_size = parseOptionalPositiveInt(
+    env['ANCHORAGE_REVERIFY_BATCH_SIZE'],
+    'ANCHORAGE_REVERIFY_BATCH_SIZE',
+  );
+  if (reverify_interval_ms !== undefined) {
+    if (reverify_max_age_ms === undefined) {
+      throw new ServerError(
+        'invalid_input',
+        'ANCHORAGE_REVERIFY_MAX_AGE_MS is required when ANCHORAGE_REVERIFY_INTERVAL_MS is set',
+      );
+    }
+    if (reverify_batch_size === undefined) {
+      throw new ServerError(
+        'invalid_input',
+        'ANCHORAGE_REVERIFY_BATCH_SIZE is required when ANCHORAGE_REVERIFY_INTERVAL_MS is set',
+      );
+    }
+  } else if (reverify_max_age_ms !== undefined || reverify_batch_size !== undefined) {
+    throw new ServerError(
+      'invalid_input',
+      'ANCHORAGE_REVERIFY_MAX_AGE_MS / ANCHORAGE_REVERIFY_BATCH_SIZE require ANCHORAGE_REVERIFY_INTERVAL_MS to enable the scheduler',
+    );
+  }
+
   const config: ProdConfig = { db_path, host, port };
   if (github !== undefined) config.github = github;
   if (web_reader_identity_id !== undefined) config.web_reader_identity_id = web_reader_identity_id;
   if (web_curator_identity_id !== undefined) {
     config.web_curator_identity_id = web_curator_identity_id;
+  }
+  if (reverify_interval_ms !== undefined) {
+    config.reverify_interval_ms = reverify_interval_ms;
+    // Both guaranteed defined by the refusal block above.
+    config.reverify_max_age_ms = reverify_max_age_ms as number;
+    config.reverify_batch_size = reverify_batch_size as number;
   }
   return config;
 }
@@ -289,12 +352,59 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
     log,
   });
 
+  // Slice 7c part 2 — periodic re-verification scheduler. Off by
+  // default; the operator turns it on by setting
+  // `ANCHORAGE_REVERIFY_INTERVAL_MS` alongside the two companion
+  // knobs. Each tick fires `server.curator.reverifyDueAnchors` with
+  // the configured batch size and freshness threshold; results are
+  // logged. Per-tick errors are caught and logged so a transient
+  // upstream failure does not kill the scheduler — the next tick
+  // will retry naturally. `Timer.unref()` keeps the scheduler from
+  // pinning the process alive past HTTP shutdown; the close path
+  // explicitly clears the interval anyway, but unref guards the
+  // case where the operator closes the underlying handle directly.
+  let reverifyTimer: NodeJS.Timeout | undefined;
+  if (deps.config.reverify_interval_ms !== undefined) {
+    const interval = deps.config.reverify_interval_ms;
+    const maxAge = deps.config.reverify_max_age_ms as number;
+    const batch = deps.config.reverify_batch_size as number;
+    const tick = (): void => {
+      void (async () => {
+        try {
+          const out = await server.curator.reverifyDueAnchors({
+            batch_size: batch,
+            max_age_ms: maxAge,
+          });
+          if (out.checked > 0) {
+            log('anchorage.reverify.tick', {
+              checked: out.checked,
+              unchanged: out.unchanged,
+              unresolvable: out.unresolvable,
+            });
+          }
+        } catch (err) {
+          log('anchorage.reverify.error', {
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
+    };
+    reverifyTimer = setInterval(tick, interval);
+    reverifyTimer.unref();
+    log('anchorage.reverify.started', {
+      interval_ms: interval,
+      max_age_ms: maxAge,
+      batch_size: batch,
+    });
+  }
+
   log('anchorage.server.started', {
     url: http.url,
     db_path: deps.config.db_path,
     github_oauth: deps.config.github !== undefined,
     web_tier: webHandler !== undefined,
     curator_console: deps.config.web_curator_identity_id !== undefined,
+    reverify_scheduler: reverifyTimer !== undefined,
   });
 
   let closed = false;
@@ -303,6 +413,7 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
     close: async (): Promise<void> => {
       if (closed) return;
       closed = true;
+      if (reverifyTimer !== undefined) clearInterval(reverifyTimer);
       await http.close();
       store.close();
       log('anchorage.server.stopped', {});

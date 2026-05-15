@@ -32,7 +32,12 @@ Three things, in order:
 | `ANCHORAGE_ISSUANCE_EPOCH_SECONDS` | no | `Infinity` (gate inert) | Epoch window for the issuance cap, in seconds. Pair with the cap above. |
 | `ANCHORAGE_ATTESTATION_AGE_DAYS_FOR_LEVEL2` | no | `30` | GitHub account age threshold for attestation level 2 (PRD §Identity bullet 1). Override only with a specific reason. |
 | `ANCHORAGE_WEB_READER_IDENTITY` | no | — | Identity id of the operator-minted "web reader" (an `anchorage-admin mint-reader` mint, see *Bootstrap* below). When set, the runtime mounts the read-only web tier on the same HTTP listener: `/` renders the home page (cause list), `/sub-topic/{id}` renders a sub-topic detail page. When unset, the web routes do not exist and the listener serves only `/mcp`, `/auth/github/*`, and `/healthz` — the MCP-only deployment posture. |
-| `ANCHORAGE_WEB_CURATOR_IDENTITY` | no | — | Identity id of an active `curator`-role identity (an `anchorage-admin mint-curator` mint, see *Bootstrap: enabling the curator console* below). When set, the runtime mounts the `/curator/*` console pages — moderation queue, decline-patterns view, identity-clusters view — gated by this in-process curator caller. When unset, every `/curator/*` route 404s by absence. Requires `ANCHORAGE_WEB_READER_IDENTITY` to also be set (the curator index lists active causes via the public reader for filter links); boot refuses otherwise. |
+| `ANCHORAGE_WEB_CURATOR_IDENTITY` | no | — | Identity id of an active `curator`-role identity (an `anchorage-admin mint-curator` mint, see *Bootstrap: enabling the curator console* below). When set, the runtime mounts the `/curator/*` console pages — moderation queue, decline-patterns view, identity-clusters view, unresolvable-anchors view — gated by this in-process curator caller. When unset, every `/curator/*` route 404s by absence. Requires `ANCHORAGE_WEB_READER_IDENTITY` to also be set (the curator index lists active causes via the public reader for filter links); boot refuses otherwise. |
+| `ANCHORAGE_REVERIFY_INTERVAL_MS` | no | — | Period between re-verification scheduler ticks, in milliseconds. Setting this turns the scheduler on; the two companion knobs (max-age, batch-size) are required when this is set, and setting any companion without this refuses at boot. When unset, the scheduler is off and the re-verification primitive remains available on-demand via the `curator_reverify_anchors` MCP tool. PRD §Verification engine (Re-verification). |
+| `ANCHORAGE_REVERIFY_MAX_AGE_MS` | no¹ | — | Freshness threshold: anchors whose `last_verified_at` predates `now - max_age_ms` are eligible for re-verification. The scheduler picks the oldest first. Required when the interval is set. |
+| `ANCHORAGE_REVERIFY_BATCH_SIZE` | no¹ | — | Per-tick cap on the number of anchors the scheduler re-verifies. Bounds the burst against the upstream verifier (NCBI / Crossref) when a backlog accumulates; backlogs drain across subsequent ticks. Required when the interval is set. |
+
+¹ Required when `ANCHORAGE_REVERIFY_INTERVAL_MS` is set; boot refuses otherwise. The three knobs travel together — there is no default for a load-bearing cadence against NCBI / Crossref; the operator picks.
 
 The runtime refuses to start on any malformed value — bad ports, negative tunables, missing `ANCHORAGE_DB_PATH`. This is loud-failure on purpose; silent fallbacks would mask a misconfigured production launch.
 
@@ -148,11 +153,32 @@ The curator console at `/curator/*` is an additional opt-in on top of the public
 
    Output is a single JSON line carrying both the `identity_id` and a one-shot bearer secret (the secret is for a curator-as-agent who fires the `curator_*` MCP tools; for the web console specifically you only need the `identity_id`). Stash the secret in a secrets manager if the same identity will also drive the curator agent.
 
-2. Set `ANCHORAGE_WEB_CURATOR_IDENTITY` to that `identity_id`, keep `ANCHORAGE_WEB_READER_IDENTITY` set, and restart the runtime. On boot, the runtime validates the identity exists, is active, and holds the curator role — all three are caught at boot rather than per-request. The `/curator/*` routes then mount: `/curator` (index), `/curator/queue` (moderation queue, optional `?cause_id=` filter), `/curator/decline-patterns/{cause_id}` (per-cause decline rates), `/curator/identity-clusters` (cross-cause vote-coordination fingerprints).
+2. Set `ANCHORAGE_WEB_CURATOR_IDENTITY` to that `identity_id`, keep `ANCHORAGE_WEB_READER_IDENTITY` set, and restart the runtime. On boot, the runtime validates the identity exists, is active, and holds the curator role — all three are caught at boot rather than per-request. The `/curator/*` routes then mount: `/curator` (index), `/curator/queue` (moderation queue, optional `?cause_id=` filter), `/curator/decline-patterns/{cause_id}` (per-cause decline rates), `/curator/identity-clusters` (cross-cause vote-coordination fingerprints), `/curator/unresolvable` (anchors flagged by the re-verification scheduler, optional `?cause_id=` filter).
 
 3. **Gate `/curator/*` upstream.** The console contains operationally-private data — per-reviewer decline rates, cross-cause identity-pair signals. The Anchorage runtime does *not* expose login or per-request authentication for these routes in v0: the in-process curator caller is the single privileged identity behind the namespace, and anyone who can hit `/curator/*` will see the content. The operational posture PRD §Curator console commits is: the operator restricts which network origin reaches `/curator/*` upstream — reverse-proxy ACL (NGINX `allow`/`deny`, Caddy `route` with `@curator`), basic auth at the edge, Cloudflare Access policy, VPN-only egress, or whatever the deployment's network primitives offer. The web handler itself enforces no second factor. A misconfigured deployment that exposes `/curator/*` to the public internet leaks the projections; gate before mount.
 
 4. Revocation is freely available — `anchorage-admin revoke-identity` against the curator's `identity_id`, or the curator firing `curator_revoke_identity` against themselves. `server.resources.requireCurator` re-resolves the caller on every call, so the next page load after revocation refuses with `permission_denied` → 403. (A demotion to contributor role surfaces the same way.) To rotate, mint a fresh curator, update the env, restart.
+
+## Bootstrap: enabling the re-verification scheduler (slice 7c)
+
+The re-verification scheduler periodically re-fetches `active` anchors against their stored `content_hash` and flips drift to `unresolvable` (terminal at the anchor level; recovery is via `propose_supersedes` from a contributor proposing a fresh `external_ref`). PRD §Verification engine (Re-verification) commits the contract; the periodic tick in production is opt-in through three companion env vars.
+
+The scheduler is *off* by default. The primitive remains available on-demand whether the scheduler is on or off — a seated curator can fire `curator_reverify_anchors` through their MCP agent to drive a sweep manually, regardless of the env config.
+
+1. Decide a cadence. The two operational tradeoffs are upstream pressure (each tick fetches up to `batch_size` URLs from NCBI / Crossref / the URL host) and freshness latency (the maximum time a drifted source can sit `active` before the scheduler catches it). NCBI's E-utilities are 3 req/sec without an API key, 10 req/sec with; Crossref is broadly polite-pool friendly at hundreds of req/min for a registered user agent. A starting point: `INTERVAL_MS=3600000` (1 hour), `BATCH_SIZE=16`, `MAX_AGE_MS=604800000` (7 days). At that shape each anchor is re-verified roughly weekly, the per-tick burst is bounded at 16 fetches, and drift surfaces in the `/curator/unresolvable` view within a week of when it lands upstream. The numbers are operator's choice; PRD §Verification engine commits that specific cadence is operationally private.
+
+2. Set the three env vars and restart:
+
+   ```bash
+   ANCHORAGE_REVERIFY_INTERVAL_MS=3600000 \
+   ANCHORAGE_REVERIFY_MAX_AGE_MS=604800000 \
+   ANCHORAGE_REVERIFY_BATCH_SIZE=16 \
+   pnpm --filter @anchorage/server run prod
+   ```
+
+   The runtime refuses at boot if only some of the three are set — there is no silent default for a cadence that drives real fetches against upstream verifiers. Drop the `INTERVAL` to turn it off, or all three to revert to the unset shape.
+
+3. The scheduler's tick fires every `INTERVAL_MS`, picks up to `BATCH_SIZE` `active` anchors whose `last_verified_at` predates `now - MAX_AGE_MS` (oldest first), and re-verifies each in turn. Per-tick errors are caught and surfaced through the structured-log sink (`anchorage.reverify.error`); a transient upstream failure does not kill the scheduler. Outcomes for a non-empty tick are logged as `anchorage.reverify.tick` with `{ checked, unchanged, unresolvable }`. The `/curator/unresolvable` view (slice 7c) surfaces flagged anchors to a seated curator, most-recent-drift-first.
 
 ## Backups
 

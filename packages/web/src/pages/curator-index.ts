@@ -30,6 +30,10 @@ export function renderCuratorIndexPage(directory: CauseDirectory): string {
 
   <h2>Cross-cause identity clusters</h2>
   <p><a href="/curator/identity-clusters">Identity clusters</a> — pairs of identities whose vote co-occurrence across causes suggests coordination.</p>
+
+  <h2>Unresolvable anchors</h2>
+  <p><a href="/curator/unresolvable">Flagged by the re-verification scheduler</a> — anchors whose live source no longer matches the stored content hash (drift), or whose external reference no longer resolves (retraction, host gone). Recovery is via <code>propose_supersedes</code> from a contributor.</p>
+  ${renderPerCauseUnresolvableLinks(directory)}
 </main>
 ${siteFooter()}`;
   return renderDocument({
@@ -62,6 +66,17 @@ function renderPerCauseDeclineLinks(directory: CauseDirectory): Raw {
 ${directory.causes.map(
   (c) => html`<li>
   <a href="/curator/decline-patterns/${c.cause.id}">${c.cause.name}</a>
+</li>`,
+)}
+</ul>`;
+}
+
+function renderPerCauseUnresolvableLinks(directory: CauseDirectory): Raw {
+  if (directory.causes.length === 0) return html``;
+  return html`<ul>
+${directory.causes.map(
+  (c) => html`<li>
+  <a href="/curator/unresolvable?cause_id=${c.cause.id}">${c.cause.name}</a> — flagged anchors in this cause only.
 </li>`,
 )}
 </ul>`;

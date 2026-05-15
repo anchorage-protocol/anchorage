@@ -1,6 +1,13 @@
 import { createServer, type Server as NodeHttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { CauseId, IdentityId, NodeId, SubTopicId } from '@anchorage/contracts';
+import type {
+  CauseId,
+  IdentityId,
+  NodeId,
+  ProposalId,
+  SubTopicId,
+  Timestamp,
+} from '@anchorage/contracts';
 import { buildWebHandler } from '@anchorage/web';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HarnessAuthenticator } from './auth.js';
@@ -708,6 +715,7 @@ describe('curator console (slice 7b)', () => {
       '/curator/queue',
       '/curator/decline-patterns/cau_x',
       '/curator/identity-clusters',
+      '/curator/unresolvable',
     ]) {
       const res = await fetch(`${base}${path}`);
       expect(res.status).toBe(404);
@@ -729,5 +737,86 @@ describe('curator console (slice 7b)', () => {
     expect(res.status).toBe(403);
     const body = await res.text();
     expect(body).toContain('Forbidden');
+  });
+
+  // Slice 7c part 2 — the curator-side unresolvable-anchors page.
+  // Lists anchors flagged by the re-verification scheduler (drift,
+  // retraction, host gone). Empty-state when none; populated when
+  // at least one anchor has flipped; cause filter mirrors the queue
+  // page's behavior.
+  it('GET /curator renders the unresolvable-anchors link', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('Unresolvable anchors');
+    expect(body).toContain('/curator/unresolvable');
+    expect(body).toContain(`/curator/unresolvable?cause_id=${f.causeId}`);
+  });
+
+  it('GET /curator/unresolvable renders the empty-state on a fresh graph', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator/unresolvable`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('Unresolvable anchors');
+    expect(body).toContain('every active anchor still resolves');
+    expect(body).toContain('across all causes');
+  });
+
+  it('GET /curator/unresolvable lists drifted anchors with ref + hash + timestamps', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    // Accept Alice's staged anchor so it becomes active, then drift
+    // it through the in-process verifier. The fixture wires
+    // FakeVerifier (default), whose hash for pmid:1 is
+    // `fake:pmid:1`; we mutate the underlying hashes map via a fresh
+    // re-verify path. Easier route: directly mutate the stored hash
+    // on the live node so the re-verify primitive observes drift —
+    // exercising the projection, not the verifier itself (which has
+    // its own dedicated suite in curator.test.ts).
+    f.server.curator.acceptProposal(f.stagedProposalId as ProposalId);
+    const nodes = [...f.server.store.nodes.values()].filter((n) => n.kind === 'anchor');
+    const anchor = nodes[0];
+    if (!anchor || anchor.kind !== 'anchor') throw new Error('expected anchor');
+    // Directly stamp the anchor as unresolvable to exercise the
+    // page's render path against a populated projection — the
+    // re-verification primitive's own behavior is covered in
+    // curator.test.ts.
+    f.server.store.nodes.set(anchor.id, {
+      ...anchor,
+      status: 'unresolvable',
+      updated_at: '2026-05-15T12:00:00.000Z' as Timestamp,
+    });
+    const res = await fetch(`${f.webUrl}/curator/unresolvable`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain(anchor.id);
+    expect(body).toContain('PMID 1');
+    expect(body).toContain(anchor.content_hash);
+    expect(body).toContain(anchor.last_verified_at);
+    expect(body).toContain('2026-05-15T12:00:00.000Z');
+  });
+
+  it('GET /curator/unresolvable?cause_id=... filters by cause', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator/unresolvable?cause_id=${f.causeId}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain(`cause ${f.causeId}`);
+  });
+
+  it('GET /curator/unresolvable with cause_id= (empty string) treats as no filter', async () => {
+    // Mirrors the queue page's behavior — an empty filter falls
+    // through to the all-causes view, parallel to /curator/queue.
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/curator/unresolvable?cause_id=`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('across all causes');
   });
 });

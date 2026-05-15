@@ -11,6 +11,7 @@ export { renderCuratorDeclinePatternsPage } from './pages/curator-decline-patter
 export { renderCuratorIdentityClustersPage } from './pages/curator-identity-clusters.js';
 export { renderCuratorIndexPage } from './pages/curator-index.js';
 export { renderCuratorQueuePage } from './pages/curator-queue.js';
+export { renderCuratorUnresolvablePage } from './pages/curator-unresolvable.js';
 export { renderHomePage } from './pages/home.js';
 export { renderManuscriptPage } from './pages/manuscript.js';
 export { renderNodePage } from './pages/node.js';

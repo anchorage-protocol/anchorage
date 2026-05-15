@@ -5,6 +5,7 @@ import { renderCuratorDeclinePatternsPage } from './pages/curator-decline-patter
 import { renderCuratorIdentityClustersPage } from './pages/curator-identity-clusters.js';
 import { renderCuratorIndexPage } from './pages/curator-index.js';
 import { renderCuratorQueuePage } from './pages/curator-queue.js';
+import { renderCuratorUnresolvablePage } from './pages/curator-unresolvable.js';
 import { renderHomePage } from './pages/home.js';
 import { notFoundBody } from './pages/layout.js';
 import { renderManuscriptPage } from './pages/manuscript.js';
@@ -30,6 +31,7 @@ import { baselineStylesheet } from './styles.js';
 //   GET /curator/queue?cause_id=...              → moderation queue (slice 7b, gated)
 //   GET /curator/decline-patterns/:cause_id      → decline-patterns view (slice 7b, gated)
 //   GET /curator/identity-clusters               → identity-clusters view (slice 7b, gated)
+//   GET /curator/unresolvable?cause_id=...       → unresolvable-anchor view (slice 7c, gated)
 //   GET /healthz                                 → liveness probe (JSON `{ ok: true }`)
 //
 // Refusal mapping. A `ServerError` thrown by the reader (e.g. an
@@ -244,6 +246,40 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
           const clusters = await curatorReader.getCuratorIdentityClusters();
           log('web.page.curator.identity_clusters', { pair_count: clusters.pairs.length });
           sendHtml(res, 200, renderCuratorIdentityClustersPage(clusters), method);
+          return;
+        }
+        if (pathname === '/curator/unresolvable') {
+          // Slice 7c part 2 — anchors flagged by the re-verification
+          // scheduler. Optional `?cause_id=` filter mirrors the
+          // moderation-queue page. The underlying projection sorts
+          // most-recent-drift-first server-side; the page reflects
+          // whatever subset the reader returned.
+          const causeIdRaw = url.searchParams.get('cause_id');
+          let causeId: CauseId | undefined;
+          if (causeIdRaw !== null && causeIdRaw.length > 0) {
+            const parsed = CauseId.safeParse(causeIdRaw);
+            if (!parsed.success) {
+              sendHtmlNotFound(res, 'Unknown cause', `No cause with id ${causeIdRaw}.`, method);
+              return;
+            }
+            causeId = parsed.data;
+          }
+          const flagged = await curatorReader.getCuratorUnresolvableAnchors(
+            causeId !== undefined ? { cause_id: causeId } : undefined,
+          );
+          log('web.page.curator.unresolvable', {
+            anchor_count: flagged.anchors.length,
+            cause_id: causeId,
+          });
+          sendHtml(
+            res,
+            200,
+            renderCuratorUnresolvablePage({
+              anchors: flagged.anchors,
+              ...(causeId !== undefined ? { cause_id: causeId } : {}),
+            }),
+            method,
+          );
           return;
         }
       }
