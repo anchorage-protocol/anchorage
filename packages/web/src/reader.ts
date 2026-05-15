@@ -2,6 +2,7 @@ import type {
   CauseDirectory,
   CauseId,
   ContributorProfile,
+  ExternalRef,
   IdentityId,
   Manuscript,
   NodeId,
@@ -11,6 +12,7 @@ import type {
   Subgraph,
   SubTopicDetail,
   SubTopicId,
+  Timestamp,
 } from '@anchorage/contracts';
 
 // AnchorageReader: the read-only projection of the server surface the
@@ -112,6 +114,23 @@ export interface AnchorageCuratorReader {
       identity_b: IdentityId;
       cross_cause_count: number;
       shared_proposal_count: number;
+    }>;
+  }>;
+  // `server.resources.getCuratorUnresolvableAnchors` — anchors flagged
+  // by the re-verification scheduler (slice 7c). Each row carries the
+  // external_ref the curator opens to investigate, the stored hash
+  // (so a contributor proposing a supersedes can show the divergence),
+  // the timestamp the source was last known good, and the timestamp
+  // drift was detected. Sorted most-recent-drift-first by the server.
+  getCuratorUnresolvableAnchors(options?: { cause_id?: CauseId }): Promise<{
+    anchors: Array<{
+      anchor_id: NodeId;
+      home_sub_topic_id: SubTopicId;
+      cause_id: CauseId;
+      external_ref: ExternalRef;
+      content_hash: string;
+      last_verified_at: Timestamp;
+      updated_at: Timestamp;
     }>;
   }>;
 }

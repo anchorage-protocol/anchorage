@@ -3439,6 +3439,72 @@ export class Server {
       const pairs = this.curator.identityClusters(inner);
       return { pairs };
     },
+
+    // Curator-side surface for anchors flagged by the re-verification
+    // scheduler (slice 7c). Lists every `unresolvable` anchor with the
+    // fields a human reviewer needs to decide what to do next:
+    // - the external_ref that drifted (so the curator can manually
+    //   check the source),
+    // - the stored content_hash (so a contributor proposing a
+    //   supersedes can show "this anchor's hash diverged from what's
+    //   live today"),
+    // - last_verified_at, the timestamp the source was last known
+    //   good (the curator reads "drifted after N days unchecked" off
+    //   the gap to updated_at),
+    // - updated_at, which the unresolvable flip wrote and which the
+    //   curator surfaces as "drift detected at".
+    // Sorted by updated_at descending (most recently flagged first) —
+    // the curator's frontmost question is "what just broke," not
+    // "what's been broken longest." cause_id filters to a single
+    // cause; absence returns all causes. PRD §Verification engine
+    // (Re-verification) commits this projection as the curator-side
+    // surface for flagged anchors.
+    getCuratorUnresolvableAnchors: async (
+      caller: Caller,
+      options?: { cause_id?: CauseId },
+    ): Promise<{
+      anchors: Array<{
+        anchor_id: NodeId;
+        home_sub_topic_id: SubTopicId;
+        cause_id: CauseId;
+        external_ref: AnchorNode['external_ref'];
+        content_hash: string;
+        last_verified_at: Timestamp;
+        updated_at: Timestamp;
+      }>;
+    }> => {
+      this.requireCurator(caller);
+      const out: Array<{
+        anchor_id: NodeId;
+        home_sub_topic_id: SubTopicId;
+        cause_id: CauseId;
+        external_ref: AnchorNode['external_ref'];
+        content_hash: string;
+        last_verified_at: Timestamp;
+        updated_at: Timestamp;
+      }> = [];
+      for (const n of this.store.nodes.values()) {
+        if (n.kind !== 'anchor') continue;
+        if (n.status !== 'unresolvable') continue;
+        const subTopic = this.store.subTopics.get(n.home_sub_topic_id);
+        if (!subTopic) continue;
+        if (options?.cause_id !== undefined && subTopic.cause_id !== options.cause_id) continue;
+        out.push({
+          anchor_id: n.id,
+          home_sub_topic_id: n.home_sub_topic_id,
+          cause_id: subTopic.cause_id,
+          external_ref: n.external_ref,
+          content_hash: n.content_hash,
+          last_verified_at: n.last_verified_at,
+          updated_at: n.updated_at,
+        });
+      }
+      out.sort((a, b) => {
+        if (a.updated_at !== b.updated_at) return b.updated_at.localeCompare(a.updated_at);
+        return a.anchor_id.localeCompare(b.anchor_id);
+      });
+      return { anchors: out };
+    },
   };
 
   // Helper for the curator-only read projections (slice 7b). Re-
@@ -3915,6 +3981,162 @@ export class Server {
       }
       this.store.identities.set(identity.id, { ...identity, status: 'revoked' });
       return { identity_id: identity.id, status: 'revoked', changed: true };
+    },
+
+    // Re-verify a single active anchor against its live source (PRD
+    // §Verification engine, Re-verification). Re-fetches `external_ref`
+    // through the configured verifier, compares the fresh content hash
+    // against the stored one, and either bumps `last_verified_at`
+    // (still resolves; "known good as of now") or transitions the anchor
+    // to `unresolvable` (drift detected, or the verifier itself refused
+    // — retraction, host gone, network unreachable; the verifier
+    // conflates the three by design, see `LiveFetchVerifier.fetchPmid`).
+    // `unresolvable` is terminal for this anchor: the lineage continues
+    // via a `propose_supersedes` from a contributor proposing a fresh
+    // external_ref pointing at the same claim. Re-verify only operates
+    // on `active`; `staged` anchors are not yet load-bearing (their
+    // initial verification is still pending in the proposal flow) and
+    // `superseded`/`rejected`/`unresolvable` are out of the
+    // re-verification loop by definition.
+    reverifyAnchor: async (
+      anchorId: NodeId,
+    ): Promise<{
+      anchor_id: NodeId;
+      outcome: 'unchanged' | 'unresolvable';
+      content_hash: string;
+      last_verified_at: Timestamp;
+    }> => {
+      const node = this.store.nodes.get(anchorId);
+      if (!node) {
+        throw new ServerError('not_found', `anchor not found: ${anchorId}`);
+      }
+      if (node.kind !== 'anchor') {
+        throw new ServerError(
+          'invalid_input',
+          `re-verification applies to anchors only (got ${node.kind})`,
+        );
+      }
+      if (node.status !== 'active') {
+        throw new ServerError(
+          'invalid_state',
+          `re-verification requires status 'active' (got ${node.status})`,
+        );
+      }
+      const now = this.clock.now();
+      try {
+        const fresh = await this.verifier.verifyExternalRef(node.external_ref);
+        if (fresh.content_hash === node.content_hash) {
+          // Hash match: source still resolves to the same content.
+          // Bump last_verified_at; updated_at stays put (the persisted
+          // record is unchanged in every observable way except the
+          // freshness timestamp, but `updated_at` semantically tracks
+          // user-meaningful changes — drift, supersedes — not
+          // background verification heartbeats, and bumping it would
+          // muddy the assignment-expiry and proposal-stale logic that
+          // keys off it).
+          const updated: AnchorNode = { ...node, last_verified_at: now };
+          this.store.nodes.set(node.id, updated);
+          return {
+            anchor_id: node.id,
+            outcome: 'unchanged',
+            content_hash: node.content_hash,
+            last_verified_at: now,
+          };
+        }
+        // Hash mismatch: confirmed drift.
+      } catch (err) {
+        // Verifier threw: retraction, host gone, transient network
+        // failure — indistinguishable at the verifier seam (see comment
+        // above and `LiveFetchVerifier.fetchPmid`). v0 collapses all
+        // three to "unresolvable" rather than persisting a transient
+        // hiccup as a different state; the operator's recovery path
+        // is the same in every case (curator surfaces flagged anchors;
+        // contributors propose supersedes with a fresh external_ref).
+        // Non-ServerError throws are rethrown — schema/zod failures
+        // and Server programming errors should not silently flip
+        // anchors. Same posture as `accountWriteAction`'s rate-limit
+        // surface: only typed verifier rejections are re-verification
+        // failures.
+        if (!(err instanceof ServerError)) throw err;
+      }
+      // Flip to unresolvable. last_verified_at is *not* bumped — it
+      // continues to record when the source was last known good, which
+      // is the meaningful timestamp for the curator surface ("drifted
+      // after N days unchecked"). updated_at *is* bumped: the flip is
+      // a meaningful state change, surfaced through the frontier
+      // (`unresolvable_anchor`) and the curator projection.
+      const updated: AnchorNode = { ...node, status: 'unresolvable', updated_at: now };
+      this.store.nodes.set(node.id, updated);
+      return {
+        anchor_id: node.id,
+        outcome: 'unresolvable',
+        content_hash: node.content_hash,
+        last_verified_at: node.last_verified_at,
+      };
+    },
+
+    // Batch re-verification: pick `active` anchors whose
+    // `last_verified_at` is older than the threshold, oldest first, up
+    // to `batch_size`, and re-verify each in turn. This is the
+    // primitive the production scheduler ticks against (slice 7c part
+    // 2) and the operator can also drive on-demand through
+    // `curator_reverify_anchors`. Oldest-first ordering ensures every
+    // anchor gets a turn even when the backlog exceeds a single
+    // batch's capacity. `cause_id` is an optional per-cause filter for
+    // operators running per-cause sweeps; absence means all causes.
+    //
+    // Empty batches are a normal result (everything's fresh), not an
+    // error. A drift inside the batch does not abort the batch — each
+    // anchor is independent and the curator wants the full sweep.
+    reverifyDueAnchors: async (options: {
+      batch_size: number;
+      max_age_ms: number;
+      cause_id?: CauseId;
+    }): Promise<{
+      checked: number;
+      unchanged: number;
+      unresolvable: number;
+      anchors: Array<{
+        anchor_id: NodeId;
+        outcome: 'unchanged' | 'unresolvable';
+      }>;
+    }> => {
+      if (options.batch_size <= 0) {
+        return { checked: 0, unchanged: 0, unresolvable: 0, anchors: [] };
+      }
+      const now = this.clock.now();
+      const cutoffMs = Date.parse(now) - options.max_age_ms;
+      // Collect eligible anchors. Per-cause filtering walks the home
+      // sub-topic → cause map; v0 corpus sizes make full-scan cheap.
+      const eligible: AnchorNode[] = [];
+      for (const n of this.store.nodes.values()) {
+        if (n.kind !== 'anchor') continue;
+        if (n.status !== 'active') continue;
+        if (Date.parse(n.last_verified_at) > cutoffMs) continue;
+        if (options.cause_id !== undefined) {
+          const subTopic = this.store.subTopics.get(n.home_sub_topic_id);
+          if (!subTopic || subTopic.cause_id !== options.cause_id) continue;
+        }
+        eligible.push(n);
+      }
+      // Oldest first, deterministic tiebreak by id.
+      eligible.sort((a, b) => {
+        if (a.last_verified_at !== b.last_verified_at) {
+          return a.last_verified_at.localeCompare(b.last_verified_at);
+        }
+        return a.id.localeCompare(b.id);
+      });
+      const batch = eligible.slice(0, options.batch_size);
+      const anchors: Array<{ anchor_id: NodeId; outcome: 'unchanged' | 'unresolvable' }> = [];
+      let unchanged = 0;
+      let unresolvable = 0;
+      for (const anchor of batch) {
+        const result = await this.curator.reverifyAnchor(anchor.id);
+        anchors.push({ anchor_id: result.anchor_id, outcome: result.outcome });
+        if (result.outcome === 'unchanged') unchanged += 1;
+        else unresolvable += 1;
+      }
+      return { checked: anchors.length, unchanged, unresolvable, anchors };
     },
   };
 
@@ -4627,6 +4849,9 @@ export class Server {
         updated_at: now,
         external_ref: proposal.payload.external_ref,
         content_hash: verified.content_hash,
+        // Initial verify; the re-verification scheduler bumps this on
+        // every subsequent successful fetch whose hash still matches.
+        last_verified_at: now,
       };
       return { node, edges: [], nodeUpdates: [], subTopicCreates: [] };
     }

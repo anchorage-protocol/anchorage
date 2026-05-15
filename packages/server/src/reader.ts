@@ -2,6 +2,7 @@ import type {
   CauseDirectory,
   CauseId,
   ContributorProfile,
+  ExternalRef,
   IdentityId,
   Manuscript,
   NodeId,
@@ -11,6 +12,7 @@ import type {
   Subgraph,
   SubTopicDetail,
   SubTopicId,
+  Timestamp,
 } from '@anchorage/contracts';
 import type { AnchorageCuratorReader, AnchorageReader } from '@anchorage/web';
 import type { Caller } from './auth.js';
@@ -130,5 +132,19 @@ export class InProcessCuratorReader implements AnchorageCuratorReader {
     }>;
   }> {
     return this.server.resources.getCuratorIdentityClusters(this.caller, options);
+  }
+
+  async getCuratorUnresolvableAnchors(options?: { cause_id?: CauseId }): Promise<{
+    anchors: Array<{
+      anchor_id: NodeId;
+      home_sub_topic_id: SubTopicId;
+      cause_id: CauseId;
+      external_ref: ExternalRef;
+      content_hash: string;
+      last_verified_at: Timestamp;
+      updated_at: Timestamp;
+    }>;
+  }> {
+    return this.server.resources.getCuratorUnresolvableAnchors(this.caller, options);
   }
 }

@@ -262,6 +262,7 @@ describe('ToolName registry', () => {
     'curator_expire_stale_assignments',
     'curator_decline_patterns',
     'curator_identity_clusters',
+    'curator_reverify_anchors',
   ] as const;
 
   it('parses every expected tool name', () => {

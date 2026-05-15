@@ -46,6 +46,15 @@ export const AnchorNode = z
     // compared on re-verification. Empty string is reserved for the
     // pre-fetch staged window and is not a valid persisted state.
     content_hash: z.string().min(1),
+    // Wall-clock timestamp of the last successful verification of
+    // `content_hash` against the live source. Set to the materialization
+    // time on initial verify and bumped by the re-verification scheduler
+    // on every fetch whose hash still matches. Drift transitions the
+    // anchor to `unresolvable` and stops updating this field — the value
+    // then records when the source was last *known good*. The scheduler
+    // picks the oldest `last_verified_at` first; see PRD §Verification
+    // engine (Re-verification).
+    last_verified_at: Timestamp,
   })
   .strict();
 export type AnchorNode = z.infer<typeof AnchorNode>;

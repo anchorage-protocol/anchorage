@@ -54,6 +54,7 @@ describe('AnchorNode', () => {
     kind: 'anchor' as const,
     external_ref: { kind: 'pmid' as const, value: '34567890' },
     content_hash: 'sha256:abc',
+    last_verified_at: baseFields.created_at,
   };
 
   it('parses a valid anchor', () => {
@@ -66,6 +67,11 @@ describe('AnchorNode', () => {
 
   it('rejects a quoted_span on an anchor (strict)', () => {
     expect(() => AnchorNode.parse({ ...valid, quoted_span: { text: 'x', offset: 0 } })).toThrow();
+  });
+
+  it('rejects when last_verified_at is missing', () => {
+    const { last_verified_at: _omit, ...rest } = valid;
+    expect(() => AnchorNode.parse(rest)).toThrow();
   });
 });
 
@@ -125,6 +131,7 @@ describe('Node discriminated union', () => {
       kind: 'anchor',
       external_ref: { kind: 'doi', value: '10.1000/xyz' },
       content_hash: 'sha256:def',
+      last_verified_at: baseFields.created_at,
     });
     expect(parsed.kind).toBe('anchor');
   });
@@ -140,6 +147,7 @@ describe('Node discriminated union', () => {
       kind: 'anchor',
       external_ref: { kind: 'url', value: 'https://example.invalid/doc' },
       content_hash: 'sha256:old',
+      last_verified_at: baseFields.created_at,
       status: 'unresolvable',
     });
     expect(parsed.status).toBe('unresolvable');

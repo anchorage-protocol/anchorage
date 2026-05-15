@@ -373,6 +373,39 @@ export const CuratorIdentityClustersOutput = z
   .strict();
 export type CuratorIdentityClustersOutput = z.infer<typeof CuratorIdentityClustersOutput>;
 
+// `reverifyAnchors` batch primitive (PRD §Verification engine,
+// Re-verification): pick `active` anchors whose `last_verified_at` is
+// older than `max_age_ms`, oldest first, up to `batch_size`, re-fetch
+// each through the configured verifier, and either bump
+// `last_verified_at` (hash match) or flip to `unresolvable` (hash
+// mismatch, or verifier refusal — retraction, host gone, network
+// failure all collapse here; the verifier seam conflates them). The
+// production scheduler ticks against this primitive; operators can
+// also drive it on demand.
+export const ReverifyAnchorOutcome = z.enum(['unchanged', 'unresolvable']);
+export type ReverifyAnchorOutcome = z.infer<typeof ReverifyAnchorOutcome>;
+export const ReverifiedAnchor = z
+  .object({ anchor_id: NodeId, outcome: ReverifyAnchorOutcome })
+  .strict();
+export type ReverifiedAnchor = z.infer<typeof ReverifiedAnchor>;
+export const CuratorReverifyAnchorsInput = z
+  .object({
+    batch_size: z.number().int().positive(),
+    max_age_ms: z.number().int().nonnegative(),
+    cause_id: CauseId.optional(),
+  })
+  .strict();
+export type CuratorReverifyAnchorsInput = z.infer<typeof CuratorReverifyAnchorsInput>;
+export const CuratorReverifyAnchorsOutput = z
+  .object({
+    checked: z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    unresolvable: z.number().int().nonnegative(),
+    anchors: z.array(ReverifiedAnchor),
+  })
+  .strict();
+export type CuratorReverifyAnchorsOutput = z.infer<typeof CuratorReverifyAnchorsOutput>;
+
 // ──── Tool name registry ────
 //
 // The full set of tool names exposed by the MCP server. Useful for the
@@ -411,5 +444,6 @@ export const ToolName = z.enum([
   'curator_expire_stale_assignments',
   'curator_decline_patterns',
   'curator_identity_clusters',
+  'curator_reverify_anchors',
 ]);
 export type ToolName = z.infer<typeof ToolName>;

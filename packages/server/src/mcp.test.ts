@@ -77,6 +77,7 @@ describe('mcp transport', () => {
     'curator_expire_stale_assignments',
     'curator_decline_patterns',
     'curator_identity_clusters',
+    'curator_reverify_anchors',
   ] as const;
 
   it('lists every registered tool (exhaustive — no drift between MCP wrapper and ToolName)', async () => {
@@ -414,7 +415,7 @@ describe('curator tool surface', () => {
     const curatorTools = (await curatorClient.listTools()).tools.map((t) => t.name);
     // Contributor session: zero curator_* names.
     expect(contribTools.filter((n) => n.startsWith('curator_'))).toEqual([]);
-    // Curator session: exactly the eight curator tools committed in
+    // Curator session: exactly the nine curator tools committed in
     // PRD §MCP tool surface (Curator-only tools).
     expect(curatorTools.filter((n) => n.startsWith('curator_')).sort()).toEqual(
       [
@@ -425,6 +426,7 @@ describe('curator tool surface', () => {
         'curator_expire_stale_assignments',
         'curator_identity_clusters',
         'curator_reject_proposal',
+        'curator_reverify_anchors',
         'curator_revoke_identity',
       ].sort(),
     );

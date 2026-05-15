@@ -18,6 +18,8 @@ import {
   CuratorIdentityClustersOutput,
   CuratorRejectProposalInput,
   CuratorRejectProposalOutput,
+  CuratorReverifyAnchorsInput,
+  CuratorReverifyAnchorsOutput,
   CuratorRevokeIdentityInput,
   CuratorRevokeIdentityOutput,
   DeclineAssignmentInput,
@@ -520,6 +522,29 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
         if (input.min_signal !== undefined) options.min_signal = input.min_signal;
         const pairs = server.curator.identityClusters(options);
         return { pairs };
+      }),
+    );
+
+    // Batch re-verification (slice 7c): re-fetch `active` anchors whose
+    // `last_verified_at` predates the threshold, oldest first, and flip
+    // any drift to `unresolvable`. The production scheduler (slice 7c
+    // part 2) ticks against this same wire surface so on-demand and
+    // periodic re-verification share one code path.
+    mcp.registerTool(
+      'curator_reverify_anchors',
+      {
+        description:
+          'Re-verify a batch of active anchors against their live source; drift transitions to unresolvable. Curator role required.',
+        inputSchema: CuratorReverifyAnchorsInput.shape,
+        outputSchema: CuratorReverifyAnchorsOutput.shape,
+      },
+      wrapCurator(async (_caller, input: CuratorReverifyAnchorsInput) => {
+        const options: { batch_size: number; max_age_ms: number; cause_id?: CauseId } = {
+          batch_size: input.batch_size,
+          max_age_ms: input.max_age_ms,
+        };
+        if (input.cause_id !== undefined) options.cause_id = input.cause_id;
+        return await server.curator.reverifyDueAnchors(options);
       }),
     );
   }
