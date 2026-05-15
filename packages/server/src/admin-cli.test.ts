@@ -124,6 +124,46 @@ describe('admin-cli mint-curator', () => {
   });
 });
 
+describe('admin-cli mint-reader', () => {
+  it('mints a contributor-role harness identity with no credential', async () => {
+    const { deps, stdout, server } = fixture();
+    const result = await runAdminCli(['mint-reader', '--db=ignored', '--display-name=web'], deps);
+    expect(result.exit_code).toBe(0);
+    expect(stdout).toHaveLength(1);
+    const out = JSON.parse(stdout[0] ?? '') as {
+      identity_id: string;
+      display_name: string;
+    };
+    expect(out.identity_id).toMatch(/^idn_/);
+    expect(out.display_name).toBe('web');
+    // No `credential_id`, no `secret` — the in-process posture means
+    // the web tier constructs its Caller directly from identity_id;
+    // there is no bearer to mint here.
+    expect((out as Record<string, unknown>)['credential_id']).toBeUndefined();
+    expect((out as Record<string, unknown>)['secret']).toBeUndefined();
+
+    // The minted identity is a *contributor* (not curator) under the
+    // harness provider. The constraint that the web tier never calls
+    // write tools is enforced by the web codebase, not by role; the
+    // role choice here keeps the identity revocable through the
+    // standard `revoke-identity` path.
+    const ident = server.store.identities.get(out.identity_id as never);
+    expect(ident).toMatchObject({
+      role: 'contributor',
+      identity_provider: 'harness',
+      status: 'active',
+      display_name: 'web',
+    });
+  });
+
+  it('refuses when --display-name is missing', async () => {
+    const { deps, stderr } = fixture();
+    const result = await runAdminCli(['mint-reader', '--db=ignored'], deps);
+    expect(result.exit_code).toBe(2);
+    expect(stderr.join('\n')).toMatch(/invalid_input/);
+  });
+});
+
 describe('admin-cli list-curators', () => {
   it('lists only curators, not contributors', async () => {
     const { deps, stdout, server } = fixture();

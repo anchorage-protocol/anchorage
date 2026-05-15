@@ -38,6 +38,9 @@ importers:
       '@anchorage/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@anchorage/web':
+        specifier: workspace:*
+        version: link:../web
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
@@ -66,9 +69,6 @@ importers:
       '@anchorage/contracts':
         specifier: workspace:*
         version: link:../contracts
-      '@anchorage/server':
-        specifier: workspace:*
-        version: link:../server
 
 packages:
 

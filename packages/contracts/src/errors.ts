@@ -37,3 +37,20 @@ export const ServerErrorCode = z.enum([
   'issuance_cap',
 ]);
 export type ServerErrorCode = z.infer<typeof ServerErrorCode>;
+
+// `throw`'s shape on the server side. Lives in `@anchorage/contracts`
+// (alongside the error-code enum) so any package that participates
+// on the wire — server, testbed, web — can `instanceof`-check
+// without taking a dependency on the server runtime. The class is
+// thin: a typed `code` + a human-readable message. Clients (testbed
+// adversaries, MCP wrappers, the web handler) branch on `code`, not
+// on the message text.
+export class ServerError extends Error {
+  constructor(
+    readonly code: ServerErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ServerError';
+  }
+}

@@ -1,9 +1,12 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { IdentityId } from '@anchorage/contracts';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { FakeGithubApi } from './auth-github.js';
 import { type ProdServerHandle, parseProdConfig, runProdServer } from './run-prod.js';
+import { Server } from './server.js';
+import { SqliteStore } from './sqlite-store.js';
 import { FakeVerifier } from './verifier.js';
 
 // Slice 4c — production runtime entrypoint coverage. The env-parsing
@@ -67,6 +70,19 @@ describe('parseProdConfig', () => {
       issuance_epoch_seconds: 3600,
       account_age_days_for_level2: 60,
     });
+  });
+
+  it('omits web_reader_identity_id when ANCHORAGE_WEB_READER_IDENTITY is unset', () => {
+    const cfg = parseProdConfig({ ANCHORAGE_DB_PATH: '/tmp/x.db' });
+    expect(cfg.web_reader_identity_id).toBeUndefined();
+  });
+
+  it('populates web_reader_identity_id when ANCHORAGE_WEB_READER_IDENTITY is set', () => {
+    const cfg = parseProdConfig({
+      ANCHORAGE_DB_PATH: '/tmp/x.db',
+      ANCHORAGE_WEB_READER_IDENTITY: 'idn_abc',
+    });
+    expect(cfg.web_reader_identity_id).toBe('idn_abc');
   });
 
   it('refuses non-positive integer tunables', () => {
@@ -156,6 +172,95 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
     const complete = (await completeRes.json()) as { status: string; secret?: string };
     expect(complete.status).toBe('authorized');
     expect(complete.secret).toBeTruthy();
+  });
+
+  it('does not mount the web tier when ANCHORAGE_WEB_READER_IDENTITY is unset', async () => {
+    handle = await runProdServer({
+      config: { db_path: join(tmp, 'anchorage.db'), host: '127.0.0.1', port: 0 },
+      verifier: new FakeVerifier(),
+      log: () => {},
+    });
+    // Unknown route falls through to the MCP transport's typed-JSON
+    // 404 rather than the web handler's HTML 404 — proof the web
+    // tier is not wired.
+    const res = await fetch(`${handle.http.url}/`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get('content-type')).toMatch(/application\/json/);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe('not_found');
+  });
+
+  it('mounts the web tier and serves the home page when ANCHORAGE_WEB_READER_IDENTITY names an active identity', async () => {
+    const dbPath = join(tmp, 'anchorage.db');
+    // Mint the reader identity in the same SQLite store the prod
+    // runtime will open — the operator's bootstrap shape (the admin
+    // CLI does exactly this against a SqliteStore handle).
+    const seedStore = new SqliteStore({ path: dbPath });
+    try {
+      const seedServer = new Server({ store: seedStore });
+      const identity = seedServer.bootstrap.mintIdentity({ display_name: 'web-reader' });
+      seedServer.bootstrap.createCause({
+        name: 'Colon cancer',
+        description: 'colon cancer cause',
+      });
+      handle = await runProdServer({
+        config: {
+          db_path: dbPath,
+          host: '127.0.0.1',
+          port: 0,
+          web_reader_identity_id: identity.id,
+        },
+        verifier: new FakeVerifier(),
+        log: () => {},
+      });
+      const res = await fetch(`${handle.http.url}/`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toMatch(/text\/html/);
+      const body = await res.text();
+      expect(body).toContain('Colon cancer');
+      expect(body).toContain('Open causes');
+    } finally {
+      seedStore.close();
+    }
+  });
+
+  it('refuses at boot when ANCHORAGE_WEB_READER_IDENTITY names an unknown identity', async () => {
+    await expect(
+      runProdServer({
+        config: {
+          db_path: join(tmp, 'anchorage.db'),
+          host: '127.0.0.1',
+          port: 0,
+          web_reader_identity_id: 'idn_does_not_exist' as IdentityId,
+        },
+        verifier: new FakeVerifier(),
+        log: () => {},
+      }),
+    ).rejects.toThrow(/does not name an existing identity/);
+  });
+
+  it('refuses at boot when the web-reader identity is revoked', async () => {
+    const dbPath = join(tmp, 'anchorage.db');
+    const seedStore = new SqliteStore({ path: dbPath });
+    try {
+      const seedServer = new Server({ store: seedStore });
+      const identity = seedServer.bootstrap.mintIdentity({ display_name: 'web-reader' });
+      seedServer.store.identities.set(identity.id, { ...identity, status: 'revoked' });
+      await expect(
+        runProdServer({
+          config: {
+            db_path: dbPath,
+            host: '127.0.0.1',
+            port: 0,
+            web_reader_identity_id: identity.id,
+          },
+          verifier: new FakeVerifier(),
+          log: () => {},
+        }),
+      ).rejects.toThrow(/identity is revoked/);
+    } finally {
+      seedStore.close();
+    }
   });
 
   it('closes the SQLite store on shutdown (durability across reopen)', async () => {

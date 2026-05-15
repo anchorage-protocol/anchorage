@@ -19,7 +19,6 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@anchorage/contracts": "workspace:*",
-    "@anchorage/server": "workspace:*"
+    "@anchorage/contracts": "workspace:*"
   }
 }

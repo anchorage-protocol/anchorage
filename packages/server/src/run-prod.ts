@@ -1,7 +1,11 @@
+import type { IdentityId } from '@anchorage/contracts';
+import { buildWebHandler } from '@anchorage/web';
+import type { Caller } from './auth.js';
 import { type GithubApi, GithubApiHttp, GithubOAuthAuthenticator } from './auth-github.js';
 import { ServerError } from './errors.js';
 import { type AnchorageHttpServer, startHttpServer } from './http.js';
 import { LiveFetchVerifier } from './live-fetch-verifier.js';
+import { InProcessReader } from './reader.js';
 import { Server } from './server.js';
 import { SqliteStore } from './sqlite-store.js';
 import type { Verifier } from './verifier.js';
@@ -42,6 +46,14 @@ export interface ProdConfig {
   // in that posture, which is the testbed wiring; valid only because
   // the testbed is the only client of the harness path.
   github?: GithubConfig;
+  // Slice 5b — web tier wiring. The identity id of an active,
+  // operator-minted reader identity (`anchorage-admin mint-reader`),
+  // used by the in-process web handler as the privileged read-only
+  // caller for anonymous browse traffic. When omitted, the web
+  // routes (`/`, `/sub-topic/*`) are not mounted and the HTTP
+  // surface stays MCP-only — the testbed-only and local-only
+  // postures land on that branch.
+  web_reader_identity_id?: IdentityId;
 }
 
 export interface GithubConfig {
@@ -91,7 +103,16 @@ export function parseProdConfig(env: NodeJS.ProcessEnv): ProdConfig {
     if (ageDays !== undefined) github.account_age_days_for_level2 = ageDays;
   }
 
-  return github === undefined ? { db_path, host, port } : { db_path, host, port, github };
+  const web_reader_identity_id_raw = env['ANCHORAGE_WEB_READER_IDENTITY'];
+  const web_reader_identity_id =
+    web_reader_identity_id_raw && web_reader_identity_id_raw.length > 0
+      ? (web_reader_identity_id_raw as IdentityId)
+      : undefined;
+
+  const config: ProdConfig = { db_path, host, port };
+  if (github !== undefined) config.github = github;
+  if (web_reader_identity_id !== undefined) config.web_reader_identity_id = web_reader_identity_id;
+  return config;
 }
 
 function parsePort(raw: string): number {
@@ -161,9 +182,38 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
     server.setAuthenticator(githubAuth);
   }
 
+  // Slice 5b — web tier. Resolve the configured reader identity
+  // through the store at boot so a stale env value fails loudly
+  // here, not on the first browser request. The web handler holds a
+  // direct `Caller` (no transport boundary, so no Authenticator);
+  // `server.resources.*` re-resolves the caller through the store
+  // on every call so a mid-flight revocation is honored without a
+  // restart.
+  let webHandler: ReturnType<typeof buildWebHandler> | undefined;
+  if (deps.config.web_reader_identity_id !== undefined) {
+    const readerId = deps.config.web_reader_identity_id;
+    const identity = server.store.identities.get(readerId);
+    if (!identity) {
+      throw new ServerError(
+        'invalid_input',
+        `ANCHORAGE_WEB_READER_IDENTITY does not name an existing identity: ${readerId}`,
+      );
+    }
+    if (identity.status !== 'active') {
+      throw new ServerError(
+        'invalid_input',
+        `ANCHORAGE_WEB_READER_IDENTITY identity is ${identity.status}: ${readerId}`,
+      );
+    }
+    const caller: Caller = { identity_id: identity.id };
+    const reader = new InProcessReader({ server, caller });
+    webHandler = buildWebHandler({ reader, log });
+  }
+
   const http = await startHttpServer({
     server,
     ...(githubAuth ? { githubAuth } : {}),
+    ...(webHandler ? { webHandler } : {}),
     host: deps.config.host,
     port: deps.config.port,
     log,
@@ -173,6 +223,7 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
     url: http.url,
     db_path: deps.config.db_path,
     github_oauth: deps.config.github !== undefined,
+    web_tier: webHandler !== undefined,
   });
 
   let closed = false;

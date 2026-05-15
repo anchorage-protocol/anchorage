@@ -65,6 +65,16 @@ export interface AnchorageHttpOpts {
   // surface without the IdP plumbing. When omitted, `/auth/github/*`
   // routes 404.
   githubAuth?: GithubOAuthAuthenticator;
+  // Slice 5b — read-only web tier. When wired, any path that does
+  // not match the MCP / auth / healthz routes here delegates to the
+  // web handler (the home page, the sub-topic detail page, slice-5c
+  // surfaces, plus the web handler's own 404). When omitted, those
+  // paths 404 with the typed JSON shape — the testbed-only and
+  // local-only postures land on that branch. The wiring is
+  // pluggable rather than baked because `@anchorage/web` is a
+  // separate workspace package and `packages/server` does not
+  // depend on it; `run-prod.ts` composes them.
+  webHandler?: AnchorageHttpHandler;
   // Outbound info log sink. Defaults to `console.log`. Production
   // deployments inject structured-log sinks.
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -85,6 +95,7 @@ export function buildHttpHandler(opts: AnchorageHttpOpts): AnchorageHttpHandler 
   const onError = opts.onError ?? defaultOnError;
   const server = opts.server;
   const githubAuth = opts.githubAuth;
+  const webHandler = opts.webHandler;
 
   return async (req, res) => {
     const method = req.method ?? 'GET';
@@ -155,6 +166,18 @@ export function buildHttpHandler(opts: AnchorageHttpOpts): AnchorageHttpHandler 
 
       if (pathname === '/mcp') {
         await handleMcp(server, req, res);
+        return;
+      }
+
+      // Slice 5b — web tier delegation. Any path the MCP / auth /
+      // healthz branches do not own falls through to the web
+      // handler (when wired). The web handler emits its own
+      // routing, 404 page, and method-not-allowed responses — the
+      // top-level handler does not second-guess it. When the web
+      // handler is not wired (testbed-only / local-only), the
+      // path falls through to the typed JSON 404 below.
+      if (webHandler) {
+        await webHandler(req, res);
         return;
       }
 

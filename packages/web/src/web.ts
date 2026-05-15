@@ -1,6 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { SubTopicId } from '@anchorage/contracts';
-import { ServerError } from '@anchorage/server';
+import { ServerError, SubTopicId } from '@anchorage/contracts';
 import { renderHomePage } from './pages/home.js';
 import { notFoundBody } from './pages/layout.js';
 import { renderSubTopicPage } from './pages/sub-topic.js';

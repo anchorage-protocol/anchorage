@@ -22,6 +22,20 @@ import { SqliteStore } from './sqlite-store.js';
 //     recoverable after this call (the server keeps only its SHA-256
 //     hash, per slice 3b).
 //
+//   - `mint-reader --db=<path> --display-name=<name>`
+//     Mints a `'harness'`-provider *contributor*-role identity bound
+//     to no human — the slice 5b "service caller for anonymous
+//     browse" shape (PRD §Anonymous-browse surface). The web tier
+//     runs in-process with the MCP server (`run-prod.ts` mounts the
+//     web handler alongside `/mcp`) and constructs its `Caller`
+//     directly from this identity's id; no bearer secret is minted
+//     because there is no transport boundary to authenticate
+//     across. The CLI prints `{ identity_id, display_name }` —
+//     the operator copies `identity_id` into
+//     `ANCHORAGE_WEB_READER_IDENTITY`. The identity is freely
+//     revocable via `revoke-identity`, which deactivates the web
+//     reader without disturbing curator or contributor identities.
+//
 //   - `list-curators --db=<path>`
 //     Prints a JSON array of curator identities, one per line as a
 //     header `{ count }` followed by the records. Each record has
@@ -29,10 +43,10 @@ import { SqliteStore } from './sqlite-store.js';
 //     operator to see who is seated and whether any are revoked.
 //
 //   - `revoke-identity --db=<path> --identity-id=<id>`
-//     Flips the named identity (curator or contributor) to
-//     `status: 'revoked'`. Revocation invalidates future
+//     Flips the named identity (curator, contributor, or web
+//     reader) to `status: 'revoked'`. Revocation invalidates future
 //     participation without rewriting graph history (PRD §Identity,
-//     Revocation). The curator can no longer sign actions; their
+//     Revocation). The identity can no longer sign actions; its
 //     past contributions remain in the graph with the revocation
 //     flagged.
 //
@@ -68,6 +82,8 @@ export async function runAdminCli(argv: string[], deps: AdminCliDeps): Promise<A
     switch (subcommand) {
       case 'mint-curator':
         return await runMintCurator(flags, deps);
+      case 'mint-reader':
+        return await runMintReader(flags, deps);
       case 'list-curators':
         return await runListCurators(flags, deps);
       case 'revoke-identity':
@@ -113,6 +129,33 @@ async function runMintCurator(
         credential_id: credential.id,
         display_name: identity.display_name,
         secret,
+      }),
+    );
+    return { exit_code: 0 };
+  } finally {
+    close();
+  }
+}
+
+async function runMintReader(
+  flags: Map<string, string>,
+  deps: AdminCliDeps,
+): Promise<AdminCliResult> {
+  const dbPath = requireFlag(flags, 'db');
+  const displayName = requireFlag(flags, 'display-name');
+  const { server, close } = deps.makeServer(dbPath);
+  try {
+    // Contributor role (the default) — the web reader has no curator
+    // powers by construction; the constraint that the web tier never
+    // calls write-path tools is enforced by code, not by role, but
+    // limiting the role here keeps the operator's mental model
+    // unambiguous: a reader identity is a contributor identity that
+    // happens to be operator-owned.
+    const identity = server.bootstrap.mintIdentity({ display_name: displayName });
+    deps.stdout(
+      JSON.stringify({
+        identity_id: identity.id,
+        display_name: identity.display_name,
       }),
     );
     return { exit_code: 0 };
@@ -203,16 +246,21 @@ function requireFlag(flags: Map<string, string>, name: string): string {
 }
 
 const USAGE = [
-  'anchorage-admin — operator bootstrap CLI (slice 4b)',
+  'anchorage-admin — operator bootstrap CLI (slice 4b + 5b)',
   '',
   'Usage:',
   '  anchorage-admin mint-curator    --db=<path> --display-name=<name> [--label=<label>]',
+  '  anchorage-admin mint-reader     --db=<path> --display-name=<name>',
   '  anchorage-admin list-curators   --db=<path>',
   '  anchorage-admin revoke-identity --db=<path> --identity-id=<id>',
   '',
   'mint-curator prints `{ identity_id, credential_id, display_name, secret }` to stdout.',
   'The secret is the one-shot bearer credential — stash it in a secrets manager;',
   'it is not recoverable from the SQLite store after this call.',
+  '',
+  'mint-reader prints `{ identity_id, display_name }` — copy `identity_id` into',
+  'ANCHORAGE_WEB_READER_IDENTITY. The web tier runs in-process with the MCP server',
+  'and constructs its Caller directly from this identity; no bearer secret is minted.',
 ].join('\n');
 
 // Production entrypoint. The `bin/anchorage-admin` script (added via
