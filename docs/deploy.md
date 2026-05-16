@@ -8,13 +8,15 @@ The runtime composes five already-tested components — `SqliteStore` (persisten
 
 Three things, in order:
 
-1. **A registered GitHub OAuth App** to receive the device-code flow. App settings:
-   - **Application name**: anything readable to your contributors (the consent screen shows it).
+1. **A registered GitHub OAuth App** — *not* a GitHub App. These are different GitHub primitives: Anchorage uses the OAuth **device flow** (`client_id`-only token exchange, no installation model, no private key, no per-repo permissions). A GitHub App is the wrong primitive and fails opaquely. Register at GitHub → Settings → Developer settings → **OAuth Apps** → New OAuth App. Register it under an **organization you control**, not a personal account: the Client ID is baked into every contributor's signin and cannot be moved between owners, so a personal-account registration is a single point of failure if that account lapses. App settings:
+   - **Application name**: anything readable to your contributors (the consent screen shows it verbatim).
    - **Homepage URL**: your public Anchorage URL (e.g. `https://anchorage.science`).
-   - **Authorization callback URL**: required by the form but unused by the device-code flow — any value parses.
-   - **Enable Device Flow**: on. This is the load-bearing setting.
+   - **Authorization callback URL**: required by the form but unused by the device-code flow — any valid URL parses (use the homepage URL).
+   - **Enable Device Flow**: on. This is the load-bearing setting; without it `login/device/code` returns 4xx and no one can sign in. It is the most common misconfiguration.
 
-   Once registered, the **Client ID** (`Iv1.xxx`) is what the runtime reads. The device-code flow does not use a client secret, so there is nothing else to store.
+   Once registered, the **Client ID** (older `Iv1.xxx` or newer `Ov23li…` format — the runtime takes either verbatim) is what the runtime reads, into `ANCHORAGE_GITHUB_CLIENT_ID`. The Client ID is a *public identifier* (it appears on every consent screen), not a secret — but it is per-deployment config, so it lives only in the runtime environment and is never committed to this repo. **Do not generate a client secret**, and if GitHub auto-creates one, never put it in env: the device-flow token exchange sends only `client_id` + `device_code` + `grant_type`, so a stored secret would be pure liability with zero upside.
+
+   Scopes are not configured on the app (OAuth Apps don't pre-declare them); the runtime requests `read:user user:email` at device-code time, and they map directly to the attestation tiering (`computeGithubAttestationLevel`): `read:user` exposes 2FA status and account age, `user:email` exposes primary-email-verified state. Attestation **level 2** requires all of 2FA-on + verified-primary-email + account-age ≥ `ANCHORAGE_ATTESTATION_AGE_DAYS_FOR_LEVEL2` (default 30); anything weaker is level 1. A contributor who declines the email scope still authorizes but lands at level 1 — which only gates writes if the operator raises `min_attestation_level` above the inert default.
 
 2. **A sticky disk** for the SQLite store. Single-instance v1 deployment — every request reads and writes the same `anchorage.db` file. Lose the disk, lose every minted identity, credential, and graph node. Backup cadence: see below.
 
