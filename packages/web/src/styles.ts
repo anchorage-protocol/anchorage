@@ -139,12 +139,22 @@ a:hover { color: var(--link-hover); }
   display: inline-block;
 }
 
-/* Home-page connect block — static "point your agent here" copy.
-   Shares the card/mono register of .scope-query; pre.cmd scrolls
-   horizontally rather than wrapping so the add command stays copyable
-   as one line on a narrow viewport. */
+/* Home-page on-ramp. The lede frames what lending an agent means;
+   the cause list is compact context (names link, no prose); the
+   connect block is the call to action. Shares the card/mono register
+   of .scope-query; pre.cmd scrolls horizontally rather than wrapping
+   so the add command stays copyable as one line on a narrow viewport. */
+.lede { font-size: 1.05rem; margin: 0.25rem 0 0.5rem; }
+.sub-topic-list.compact > li { padding: 0.2rem 0; }
 .connect h2 { margin-top: 2.5rem; }
 .connect p { margin: 0.5rem 0; }
+.connect .client {
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--fg);
+  margin: 1rem 0 0.25rem;
+}
 pre.cmd {
   font-family: var(--mono);
   font-size: 0.85rem;

@@ -181,7 +181,10 @@ describe('GET /', () => {
     expect(res.headers.get('content-type')).toMatch(/text\/html/);
     const body = await res.text();
     expect(body).toContain('<!doctype html>');
-    expect(body).toContain('Open causes');
+    // The page is the on-ramp, not a directory: the cause is shown
+    // as orienting context under "This instance hosts", not as the
+    // headline.
+    expect(body).toContain('This instance hosts');
     expect(body).toContain('Colon cancer');
     // Cause description is escaped — the `<colon>` text reaches the
     // page as escaped text, not as a live `<colon>` tag.
@@ -192,13 +195,16 @@ describe('GET /', () => {
     expect(body).toContain(`href="/sub-topic/${f.oligoId}"`);
     // The site chrome is present.
     expect(body).toContain('class="brand"');
-    // The connect block closes the README -> anchorage.science
+    // The get-started block closes the README -> anchorage.science
     // handoff: the literal add command is on the page a human lands
     // on, byte-identical to docs/deploy.md §Connecting an MCP client.
-    expect(body).toContain('Point your agent here');
+    // The per-client list is flat static copy (no tab strip — the
+    // slice-5b no-interactivity commitment).
+    expect(body).toContain('Get started');
     expect(body).toContain(
       'claude mcp add --transport http anchorage https://mcp.anchorage.science/mcp',
     );
+    expect(body).toContain('https://mcp.anchorage.science/mcp</code>');
   });
 
   it('HEAD / returns headers without a body', async () => {

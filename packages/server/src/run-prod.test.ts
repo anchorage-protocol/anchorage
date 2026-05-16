@@ -455,7 +455,7 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
       expect(res.headers.get('content-type')).toMatch(/text\/html/);
       const body = await res.text();
       expect(body).toContain('Colon cancer');
-      expect(body).toContain('Open causes');
+      expect(body).toContain('This instance hosts');
     } finally {
       seedStore.close();
     }

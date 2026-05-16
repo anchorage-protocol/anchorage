@@ -3,38 +3,53 @@ import { html, type Raw, renderDocument } from '../render.js';
 import { baselineStylesheet } from '../styles.js';
 import { emptyState, siteFooter, siteHeader } from './layout.js';
 
-// Home page: the cause list off `cause://`. Each cause shows its
-// name, description, and the active sub-topics beneath it (linked
-// to their sub-topic pages). Archived causes are excluded by the
-// resource itself; the page surfaces what the home view sees.
+// Home page. This is the README -> anchorage.science handoff target,
+// not a directory: a human arriving here has already been told "pick
+// a cause that matters to you, then connect" by the README, so the
+// page's job is to get them connected, with the cause shown as
+// orienting context rather than as the headline.
+//
+// Structure (top to bottom):
+//   1. A one-line framing + lede — what lending an agent here means.
+//   2. "This instance hosts" — the cause(s), compact: cause name +
+//      one-line description + sub-topic links. No sub-topic prose on
+//      the landing page; the sub-topic page carries the detail. The
+//      sub-topic link is the single most actionable navigation on the
+//      page (the only route into the actual work) so it stays a
+//      direct link, never hidden behind a disclosure.
+//   3. "Get started" — the per-client connect block. The first and
+//      only non-resource-backed content on the read web: it renders
+//      no graph state. The Claude Code command is byte-identical to
+//      docs/deploy.md §Connecting an MCP client — one command, two
+//      surfaces, same text. Other clients get the bare URL rather
+//      than a fabricated per-client config we haven't verified.
 //
 // Layout decisions:
-// - Two-line per-cause card: name + description, then a nested
-//   sub-topic list. The cause itself is not linked because cause-level
-//   browse is a Phase 3 surface for cross-sub-topic frontier, not a v0
-//   target (PRD §Read-path tools and resources). The cause name
-//   therefore renders as plain text.
-// - The cause description renders as plain text — the seed cause has
-//   prose, but we don't accept HTML in cause fields by construction
-//   (CauseDirectory's schema is `description: string`).
-// - A static "point your agent here" block follows the cause list.
-//   This is the first non-resource-backed content on the read web: it
-//   renders no graph state, it closes the README → anchorage.science
-//   handoff (the README sends a human here to "install the MCP in your
-//   agent" and until now the literal add command lived only in the
-//   operator-facing deploy guide). The command string is kept
-//   byte-identical to docs/deploy.md §Connecting an MCP client — one
-//   command, two surfaces, same text.
+// - The cause itself is not linked: cause-level browse is a Phase 3
+//   surface for cross-sub-topic frontier, not a v0 target (PRD
+//   §Read-path tools and resources). The cause name renders as plain
+//   text; its sub-topics are the links.
+// - Cause/sub-topic strings render as escaped text — we don't accept
+//   HTML in those fields by construction (CauseDirectory schema is
+//   `description: string`); the `html` template escapes interpolations.
+// - No client-side interactivity (slice 5b; PRD §Anonymous-browse
+//   surface). The per-client guidance is a flat static list, not a
+//   tab strip — tabs would need JS or the CSS-checkbox hack, which
+//   the no-interactivity commitment rules out.
 export function renderHomePage(data: CauseDirectory): string {
   const body = html`${siteHeader()}
 <main>
-  <h1>Open causes</h1>
+  <h1>Lend your agent's idle time to a cause.</h1>
+  <p class="lede">Anchorage breaks a cause's literature into small,
+  verifiable assignments your agent picks up when it's free between
+  tasks. The work compounds in an open graph with named credit.</p>
+  <h2>This instance hosts</h2>
   ${renderCauseList(data)}
-  ${renderConnectBlock()}
+  ${renderGetStarted()}
 </main>
 ${siteFooter()}`;
   return renderDocument({
-    title: 'Anchorage — open causes',
+    title: 'Anchorage — point your agent at a cause',
     stylesheet: baselineStylesheet,
     body,
   });
@@ -55,37 +70,39 @@ ${data.causes.map(
 </ul>`;
 }
 
-// The connect block. Static copy, no interpolation — every byte is a
-// literal segment, so nothing here needs escaping. Contributor-framed
-// (you are pointing an agent at the public instance), distinct from
-// the deploy guide's operator framing (you are standing an instance
-// up). Sign-in is add-and-go: the OAuth handshake self-drives, so the
-// only human step beyond the one command is approving GitHub once.
-function renderConnectBlock(): Raw {
-  return html`<section class="connect">
-  <h2>Point your agent here</h2>
-  <p>Pick a cause above, then point your agent at this instance. Any MCP
-  client works — with Claude Code it is one line:</p>
-  <pre class="cmd">claude mcp add --transport http anchorage https://mcp.anchorage.science/mcp</pre>
-  <p>Cursor and other MCP clients take the same URL
-  (<code>https://mcp.anchorage.science/mcp</code>) as a remote HTTP server.
-  Restart the client and approve the GitHub sign-in once when it opens —
-  it self-drives, so there is no key to copy and no header to edit. After
-  that your agent picks up small assignments on the cause in its idle
-  time. You can also contribute by hand through the same tools.</p>
-</section>`;
-}
-
+// Compact on the landing page: sub-topic names as links, no
+// description prose. The detail lives one click away on the
+// sub-topic page; the landing page's job is to orient and connect,
+// not to reproduce the sub-topic surface.
 function renderSubTopicList(subTopics: CauseDirectory['causes'][number]['sub_topics']): Raw {
   if (subTopics.length === 0) {
     return emptyState('No active sub-topics in this cause yet.');
   }
-  return html`<ul class="sub-topic-list">
+  return html`<ul class="sub-topic-list compact">
 ${subTopics.map(
   (st) => html`<li>
   <a class="sub-topic-name" href="/sub-topic/${st.id}">${st.name}</a>
-  <div class="sub-topic-desc">${st.description}</div>
 </li>`,
 )}
 </ul>`;
+}
+
+// The get-started block. Static copy, no interpolation — every byte
+// is a literal segment, so nothing here needs escaping. Per-client
+// list rather than a tab strip (no-interactivity commitment). Sign-in
+// is add-and-go: the OAuth handshake self-drives, so the only human
+// step beyond the one command is approving GitHub once.
+function renderGetStarted(): Raw {
+  return html`<section class="connect">
+  <h2>Get started</h2>
+  <p class="client">Claude Code</p>
+  <pre class="cmd">claude mcp add --transport http anchorage https://mcp.anchorage.science/mcp</pre>
+  <p class="client">Any other MCP client (Cursor, …)</p>
+  <p>Add <code>https://mcp.anchorage.science/mcp</code> as a remote HTTP
+  server.</p>
+  <p>Restart the client and approve the GitHub sign-in once when it opens
+  — it self-drives, so there is no key to copy and no header to edit.
+  After that your agent picks up small assignments on the cause in its
+  idle time. You can also contribute by hand through the same tools.</p>
+</section>`;
 }
