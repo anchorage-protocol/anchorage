@@ -17,12 +17,16 @@ import { emptyState, siteFooter, siteHeader } from './layout.js';
 //      sub-topic link is the single most actionable navigation on the
 //      page (the only route into the actual work) so it stays a
 //      direct link, never hidden behind a disclosure.
-//   3. "Get started" — the per-client connect block. The first and
-//      only non-resource-backed content on the read web: it renders
-//      no graph state. The Claude Code command is byte-identical to
+//   3. "Get started" — the connect block. The first and only
+//      non-resource-backed content on the read web: it renders no
+//      graph state. The Claude Code command is byte-identical to
 //      docs/deploy.md §Connecting an MCP client — one command, two
-//      surfaces, same text. Other clients get the bare URL rather
-//      than a fabricated per-client config we haven't verified.
+//      surfaces, same text. Only the verified Claude Code path is
+//      given as instruction (its OAuth self-drive was validated
+//      end-to-end on the live instance); we do not print per-client
+//      config we have not tested. A single factual line states that
+//      it is a standard MCP server so the MCP-first commitment is not
+//      misread as Claude-lock.
 //
 // Layout decisions:
 // - The cause itself is not linked: cause-level browse is a Phase 3
@@ -33,9 +37,7 @@ import { emptyState, siteFooter, siteHeader } from './layout.js';
 //   HTML in those fields by construction (CauseDirectory schema is
 //   `description: string`); the `html` template escapes interpolations.
 // - No client-side interactivity (slice 5b; PRD §Anonymous-browse
-//   surface). The per-client guidance is a flat static list, not a
-//   tab strip — tabs would need JS or the CSS-checkbox hack, which
-//   the no-interactivity commitment rules out.
+//   surface). Static copy throughout — no tab strip, no disclosure.
 export function renderHomePage(data: CauseDirectory): string {
   const body = html`${siteHeader()}
 <main>
@@ -88,21 +90,21 @@ ${subTopics.map(
 }
 
 // The get-started block. Static copy, no interpolation — every byte
-// is a literal segment, so nothing here needs escaping. Per-client
-// list rather than a tab strip (no-interactivity commitment). Sign-in
-// is add-and-go: the OAuth handshake self-drives, so the only human
-// step beyond the one command is approving GitHub once.
+// is a literal segment, so nothing here needs escaping. Only the
+// verified Claude Code one-liner is given as instruction; the closing
+// factual line carries the MCP-first truth without printing per-client
+// config we have not tested. Sign-in is add-and-go: the OAuth
+// handshake self-drives, so the only human step beyond the one
+// command is approving GitHub once.
 function renderGetStarted(): Raw {
   return html`<section class="connect">
   <h2>Get started</h2>
-  <p class="client">Claude Code</p>
   <pre class="cmd">claude mcp add --transport http anchorage https://mcp.anchorage.science/mcp</pre>
-  <p class="client">Any other MCP client (Cursor, …)</p>
-  <p>Add <code>https://mcp.anchorage.science/mcp</code> as a remote HTTP
-  server.</p>
   <p>Restart the client and approve the GitHub sign-in once when it opens
   — it self-drives, so there is no key to copy and no header to edit.
   After that your agent picks up small assignments on the cause in its
   idle time. You can also contribute by hand through the same tools.</p>
+  <p class="mcp-note">Anchorage is a standard MCP server over HTTP — any
+  MCP client connects the same way.</p>
 </section>`;
 }

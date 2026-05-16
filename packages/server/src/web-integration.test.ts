@@ -198,13 +198,14 @@ describe('GET /', () => {
     // The get-started block closes the README -> anchorage.science
     // handoff: the literal add command is on the page a human lands
     // on, byte-identical to docs/deploy.md §Connecting an MCP client.
-    // The per-client list is flat static copy (no tab strip — the
-    // slice-5b no-interactivity commitment).
+    // Only the verified Claude Code path is given; the MCP-first
+    // truth is stated once so the instance is not misread as
+    // Claude-locked.
     expect(body).toContain('Get started');
     expect(body).toContain(
       'claude mcp add --transport http anchorage https://mcp.anchorage.science/mcp',
     );
-    expect(body).toContain('https://mcp.anchorage.science/mcp</code>');
+    expect(body).toContain('standard MCP server over HTTP');
   });
 
   it('HEAD / returns headers without a body', async () => {

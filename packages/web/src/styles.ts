@@ -148,12 +148,11 @@ a:hover { color: var(--link-hover); }
 .sub-topic-list.compact > li { padding: 0.2rem 0; }
 .connect h2 { margin-top: 2.5rem; }
 .connect p { margin: 0.5rem 0; }
-.connect .client {
+.connect .mcp-note {
   font-family: var(--sans);
   font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--fg);
-  margin: 1rem 0 0.25rem;
+  color: var(--fg-muted);
+  margin-top: 1rem;
 }
 pre.cmd {
   font-family: var(--mono);
