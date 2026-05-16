@@ -5,6 +5,7 @@ import { type GithubApi, GithubApiHttp, GithubOAuthAuthenticator } from './auth-
 import { ServerError } from './errors.js';
 import { type AnchorageHttpServer, startHttpServer } from './http.js';
 import { LiveFetchVerifier } from './live-fetch-verifier.js';
+import { OAuthProvider } from './oauth.js';
 import { InProcessCuratorReader, InProcessReader } from './reader.js';
 import { Server } from './server.js';
 import { SqliteStore } from './sqlite-store.js';
@@ -46,6 +47,14 @@ export interface ProdConfig {
   // in that posture, which is the testbed wiring; valid only because
   // the testbed is the only client of the harness path.
   github?: GithubConfig;
+  // Public origin the instance is reached at, e.g.
+  // `https://mcp.anchorage.science` (no trailing slash). Required
+  // whenever `github` is set: the MCP-spec OAuth authorization
+  // server derives its issuer and the canonical resource identifier
+  // from it, and it cannot be reconstructed reliably from request
+  // headers behind a reverse proxy / TLS-terminating edge. Unset in
+  // the harness/testbed posture (no `github`, no OAuth surface).
+  public_base_url?: string;
   // Slice 5b — web tier wiring. The identity id of an active,
   // operator-minted reader identity (`anchorage-admin mint-reader`),
   // used by the in-process web handler as the privileged read-only
@@ -94,6 +103,14 @@ export interface ProdConfig {
 
 export interface GithubConfig {
   client_id: string;
+  // OAuth App client secret. Required whenever the GitHub IdP is
+  // wired: the MCP-spec OAuth authorization server (PRD §Identity,
+  // MCP-spec OAuth) bridges to GitHub's browser authorization-code
+  // flow, whose token exchange is client-secret-authenticated. The
+  // secret lives only here in the runtime environment. See
+  // docs/deploy.md for why this replaced the device-flow no-secret
+  // posture.
+  client_secret: string;
   // PRD §Identity bullet 2 (issuance-frequency cap). Defaults to
   // `Infinity` at the authenticator (gate inert); production
   // deployments pick finite values. `0` here means "use the
@@ -120,8 +137,43 @@ export function parseProdConfig(env: NodeJS.ProcessEnv): ProdConfig {
 
   const client_id = env['ANCHORAGE_GITHUB_CLIENT_ID'];
   let github: GithubConfig | undefined;
+  let public_base_url: string | undefined;
   if (client_id && client_id.length > 0) {
-    github = { client_id };
+    const client_secret = env['ANCHORAGE_GITHUB_CLIENT_SECRET'];
+    if (!client_secret || client_secret.length === 0) {
+      throw new ServerError(
+        'invalid_input',
+        "ANCHORAGE_GITHUB_CLIENT_SECRET is required when ANCHORAGE_GITHUB_CLIENT_ID is set (the MCP-spec OAuth server bridges GitHub's client-secret-authenticated web flow; see docs/deploy.md)",
+      );
+    }
+    const base_raw = env['ANCHORAGE_PUBLIC_BASE_URL'];
+    if (!base_raw || base_raw.length === 0) {
+      throw new ServerError(
+        'invalid_input',
+        'ANCHORAGE_PUBLIC_BASE_URL is required when ANCHORAGE_GITHUB_CLIENT_ID is set (OAuth issuer / canonical resource URI; cannot be derived behind a proxy)',
+      );
+    }
+    let parsedBase: URL;
+    try {
+      parsedBase = new URL(base_raw);
+    } catch {
+      throw new ServerError(
+        'invalid_input',
+        `ANCHORAGE_PUBLIC_BASE_URL must be an absolute URL; got '${base_raw}'`,
+      );
+    }
+    if (
+      parsedBase.protocol !== 'https:' &&
+      parsedBase.hostname !== 'localhost' &&
+      parsedBase.hostname !== '127.0.0.1'
+    ) {
+      throw new ServerError(
+        'invalid_input',
+        `ANCHORAGE_PUBLIC_BASE_URL must be https (or http loopback for local boots); got '${base_raw}'`,
+      );
+    }
+    public_base_url = base_raw.replace(/\/+$/, '');
+    github = { client_id, client_secret };
     const cap = parseOptionalPositiveInt(
       env['ANCHORAGE_ISSUANCE_CAP_PER_EPOCH'],
       'ANCHORAGE_ISSUANCE_CAP_PER_EPOCH',
@@ -196,6 +248,7 @@ export function parseProdConfig(env: NodeJS.ProcessEnv): ProdConfig {
 
   const config: ProdConfig = { db_path, host, port };
   if (github !== undefined) config.github = github;
+  if (public_base_url !== undefined) config.public_base_url = public_base_url;
   if (web_reader_identity_id !== undefined) config.web_reader_identity_id = web_reader_identity_id;
   if (web_curator_identity_id !== undefined) {
     config.web_curator_identity_id = web_curator_identity_id;
@@ -259,7 +312,11 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
   let githubAuth: GithubOAuthAuthenticator | undefined;
   if (deps.config.github) {
     const githubApi: GithubApi =
-      deps.githubApi ?? new GithubApiHttp({ client_id: deps.config.github.client_id });
+      deps.githubApi ??
+      new GithubApiHttp({
+        client_id: deps.config.github.client_id,
+        client_secret: deps.config.github.client_secret,
+      });
     const authConfig: NonNullable<
       ConstructorParameters<typeof GithubOAuthAuthenticator>[0]['config']
     > = {};
@@ -274,6 +331,22 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
     }
     githubAuth = new GithubOAuthAuthenticator({ server, githubApi, config: authConfig });
     server.setAuthenticator(githubAuth);
+  }
+
+  // MCP-spec OAuth authorization server (PRD §Identity, MCP-spec
+  // OAuth). Wired iff the GitHub IdP is — `public_base_url` is
+  // guaranteed present alongside `github` by `parseProdConfig`'s
+  // refusal block. When unwired (harness/testbed), `opts.oauth` is
+  // omitted and the discovery/authorize/token routes 404 by
+  // absence, exactly like `/auth/github/*`; the sim≡prod posture is
+  // byte-for-byte unchanged.
+  let oauth: OAuthProvider | undefined;
+  if (githubAuth && deps.config.public_base_url !== undefined) {
+    oauth = new OAuthProvider({
+      gh: githubAuth,
+      baseUrl: deps.config.public_base_url,
+      log,
+    });
   }
 
   // Slice 5b — web tier. Resolve the configured reader identity
@@ -346,6 +419,7 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
   const http = await startHttpServer({
     server,
     ...(githubAuth ? { githubAuth } : {}),
+    ...(oauth ? { oauth } : {}),
     ...(webHandler ? { webHandler } : {}),
     host: deps.config.host,
     port: deps.config.port,
@@ -402,6 +476,7 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
     url: http.url,
     db_path: deps.config.db_path,
     github_oauth: deps.config.github !== undefined,
+    mcp_oauth: oauth !== undefined,
     web_tier: webHandler !== undefined,
     curator_console: deps.config.web_curator_identity_id !== undefined,
     reverify_scheduler: reverifyTimer !== undefined,

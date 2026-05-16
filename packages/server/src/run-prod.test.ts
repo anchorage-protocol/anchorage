@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,16 +61,51 @@ describe('parseProdConfig', () => {
     const cfg = parseProdConfig({
       ANCHORAGE_DB_PATH: '/tmp/x.db',
       ANCHORAGE_GITHUB_CLIENT_ID: 'Iv1.abc',
+      ANCHORAGE_GITHUB_CLIENT_SECRET: 'shhh',
+      ANCHORAGE_PUBLIC_BASE_URL: 'https://mcp.anchorage.test',
       ANCHORAGE_ISSUANCE_CAP_PER_EPOCH: '3',
       ANCHORAGE_ISSUANCE_EPOCH_SECONDS: '3600',
       ANCHORAGE_ATTESTATION_AGE_DAYS_FOR_LEVEL2: '60',
     });
     expect(cfg.github).toEqual({
       client_id: 'Iv1.abc',
+      client_secret: 'shhh',
       issuance_cap_per_epoch: 3,
       issuance_epoch_seconds: 3600,
       account_age_days_for_level2: 60,
     });
+    expect(cfg.public_base_url).toBe('https://mcp.anchorage.test');
+  });
+
+  it('refuses ANCHORAGE_GITHUB_CLIENT_ID without a client secret', () => {
+    expect(() =>
+      parseProdConfig({
+        ANCHORAGE_DB_PATH: '/tmp/x.db',
+        ANCHORAGE_GITHUB_CLIENT_ID: 'Iv1.abc',
+        ANCHORAGE_PUBLIC_BASE_URL: 'https://mcp.anchorage.test',
+      }),
+    ).toThrow(/ANCHORAGE_GITHUB_CLIENT_SECRET is required/);
+  });
+
+  it('refuses ANCHORAGE_GITHUB_CLIENT_ID without a public base url', () => {
+    expect(() =>
+      parseProdConfig({
+        ANCHORAGE_DB_PATH: '/tmp/x.db',
+        ANCHORAGE_GITHUB_CLIENT_ID: 'Iv1.abc',
+        ANCHORAGE_GITHUB_CLIENT_SECRET: 'shhh',
+      }),
+    ).toThrow(/ANCHORAGE_PUBLIC_BASE_URL is required/);
+  });
+
+  it('refuses a non-https / non-loopback public base url', () => {
+    expect(() =>
+      parseProdConfig({
+        ANCHORAGE_DB_PATH: '/tmp/x.db',
+        ANCHORAGE_GITHUB_CLIENT_ID: 'Iv1.abc',
+        ANCHORAGE_GITHUB_CLIENT_SECRET: 'shhh',
+        ANCHORAGE_PUBLIC_BASE_URL: 'http://mcp.anchorage.test',
+      }),
+    ).toThrow(/must be https/);
   });
 
   it('omits web_reader_identity_id when ANCHORAGE_WEB_READER_IDENTITY is unset', () => {
@@ -116,6 +152,8 @@ describe('parseProdConfig', () => {
       parseProdConfig({
         ANCHORAGE_DB_PATH: '/tmp/x.db',
         ANCHORAGE_GITHUB_CLIENT_ID: 'Iv1.abc',
+        ANCHORAGE_GITHUB_CLIENT_SECRET: 'shhh',
+        ANCHORAGE_PUBLIC_BASE_URL: 'https://mcp.anchorage.test',
         ANCHORAGE_ISSUANCE_CAP_PER_EPOCH: '0',
       }),
     ).toThrow(/ANCHORAGE_ISSUANCE_CAP_PER_EPOCH/);
@@ -123,6 +161,8 @@ describe('parseProdConfig', () => {
       parseProdConfig({
         ANCHORAGE_DB_PATH: '/tmp/x.db',
         ANCHORAGE_GITHUB_CLIENT_ID: 'Iv1.abc',
+        ANCHORAGE_GITHUB_CLIENT_SECRET: 'shhh',
+        ANCHORAGE_PUBLIC_BASE_URL: 'https://mcp.anchorage.test',
         ANCHORAGE_ISSUANCE_EPOCH_SECONDS: '-1',
       }),
     ).toThrow(/ANCHORAGE_ISSUANCE_EPOCH_SECONDS/);
@@ -241,7 +281,7 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
         db_path: join(tmp, 'anchorage.db'),
         host: '127.0.0.1',
         port: 0,
-        github: { client_id: 'Iv1.test' },
+        github: { client_id: 'Iv1.test', client_secret: 'test-secret' },
       },
       verifier: new FakeVerifier(),
       githubApi: new FakeGithubApi(),
@@ -261,6 +301,112 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
     const complete = (await completeRes.json()) as { status: string; secret?: string };
     expect(complete.status).toBe('authorized');
     expect(complete.secret).toBeTruthy();
+  });
+
+  it('exposes the MCP-spec OAuth surface and self-drives a client from 401 to an authenticated /mcp call', async () => {
+    const BASE = 'https://mcp.anchorage.test';
+    handle = await runProdServer({
+      config: {
+        db_path: join(tmp, 'anchorage.db'),
+        host: '127.0.0.1',
+        port: 0,
+        github: { client_id: 'Iv1.test', client_secret: 'test-secret' },
+        public_base_url: BASE,
+      },
+      verifier: new FakeVerifier(),
+      githubApi: new FakeGithubApi(),
+      log: () => {},
+    });
+    const root = handle.http.url;
+
+    // RFC 9728 / RFC 8414 discovery.
+    const prm = await (await fetch(`${root}/.well-known/oauth-protected-resource`)).json();
+    expect(prm).toMatchObject({ resource: `${BASE}/mcp`, authorization_servers: [BASE] });
+    const asm = await (await fetch(`${root}/.well-known/oauth-authorization-server`)).json();
+    expect(asm.code_challenge_methods_supported).toEqual(['S256']);
+
+    // Unauthenticated /mcp carries the WWW-Authenticate challenge.
+    const challenge = await fetch(`${root}/mcp`, { method: 'POST' });
+    expect(challenge.status).toBe(401);
+    expect(challenge.headers.get('www-authenticate')).toContain(
+      'resource_metadata="https://mcp.anchorage.test/.well-known/oauth-protected-resource"',
+    );
+
+    // DCR → authorize → github callback → token. PKCE S256.
+    const redirect = 'https://client.test/cb';
+    const verifier = 'e2e-verifier-'.repeat(4);
+    const challengeS256 = createHash('sha256').update(verifier).digest('base64url');
+    const reg = await (
+      await fetch(`${root}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ redirect_uris: [redirect], client_name: 'E2E Client' }),
+      })
+    ).json();
+    const clientId = reg.client_id as string;
+
+    const authz = await fetch(
+      `${root}/authorize?${new URLSearchParams({
+        response_type: 'code',
+        client_id: clientId,
+        redirect_uri: redirect,
+        code_challenge: challengeS256,
+        code_challenge_method: 'S256',
+        resource: `${BASE}/mcp`,
+        state: 'cli-state',
+      })}`,
+    );
+    expect(authz.status).toBe(200);
+    const ghLink = /href="([^"]*github\.test[^"]*)"/
+      .exec(await authz.text())?.[1]
+      ?.replace(/&amp;/g, '&');
+    const sid = new URL(ghLink as string).searchParams.get('state') as string;
+
+    const cb = await fetch(
+      `${root}/auth/github/callback?${new URLSearchParams({ state: sid, code: 'gh_web_code_test' })}`,
+      { redirect: 'manual' },
+    );
+    expect(cb.status).toBe(302);
+    const back = new URL(cb.headers.get('location') as string);
+    expect(back.searchParams.get('state')).toBe('cli-state');
+    const code = back.searchParams.get('code') as string;
+
+    const tok = await (
+      await fetch(`${root}/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          code_verifier: verifier,
+          redirect_uri: redirect,
+          resource: `${BASE}/mcp`,
+        }).toString(),
+      })
+    ).json();
+    expect(tok.token_type).toBe('Bearer');
+    const accessToken = tok.access_token as string;
+
+    // The issued token authenticates a real MCP JSON-RPC call.
+    const mcp = await fetch(`${root}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'e2e', version: '0' },
+        },
+      }),
+    });
+    expect(mcp.status).toBe(200);
   });
 
   it('does not mount the web tier when ANCHORAGE_WEB_READER_IDENTITY is unset', async () => {
