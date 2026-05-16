@@ -107,11 +107,30 @@ export interface GithubEmailInfo {
 // `api.github.com/user/emails`. The fake implementation (exported
 // alongside) drives scripted responses for tests and for the
 // testbed's CI-pinned scenarios.
+//
+// `webAuthorizeUrl` / `exchangeWebCode` are the browser
+// authorization-code flow GitHub uses behind the MCP-spec OAuth
+// authorization server (`oauth.ts`). Unlike the device flow, the
+// web flow's token exchange is client-secret-authenticated — the
+// secret lives only in the runtime environment (never on a user
+// machine), which is why the web flow is the AS-side bridge and the
+// device flow stays the no-secret path for clients that drive it
+// directly. Keeping both GitHub-protocol specifics on this seam
+// keeps `FakeGithubApi` able to drive the entire web flow in tests
+// (sim≡prod: the AS layer never branches on which api backs it).
 export interface GithubApi {
   requestDeviceCode(): Promise<GithubDeviceCode>;
   pollDeviceCode(device_code: string): Promise<GithubPollStatus>;
   getUser(access_token: string): Promise<GithubUser>;
   getEmails(access_token: string): Promise<GithubEmailInfo>;
+  // Build the GitHub browser-authorization URL the human is sent to
+  // (`redirect_uri` is the AS callback; `state` carries the AS
+  // session id). Synchronous: it is pure URL construction.
+  webAuthorizeUrl(redirect_uri: string, state: string): string;
+  // Exchange a GitHub authorization `code` (from the callback) for
+  // an access token. The real implementation authenticates with the
+  // OAuth App client secret.
+  exchangeWebCode(code: string, redirect_uri: string): Promise<{ access_token: string }>;
 }
 
 // ── Real (production) GithubApi over fetch ─────────────────────────
@@ -130,10 +149,18 @@ type FetchLike = (
 }>;
 
 export interface GithubApiHttpOpts {
-  // OAuth App client id (public; the device flow does not use a
-  // client secret). Required: a production deployment registers a
-  // GitHub OAuth App and passes its client id here.
+  // OAuth App client id (public; appears on every consent screen).
+  // Required: a production deployment registers a GitHub OAuth App
+  // and passes its client id here.
   client_id: string;
+  // OAuth App client secret. Used only by the browser
+  // authorization-code flow (`exchangeWebCode`) that backs the
+  // MCP-spec authorization server; the device flow never touches
+  // it. Lives only in the runtime environment. Optional on the seam
+  // so the device-only posture (no web flow) needs no secret; when
+  // unset, `exchangeWebCode` refuses rather than calling GitHub with
+  // a blank secret.
+  client_secret?: string;
   // Fetch implementation. Defaults to `globalThis.fetch`. Tests pass
   // a mock; the production runtime gets the default.
   fetch?: FetchLike;
@@ -146,18 +173,68 @@ export interface GithubApiHttpOpts {
 const GITHUB_DEFAULT_USER_AGENT = 'anchorage-protocol/0.1 (+https://anchorage.science)';
 const GITHUB_DEVICE_CODE_URL = 'https://github.com/login/device/code';
 const GITHUB_TOKEN_URL = 'https://github.com/login/oauth/access_token';
+const GITHUB_WEB_AUTHORIZE_URL = 'https://github.com/login/oauth/authorize';
 const GITHUB_USER_URL = 'https://api.github.com/user';
 const GITHUB_EMAILS_URL = 'https://api.github.com/user/emails';
+const GITHUB_OAUTH_SCOPES = 'read:user user:email';
 
 export class GithubApiHttp implements GithubApi {
   private readonly fetch: FetchLike;
   private readonly client_id: string;
+  private readonly client_secret: string | undefined;
   private readonly user_agent: string;
 
   constructor(opts: GithubApiHttpOpts) {
     this.fetch = opts.fetch ?? (globalThis.fetch as unknown as FetchLike);
     this.client_id = opts.client_id;
+    this.client_secret = opts.client_secret;
     this.user_agent = opts.user_agent ?? GITHUB_DEFAULT_USER_AGENT;
+  }
+
+  webAuthorizeUrl(redirect_uri: string, state: string): string {
+    const u = new URL(GITHUB_WEB_AUTHORIZE_URL);
+    u.searchParams.set('client_id', this.client_id);
+    u.searchParams.set('redirect_uri', redirect_uri);
+    u.searchParams.set('scope', GITHUB_OAUTH_SCOPES);
+    u.searchParams.set('state', state);
+    return u.toString();
+  }
+
+  async exchangeWebCode(code: string, redirect_uri: string): Promise<{ access_token: string }> {
+    if (!this.client_secret || this.client_secret.length === 0) {
+      // The web flow is unusable without the OAuth App client
+      // secret; refuse loudly rather than calling GitHub with a
+      // blank secret and getting an opaque 4xx.
+      throw new ServerError(
+        'invalid_state',
+        'github web flow requires a client secret (ANCHORAGE_GITHUB_CLIENT_SECRET)',
+      );
+    }
+    const res = await this.fetch(GITHUB_TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': this.user_agent,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        client_id: this.client_id,
+        client_secret: this.client_secret,
+        code,
+        redirect_uri,
+      }).toString(),
+    });
+    if (!res.ok) {
+      throw new ServerError('invalid_state', `github token returned HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as { access_token?: string; error?: string };
+    if (!data.access_token) {
+      throw new ServerError(
+        'unauthorized',
+        `github web code exchange failed: ${data.error ?? 'no access_token'}`,
+      );
+    }
+    return { access_token: data.access_token };
   }
 
   async requestDeviceCode(): Promise<GithubDeviceCode> {
@@ -306,6 +383,10 @@ export interface FakeGithubScenario {
   access_token?: string;
   user?: GithubUser;
   emails?: GithubEmailInfo;
+  // Web (browser authorization-code) flow: the authorization `code`
+  // GitHub would hand back at the callback. `exchangeWebCode`
+  // accepts exactly this value and yields `access_token`.
+  web_code?: string;
 }
 
 export class FakeGithubApi implements GithubApi {
@@ -326,6 +407,7 @@ export class FakeGithubApi implements GithubApi {
       verification_uri: scenario.verification_uri ?? 'https://github.com/login/device',
       interval_seconds: scenario.interval_seconds ?? 5,
       expires_in_seconds: scenario.expires_in_seconds ?? 900,
+      web_code: scenario.web_code ?? 'gh_web_code_test',
       access_token,
       poll_responses: scenario.poll_responses ?? [{ status: 'authorized', access_token }],
       user: scenario.user ?? {
@@ -376,6 +458,20 @@ export class FakeGithubApi implements GithubApi {
       throw new ServerError('unauthorized', 'fake github: unknown access_token');
     }
     return this.scenario.emails;
+  }
+
+  webAuthorizeUrl(redirect_uri: string, state: string): string {
+    const u = new URL('https://github.test/login/oauth/authorize');
+    u.searchParams.set('redirect_uri', redirect_uri);
+    u.searchParams.set('state', state);
+    return u.toString();
+  }
+
+  async exchangeWebCode(code: string, _redirect_uri: string): Promise<{ access_token: string }> {
+    if (code !== this.scenario.web_code) {
+      throw new ServerError('unauthorized', 'fake github: unknown web code');
+    }
+    return { access_token: this.scenario.access_token };
   }
 }
 
@@ -578,10 +674,64 @@ export class GithubOAuthAuthenticator implements Authenticator {
     }
   }
 
+  // Browser authorization-code entry point, used by the MCP-spec
+  // OAuth authorization server (`oauth.ts`) after it has exchanged
+  // the GitHub `code` for an access token via the AS-side bridge.
+  // Shares the entire identity-on-first-signin / attestation /
+  // issuance-cap / credential-mint tail with the device flow
+  // (`mintFromAccessToken`) so the two front doors cannot diverge.
+  // There is no in-process flow state here: the AS layer owns the
+  // one-time authorization-code record and its idempotency, the way
+  // `DeviceFlowState.completed` does for the device flow.
+  async completeWebSignin(
+    code: string,
+    redirect_uri: string,
+  ): Promise<{
+    secret: string;
+    credential_id: string;
+    identity_id: IdentityId;
+    github_login: string;
+    attestation_level: 1 | 2;
+  }> {
+    const { access_token } = await this.api.exchangeWebCode(code, redirect_uri);
+    return this.mintFromAccessToken(access_token);
+  }
+
   private async finalizeAuthorization(
     state: DeviceFlowState,
     access_token: string,
   ): Promise<GithubSigninResult> {
+    const minted = await this.mintFromAccessToken(access_token);
+    state.completed = {
+      secret: minted.secret,
+      credential_id: minted.credential_id,
+      identity_id: minted.identity_id,
+    };
+    return {
+      status: 'authorized',
+      credential_id: minted.credential_id,
+      identity_id: minted.identity_id,
+      secret: minted.secret,
+      github_login: minted.github_login,
+      attestation_level: minted.attestation_level,
+    };
+  }
+
+  // The shared post-authorization tail: GitHub access token →
+  // profile/email signals → issuance cap → identity-on-first-signin
+  // → attestation → fresh agent credential. The returned secret is
+  // the bearer token the MCP client presents at the Authenticator
+  // seam — same wire-level shape every authenticator produces (PRD
+  // §Identity, Agent-credential bearer tokens). Both the device flow
+  // and the web flow funnel through here so neither front door can
+  // mint an identity the other couldn't.
+  private async mintFromAccessToken(access_token: string): Promise<{
+    secret: string;
+    credential_id: string;
+    identity_id: IdentityId;
+    github_login: string;
+    attestation_level: 1 | 2;
+  }> {
     const [user, emails] = await Promise.all([
       this.api.getUser(access_token),
       this.api.getEmails(access_token),
@@ -651,18 +801,11 @@ export class GithubOAuthAuthenticator implements Authenticator {
       label: `github:${user.login}`,
     });
 
-    state.completed = {
-      secret,
-      credential_id: credential.id,
-      identity_id: identityId,
-    };
-
     const identityRecord = this.server.store.identities.get(identityId);
     return {
-      status: 'authorized',
+      secret,
       credential_id: credential.id,
       identity_id: identityId,
-      secret,
       github_login: user.login,
       attestation_level: identityRecord
         ? ((identityRecord.attestation_level === 2 ? 2 : 1) as 1 | 2)

@@ -47,6 +47,7 @@ export {
   type VerifierResponse,
 } from './live-fetch-verifier.js';
 export { buildMcpServer, type McpBuildOptions } from './mcp.js';
+export { OAuthProvider, type OAuthProviderOpts, type OAuthResult } from './oauth.js';
 export { InProcessReader, type InProcessReaderOpts } from './reader.js';
 export {
   type GithubConfig,

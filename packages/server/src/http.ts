@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { GithubOAuthAuthenticator } from './auth-github.js';
 import { ServerError, type ServerErrorCode } from './errors.js';
 import { buildMcpServer } from './mcp.js';
+import type { OAuthProvider, OAuthResult } from './oauth.js';
 import type { Server } from './server.js';
 
 // HTTP transport for the Anchorage MCP server (slice 4a). Three
@@ -65,6 +66,14 @@ export interface AnchorageHttpOpts {
   // surface without the IdP plumbing. When omitted, `/auth/github/*`
   // routes 404.
   githubAuth?: GithubOAuthAuthenticator;
+  // MCP-spec OAuth 2.1 authorization server (PRD §MCP
+  // authorization). When wired, the discovery, registration,
+  // authorize, GitHub-callback and token routes exist and the
+  // `/mcp` 401s carry a `WWW-Authenticate` challenge so MCP clients
+  // self-drive auth. Optional and wired only alongside `githubAuth`
+  // (same gating as the device routes): the testbed / harness
+  // posture omits it and is byte-for-byte unchanged.
+  oauth?: OAuthProvider;
   // Slice 5b — read-only web tier. When wired, any path that does
   // not match the MCP / auth / healthz routes here delegates to the
   // web handler (the home page, the sub-topic detail page, slice-5c
@@ -95,7 +104,9 @@ export function buildHttpHandler(opts: AnchorageHttpOpts): AnchorageHttpHandler 
   const onError = opts.onError ?? defaultOnError;
   const server = opts.server;
   const githubAuth = opts.githubAuth;
+  const oauth = opts.oauth;
   const webHandler = opts.webHandler;
+  const wwwAuthenticate = oauth ? oauth.wwwAuthenticate() : undefined;
 
   return async (req, res) => {
     const method = req.method ?? 'GET';
@@ -165,8 +176,59 @@ export function buildHttpHandler(opts: AnchorageHttpOpts): AnchorageHttpHandler 
       }
 
       if (pathname === '/mcp') {
-        await handleMcp(server, req, res);
+        await handleMcp(server, req, res, wwwAuthenticate);
         return;
+      }
+
+      // MCP-spec OAuth surface. All routes exist iff `oauth` is
+      // wired (same posture gating as `/auth/github/*`); otherwise
+      // they fall through to the web handler / typed 404, so the
+      // harness deployment is unchanged.
+      if (oauth) {
+        if (
+          method === 'GET' &&
+          (pathname === '/.well-known/oauth-protected-resource' ||
+            pathname === '/.well-known/oauth-protected-resource/mcp')
+        ) {
+          sendOAuth(res, oauth.protectedResourceMetadata());
+          return;
+        }
+        if (method === 'GET' && pathname === '/.well-known/oauth-authorization-server') {
+          sendOAuth(res, oauth.authorizationServerMetadata());
+          return;
+        }
+        if (pathname === '/register') {
+          if (method !== 'POST') {
+            sendMethodNotAllowed(res, ['POST']);
+            return;
+          }
+          sendOAuth(res, oauth.register(await readJsonBody(req)));
+          return;
+        }
+        if (pathname === '/authorize') {
+          if (method !== 'GET') {
+            sendMethodNotAllowed(res, ['GET']);
+            return;
+          }
+          sendOAuth(res, oauth.authorize(url.searchParams));
+          return;
+        }
+        if (pathname === '/auth/github/callback') {
+          if (method !== 'GET') {
+            sendMethodNotAllowed(res, ['GET']);
+            return;
+          }
+          sendOAuth(res, await oauth.githubCallback(url.searchParams));
+          return;
+        }
+        if (pathname === '/token') {
+          if (method !== 'POST') {
+            sendMethodNotAllowed(res, ['POST']);
+            return;
+          }
+          sendOAuth(res, oauth.token(await readFormOrJsonBody(req)));
+          return;
+        }
       }
 
       // Slice 5b — web tier delegation. Any path the MCP / auth /
@@ -206,13 +268,25 @@ export function buildHttpHandler(opts: AnchorageHttpOpts): AnchorageHttpHandler 
 // The transport and McpServer are torn down once the response closes;
 // the SDK's stateless mode keeps no cross-request state so there is
 // nothing else to clean.
-async function handleMcp(server: Server, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleMcp(
+  server: Server,
+  req: IncomingMessage,
+  res: ServerResponse,
+  wwwAuthenticate: string | undefined,
+): Promise<void> {
+  // RFC 9728 §5.1: a protected resource points unauthenticated
+  // callers at its metadata via `WWW-Authenticate`. Set only when
+  // the OAuth AS is wired; the harness posture emits no challenge
+  // (unchanged wire shape).
+  const authChallenge = wwwAuthenticate ? { 'WWW-Authenticate': wwwAuthenticate } : undefined;
   const token = extractBearer(req);
   if (token === undefined) {
-    sendJson(res, 401, {
-      code: 'unauthorized',
-      message: 'missing or malformed Authorization: Bearer header',
-    });
+    sendJson(
+      res,
+      401,
+      { code: 'unauthorized', message: 'missing or malformed Authorization: Bearer header' },
+      authChallenge,
+    );
     return;
   }
   let mcp: ReturnType<typeof buildMcpServer>;
@@ -220,7 +294,8 @@ async function handleMcp(server: Server, req: IncomingMessage, res: ServerRespon
     mcp = buildMcpServer(server, { token });
   } catch (err) {
     if (err instanceof ServerError) {
-      sendJson(res, serverErrorStatus(err.code), { code: err.code, message: err.message });
+      const headers = err.code === 'unauthorized' ? authChallenge : undefined;
+      sendJson(res, serverErrorStatus(err.code), { code: err.code, message: err.message }, headers);
       return;
     }
     throw err;
@@ -305,12 +380,76 @@ function readStringField(body: unknown, key: string): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+// OAuth token/registration requests are form-encoded by default
+// (OAuth 2.1) but some clients send JSON; accept both, flattened to
+// a string map.
+async function readFormOrJsonBody(req: IncomingMessage): Promise<Record<string, string>> {
+  const ct = (req.headers['content-type'] ?? '').toLowerCase();
+  if (ct.includes('application/json')) {
+    const body = await readJsonBody(req);
+    const out: Record<string, string> = {};
+    if (typeof body === 'object' && body !== null) {
+      for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+        if (typeof v === 'string') out[k] = v;
+      }
+    }
+    return out;
+  }
+  const raw = await readRawBody(req);
+  const out: Record<string, string> = {};
+  for (const [k, v] of new URLSearchParams(raw)) out[k] = v;
+  return out;
+}
+
+async function readRawBody(req: IncomingMessage, max = DEFAULT_MAX_BODY_BYTES): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > max) {
+        req.destroy();
+        reject(new ServerError('invalid_input', `request body too large (max ${max} bytes)`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+function sendOAuth(res: ServerResponse, result: OAuthResult): void {
+  if (result.kind === 'redirect') {
+    if (res.headersSent || res.writableEnded) return;
+    res.writeHead(result.status, { Location: result.location });
+    res.end();
+    return;
+  }
+  if (result.kind === 'html') {
+    if (res.headersSent || res.writableEnded) return;
+    res.writeHead(result.status, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Length': Buffer.byteLength(result.body),
+    });
+    res.end(result.body);
+    return;
+  }
+  sendJson(res, result.status, result.body, result.headers);
+}
+
+function sendJson(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  headers?: Record<string, string>,
+): void {
   if (res.headersSent || res.writableEnded) return;
   const json = JSON.stringify(body);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(json),
+    ...(headers ?? {}),
   });
   res.end(json);
 }
