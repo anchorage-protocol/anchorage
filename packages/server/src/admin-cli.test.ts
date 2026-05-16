@@ -347,13 +347,7 @@ describe('admin-cli seed-sub-topic', () => {
     const { deps, stderr, server } = fixture();
     const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
     const result = await runAdminCli(
-      [
-        'seed-sub-topic',
-        '--db=ignored',
-        `--cause-id=${cause.id}`,
-        '--name=X',
-        '--description=Y',
-      ],
+      ['seed-sub-topic', '--db=ignored', `--cause-id=${cause.id}`, '--name=X', '--description=Y'],
       deps,
     );
     expect(result.exit_code).toBe(2);
