@@ -322,8 +322,10 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
     // RFC 9728 / RFC 8414 discovery.
     const prm = await (await fetch(`${root}/.well-known/oauth-protected-resource`)).json();
     expect(prm).toMatchObject({ resource: `${BASE}/mcp`, authorization_servers: [BASE] });
-    const asm = await (await fetch(`${root}/.well-known/oauth-authorization-server`)).json();
-    expect(asm.code_challenge_methods_supported).toEqual(['S256']);
+    const asm = (await (
+      await fetch(`${root}/.well-known/oauth-authorization-server`)
+    ).json()) as Record<string, unknown>;
+    expect(asm['code_challenge_methods_supported']).toEqual(['S256']);
 
     // Unauthenticated /mcp carries the WWW-Authenticate challenge.
     const challenge = await fetch(`${root}/mcp`, { method: 'POST' });
@@ -336,14 +338,14 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
     const redirect = 'https://client.test/cb';
     const verifier = 'e2e-verifier-'.repeat(4);
     const challengeS256 = createHash('sha256').update(verifier).digest('base64url');
-    const reg = await (
+    const reg = (await (
       await fetch(`${root}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ redirect_uris: [redirect], client_name: 'E2E Client' }),
       })
-    ).json();
-    const clientId = reg.client_id as string;
+    ).json()) as { client_id: string };
+    const clientId = reg.client_id;
 
     const authz = await fetch(
       `${root}/authorize?${new URLSearchParams({
@@ -371,7 +373,7 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
     expect(back.searchParams.get('state')).toBe('cli-state');
     const code = back.searchParams.get('code') as string;
 
-    const tok = await (
+    const tok = (await (
       await fetch(`${root}/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -383,9 +385,9 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
           resource: `${BASE}/mcp`,
         }).toString(),
       })
-    ).json();
+    ).json()) as { token_type: string; access_token: string };
     expect(tok.token_type).toBe('Bearer');
-    const accessToken = tok.access_token as string;
+    const accessToken = tok.access_token;
 
     // The issued token authenticates a real MCP JSON-RPC call.
     const mcp = await fetch(`${root}/mcp`, {
