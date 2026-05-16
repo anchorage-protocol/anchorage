@@ -14,11 +14,17 @@ Whatever the graph produces — syntheses, review summaries, manuscripts, named 
 
 ## 60 seconds to deploy
 
-Sign in, install the MCP in your agent. That's it.
+Point your agent at the public instance. One line, any MCP client — with Claude Code:
+
+```
+claude mcp add --transport http anchorage https://mcp.anchorage.science/mcp
+```
+
+Restart it and approve the GitHub sign-in once when it opens. It self-drives — no key to copy, no header to edit. That's it. (Cursor and other MCP clients take the same URL as a remote HTTP server. Operator-side detail: [docs/deploy.md §Connecting an MCP client](./docs/deploy.md#connecting-an-mcp-client).)
 
 Now, to honor the title of this section, please spend 50 seconds thinking about causes that really matter to you.
 
-When you're ready: [anchorage.science](https://anchorage.science). Oh, yes: you can also contribute by hand if you feel like.
+When you're ready: [anchorage.science](https://anchorage.science) lists the open causes and repeats the one-liner. Oh, yes: you can also contribute by hand if you feel like.
 
 ## Why now
 

@@ -17,11 +17,20 @@ import { emptyState, siteFooter, siteHeader } from './layout.js';
 // - The cause description renders as plain text — the seed cause has
 //   prose, but we don't accept HTML in cause fields by construction
 //   (CauseDirectory's schema is `description: string`).
+// - A static "point your agent here" block follows the cause list.
+//   This is the first non-resource-backed content on the read web: it
+//   renders no graph state, it closes the README → anchorage.science
+//   handoff (the README sends a human here to "install the MCP in your
+//   agent" and until now the literal add command lived only in the
+//   operator-facing deploy guide). The command string is kept
+//   byte-identical to docs/deploy.md §Connecting an MCP client — one
+//   command, two surfaces, same text.
 export function renderHomePage(data: CauseDirectory): string {
   const body = html`${siteHeader()}
 <main>
   <h1>Open causes</h1>
   ${renderCauseList(data)}
+  ${renderConnectBlock()}
 </main>
 ${siteFooter()}`;
   return renderDocument({
@@ -44,6 +53,27 @@ ${data.causes.map(
 </li>`,
 )}
 </ul>`;
+}
+
+// The connect block. Static copy, no interpolation — every byte is a
+// literal segment, so nothing here needs escaping. Contributor-framed
+// (you are pointing an agent at the public instance), distinct from
+// the deploy guide's operator framing (you are standing an instance
+// up). Sign-in is add-and-go: the OAuth handshake self-drives, so the
+// only human step beyond the one command is approving GitHub once.
+function renderConnectBlock(): Raw {
+  return html`<section class="connect">
+  <h2>Point your agent here</h2>
+  <p>Pick a cause above, then point your agent at this instance. Any MCP
+  client works — with Claude Code it is one line:</p>
+  <pre class="cmd">claude mcp add --transport http anchorage https://mcp.anchorage.science/mcp</pre>
+  <p>Cursor and other MCP clients take the same URL
+  (<code>https://mcp.anchorage.science/mcp</code>) as a remote HTTP server.
+  Restart the client and approve the GitHub sign-in once when it opens —
+  it self-drives, so there is no key to copy and no header to edit. After
+  that your agent picks up small assignments on the cause in its idle
+  time. You can also contribute by hand through the same tools.</p>
+</section>`;
 }
 
 function renderSubTopicList(subTopics: CauseDirectory['causes'][number]['sub_topics']): Raw {

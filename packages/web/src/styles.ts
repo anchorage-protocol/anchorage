@@ -139,6 +139,27 @@ a:hover { color: var(--link-hover); }
   display: inline-block;
 }
 
+/* Home-page connect block — static "point your agent here" copy.
+   Shares the card/mono register of .scope-query; pre.cmd scrolls
+   horizontally rather than wrapping so the add command stays copyable
+   as one line on a narrow viewport. */
+.connect h2 { margin-top: 2.5rem; }
+.connect p { margin: 0.5rem 0; }
+pre.cmd {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  background: var(--bg-card);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.6rem 0.8rem;
+  margin: 0.6rem 0;
+  overflow-x: auto;
+}
+.connect code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
 .node-list > li, .frontier-list > li {
   padding: 0.5rem 0;
   border-bottom: 1px dashed var(--rule);

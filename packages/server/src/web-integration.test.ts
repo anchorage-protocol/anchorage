@@ -192,6 +192,13 @@ describe('GET /', () => {
     expect(body).toContain(`href="/sub-topic/${f.oligoId}"`);
     // The site chrome is present.
     expect(body).toContain('class="brand"');
+    // The connect block closes the README -> anchorage.science
+    // handoff: the literal add command is on the page a human lands
+    // on, byte-identical to docs/deploy.md §Connecting an MCP client.
+    expect(body).toContain('Point your agent here');
+    expect(body).toContain(
+      'claude mcp add --transport http anchorage https://mcp.anchorage.science/mcp',
+    );
   });
 
   it('HEAD / returns headers without a body', async () => {
