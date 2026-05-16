@@ -50,6 +50,26 @@ import { SqliteStore } from './sqlite-store.js';
 //     past contributions remain in the graph with the revocation
 //     flagged.
 //
+//   - `seed-cause --db=<path> --name=<name> --description=<desc>`
+//     Creates an `active` cause. The umbrella the public instance
+//     hosts (colon cancer for v0, PRD §Seed topic) is operator-
+//     seeded, not contributor-proposed — there is no write-path tool
+//     to create a cause, by design (causes are a governance decision,
+//     not a contribution). Prints `{ cause_id, name }`; the operator
+//     feeds `cause_id` to `seed-sub-topic`.
+//
+//   - `seed-sub-topic --db=<path> --cause-id=<id> --name=<name>
+//     --description=<desc> --scope-query=<q>`
+//     Creates an `active` sub-topic under an existing active cause —
+//     the curator-seeded path (PRD §Sub-topic creation: curator-
+//     seeded sub-topics start `active`; contributor-proposed ones go
+//     through `propose_sub_topic` and start `proposed`, needing
+//     curator acceptance). This is the offline path for the v0
+//     starter set (the hand-seeded sub-topics from
+//     docs/seed-topic.md). Refuses with `not_found` if the cause
+//     does not exist, `invalid_state` if it is archived. Prints
+//     `{ sub_topic_id, cause_id, name, status }`.
+//
 // The CLI is exposed as `runAdminCli` (factor for testing — inject
 // stdout / stderr sinks, server factory) and as a `main()` block at
 // the bottom that the package's `bin` script invokes.
@@ -88,6 +108,10 @@ export async function runAdminCli(argv: string[], deps: AdminCliDeps): Promise<A
         return await runListCurators(flags, deps);
       case 'revoke-identity':
         return await runRevokeIdentity(flags, deps);
+      case 'seed-cause':
+        return await runSeedCause(flags, deps);
+      case 'seed-sub-topic':
+        return await runSeedSubTopic(flags, deps);
       default:
         deps.stderr(`unknown subcommand: ${subcommand}`);
         deps.stderr(USAGE);
@@ -208,6 +232,58 @@ async function runRevokeIdentity(
   }
 }
 
+async function runSeedCause(
+  flags: Map<string, string>,
+  deps: AdminCliDeps,
+): Promise<AdminCliResult> {
+  const dbPath = requireFlag(flags, 'db');
+  const name = requireFlag(flags, 'name');
+  const description = requireFlag(flags, 'description');
+  const { server, close } = deps.makeServer(dbPath);
+  try {
+    const cause = server.bootstrap.createCause({ name, description });
+    deps.stdout(JSON.stringify({ cause_id: cause.id, name: cause.name }));
+    return { exit_code: 0 };
+  } finally {
+    close();
+  }
+}
+
+async function runSeedSubTopic(
+  flags: Map<string, string>,
+  deps: AdminCliDeps,
+): Promise<AdminCliResult> {
+  const dbPath = requireFlag(flags, 'db');
+  const causeId = requireFlag(flags, 'cause-id');
+  const name = requireFlag(flags, 'name');
+  const description = requireFlag(flags, 'description');
+  const scopeQuery = requireFlag(flags, 'scope-query');
+  const { server, close } = deps.makeServer(dbPath);
+  try {
+    // Delegates to `server.bootstrap.seedSubTopic`, which validates
+    // the cause exists and is active and starts the sub-topic
+    // `active` (the curator-seeded path — distinct from the
+    // `propose_sub_topic` write-path tool, which starts `proposed`).
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: causeId,
+      name,
+      description,
+      scope_query: scopeQuery,
+    });
+    deps.stdout(
+      JSON.stringify({
+        sub_topic_id: subTopic.id,
+        cause_id: subTopic.cause_id,
+        name: subTopic.name,
+        status: subTopic.status,
+      }),
+    );
+    return { exit_code: 0 };
+  } finally {
+    close();
+  }
+}
+
 function parseFlags(argv: string[]): Map<string, string> {
   const flags = new Map<string, string>();
   for (let i = 0; i < argv.length; i++) {
@@ -245,6 +321,9 @@ const USAGE = [
   '  anchorage-admin mint-reader     --db=<path> --display-name=<name>',
   '  anchorage-admin list-curators   --db=<path>',
   '  anchorage-admin revoke-identity --db=<path> --identity-id=<id>',
+  '  anchorage-admin seed-cause      --db=<path> --name=<name> --description=<desc>',
+  '  anchorage-admin seed-sub-topic  --db=<path> --cause-id=<id> --name=<name> \\',
+  '                                  --description=<desc> --scope-query=<q>',
   '',
   'mint-curator prints `{ identity_id, credential_id, display_name, secret }` to stdout.',
   'The secret is the one-shot bearer credential — stash it in a secrets manager;',
@@ -253,6 +332,10 @@ const USAGE = [
   'mint-reader prints `{ identity_id, display_name }` — copy `identity_id` into',
   'ANCHORAGE_WEB_READER_IDENTITY. The web tier runs in-process with the MCP server',
   'and constructs its Caller directly from this identity; no bearer secret is minted.',
+  '',
+  'seed-cause prints `{ cause_id, name }`; feed `cause_id` to seed-sub-topic.',
+  'seed-sub-topic prints `{ sub_topic_id, cause_id, name, status }` (status=active —',
+  'the curator-seeded path; contributor-proposed sub-topics go through propose_sub_topic).',
 ].join('\n');
 
 // Production entrypoint. The `bin/anchorage-admin` script (added via

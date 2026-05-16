@@ -113,6 +113,48 @@ pnpm admin revoke-identity --db=/data/anchorage.db --identity-id=idn_xxx
 
 The curator-only MCP tool surface — the wire-level path through which a curator actually fires `acceptProposal` / `rejectProposal` — landed in [Phase 2 slice 7a](../ROADMAP.md#phase-2--single-cause-public-instance-opened-2026-05-14); slice 4 stops at the data model and the bootstrap. The read-only curator console (slice 7b) and the re-verification scheduler (slice 7c) are documented as opt-in bootstraps below.
 
+## Bootstrap: seating the cause and starter sub-topics
+
+A fresh instance has no cause and no sub-topics — the home page renders the empty state until one is seated. Causes and the v0 starter sub-topics are *operator-seeded*, not contributor-proposed: there is no write-path MCP tool that creates a cause, by design (a cause is a governance decision per [docs/seed-topic.md](./seed-topic.md), not a contribution), and the v0 starter sub-topics are the hand-seeded set the cause launches with. The `anchorage-admin` CLI is the offline path, same posture as curator seating — server down, write directly to the on-disk SQLite store.
+
+1. Seat the umbrella cause. The v0 public instance's cause is **colon cancer**, locked in [docs/seed-topic.md](./seed-topic.md):
+
+   ```bash
+   docker exec -it anchorage \
+     pnpm --filter @anchorage/server run admin seed-cause \
+       --db=/data/anchorage.db \
+       --name="Colon cancer" \
+       --description="Cooperative open research on colon cancer: screening, hereditary risk, treatment, and the evidence chains behind contested clinical decisions."
+   ```
+
+   Output is a single JSON line:
+
+   ```json
+   {"cause_id":"cau_...","name":"Colon cancer"}
+   ```
+
+2. Seat each starter sub-topic against that `cause_id` — one `seed-sub-topic` call per sub-topic in the v0 set (the tentative set in [docs/seed-topic.md](./seed-topic.md) is ctDNA-MRD + Lynch surveillance + screening age; the final selection is the operator's at launch). The `--scope-query` is the PubMed-style membership query the sub-topic's scope envelope is defined by (PRD §Multi-scale graph; seed-topic.md's hand-seed criteria target ~200–1500 papers). Example with the strongly-favored ctDNA-MRD candidate:
+
+   ```bash
+   docker exec -it anchorage \
+     pnpm --filter @anchorage/server run admin seed-sub-topic \
+       --db=/data/anchorage.db \
+       --cause-id=cau_... \
+       --name="ctDNA-guided adjuvant chemo in resected stage II colon cancer" \
+       --description="When ctDNA-positivity justifies escalation and ctDNA-negativity justifies de-escalation of adjuvant chemotherapy after resection of stage II colon cancer, traceable to the trial spine (CIRCULATE-Japan, DYNAMIC, GALAXY, BESPOKE-CRC)." \
+       --scope-query="(colon cancer) AND (circulating tumor DNA OR ctDNA OR minimal residual disease) AND (adjuvant) AND stage II"
+   ```
+
+   Output is a single JSON line:
+
+   ```json
+   {"sub_topic_id":"stp_...","cause_id":"cau_...","name":"ctDNA-guided adjuvant chemo in resected stage II colon cancer","status":"active"}
+   ```
+
+   `status` is `active` because this is the curator-seeded path — the sub-topic is live the moment it is seeded. This is distinct from the contributor-facing `propose_sub_topic` MCP tool, which stages a sub-topic at `proposed` for curator acceptance (PRD §Sub-topic creation governance); the offline seed path is how the *initial* set lands without a curator round-trip against an empty graph. `seed-sub-topic` refuses with `not_found` if the `--cause-id` is unknown and `invalid_state` if the cause is archived.
+
+The seed step is reversible only forward: there is no `unseed`. To retire a mis-seeded sub-topic before launch, the cleanest path on a not-yet-public instance is to delete the SQLite file and re-run the bootstrap from `mint-curator`. Once the instance is public and has graph state, sub-topic retirement is a curator archival action, not a delete.
+
 ## Bootstrap: enabling the read-only web tier (slice 5b)
 
 The web tier is opt-in: omit `ANCHORAGE_WEB_READER_IDENTITY` and the deployment stays MCP-only. Enable it in two steps.

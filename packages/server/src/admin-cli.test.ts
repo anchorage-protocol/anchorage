@@ -241,6 +241,126 @@ describe('admin-cli revoke-identity', () => {
   });
 });
 
+describe('admin-cli seed-cause', () => {
+  it('creates an active cause and prints { cause_id, name }', async () => {
+    const { deps, stdout, server } = fixture();
+    const result = await runAdminCli(
+      ['seed-cause', '--db=ignored', '--name=CRC', '--description=colon cancer'],
+      deps,
+    );
+    expect(result.exit_code).toBe(0);
+    const out = JSON.parse(stdout[0] ?? '') as { cause_id: string; name: string };
+    expect(out.name).toBe('CRC');
+    expect(out.cause_id).toMatch(/^cau_/);
+    const stored = server.store.causes.get(out.cause_id as never);
+    expect(stored?.status).toBe('active');
+    expect(stored?.description).toBe('colon cancer');
+  });
+
+  it('refuses when --name is missing', async () => {
+    const { deps, stderr } = fixture();
+    const result = await runAdminCli(
+      ['seed-cause', '--db=ignored', '--description=colon cancer'],
+      deps,
+    );
+    expect(result.exit_code).toBe(2);
+    expect(stderr.join('\n')).toMatch(/missing required flag --name/);
+  });
+
+  it('refuses when --description is missing', async () => {
+    const { deps, stderr } = fixture();
+    const result = await runAdminCli(['seed-cause', '--db=ignored', '--name=CRC'], deps);
+    expect(result.exit_code).toBe(2);
+    expect(stderr.join('\n')).toMatch(/missing required flag --description/);
+  });
+});
+
+describe('admin-cli seed-sub-topic', () => {
+  it('creates an active sub-topic under a seeded cause', async () => {
+    const { deps, stdout } = fixture();
+    await runAdminCli(
+      ['seed-cause', '--db=ignored', '--name=CRC', '--description=colon cancer'],
+      deps,
+    );
+    const cause = JSON.parse(stdout[0] ?? '') as { cause_id: string };
+    const result = await runAdminCli(
+      [
+        'seed-sub-topic',
+        '--db=ignored',
+        `--cause-id=${cause.cause_id}`,
+        '--name=KRAS resistance',
+        '--description=KRAS-mutant resistance mechanisms',
+        '--scope-query=kras AND resistance',
+      ],
+      deps,
+    );
+    expect(result.exit_code).toBe(0);
+    const out = JSON.parse(stdout[1] ?? '') as {
+      sub_topic_id: string;
+      cause_id: string;
+      name: string;
+      status: string;
+    };
+    expect(out.cause_id).toBe(cause.cause_id);
+    expect(out.name).toBe('KRAS resistance');
+    expect(out.status).toBe('active');
+    expect(out.sub_topic_id).toMatch(/^stp_/);
+  });
+
+  it('refuses with not_found when the cause does not exist', async () => {
+    const { deps, stderr } = fixture();
+    const result = await runAdminCli(
+      [
+        'seed-sub-topic',
+        '--db=ignored',
+        '--cause-id=cau_nope',
+        '--name=X',
+        '--description=Y',
+        '--scope-query=z',
+      ],
+      deps,
+    );
+    expect(result.exit_code).toBe(2);
+    expect(stderr.join('\n')).toMatch(/not_found/);
+  });
+
+  it('refuses with invalid_state when the cause is archived', async () => {
+    const { deps, stderr, server } = fixture();
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
+    server.store.causes.set(cause.id, { ...cause, status: 'archived' });
+    const result = await runAdminCli(
+      [
+        'seed-sub-topic',
+        '--db=ignored',
+        `--cause-id=${cause.id}`,
+        '--name=X',
+        '--description=Y',
+        '--scope-query=z',
+      ],
+      deps,
+    );
+    expect(result.exit_code).toBe(2);
+    expect(stderr.join('\n')).toMatch(/invalid_state/);
+  });
+
+  it('refuses when --scope-query is missing', async () => {
+    const { deps, stderr, server } = fixture();
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
+    const result = await runAdminCli(
+      [
+        'seed-sub-topic',
+        '--db=ignored',
+        `--cause-id=${cause.id}`,
+        '--name=X',
+        '--description=Y',
+      ],
+      deps,
+    );
+    expect(result.exit_code).toBe(2);
+    expect(stderr.join('\n')).toMatch(/missing required flag --scope-query/);
+  });
+});
+
 describe('admin-cli flag parsing', () => {
   it('accepts both --key=value and --key value forms', async () => {
     const { deps, stdout: s1 } = fixture();
