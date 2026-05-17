@@ -32,7 +32,7 @@ These are not bad causes. Several may be excellent later-phase causes, especiall
 
 ## Starter sub-topics
 
-When the public instance launches, it ships with two or three **hand-seeded starter sub-topics** so contributors arrive to something concrete to work on. The shortlist below is the candidate set; the final v0 starter set is locked at instance-launch time, not now.
+When the public instance launches, it ships with **one** hand-seeded starter sub-topic so contributors arrive to something concrete; the second and third are seated from the shortlist below on a maturity-or-contributor signal, not all at launch — concentration, not breadth, is what lets the redundant-review mechanic work at low contributor count (see [ROADMAP §Phase 2](../ROADMAP.md#phase-2--single-cause-public-instance-opened-2026-05-14)). The shortlist below is the candidate set; which sub-topic opens first is locked at launch, the rest as the instance matures.
 
 ### Strongly favored
 

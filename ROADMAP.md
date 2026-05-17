@@ -46,7 +46,7 @@ This is the unique technical asset of Anchorage and the cheapest credible artifa
 
 ## Phase 2 — Single-cause public instance (opened 2026-05-14)
 
-**Goal:** One umbrella cause running on Anchorage with real human contributors, two or three hand-seeded starter sub-topics, and a manuscript projection emerging from the first sub-topic to mature.
+**Goal:** One umbrella cause running on Anchorage with real human contributors and a manuscript projection emerging from the first sub-topic to mature. The instance opens with a single hand-seeded sub-topic and seats the second/third from the [`docs/seed-topic.md`](./docs/seed-topic.md) shortlist on a maturity-or-contributor signal — the first sub-topic reaching an active node, or enough contributors that a new envelope won't strand reviewers — because concentration, not breadth, is what lets the redundant-review mechanic work at low contributor count: two contributors split across three sub-topics may never overlap, and nothing leaves `staged` without an independent reviewer. The two-or-three starter set remains the Phase 2 end-state, not the launch state; the shortlist stays pre-vetted and on-deck.
 
 **Scope:**
 
