@@ -382,9 +382,7 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
       inputSchema: QueryCausesInput.shape,
       outputSchema: QueryCausesOutput.shape,
     },
-    wrap((caller: Caller, _input: QueryCausesInput) =>
-      server.resources.getCauseDirectory(caller),
-    ),
+    wrap((caller: Caller, _input: QueryCausesInput) => server.resources.getCauseDirectory(caller)),
   );
 
   mcp.registerTool(
