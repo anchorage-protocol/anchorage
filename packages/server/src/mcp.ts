@@ -43,6 +43,8 @@ import {
   ProposeSupersedesOutput,
   ProposeSynthesisInput,
   ProposeSynthesisOutput,
+  QueryCausesInput,
+  QueryCausesOutput,
   QueryFrontierInput,
   QueryFrontierOutput,
   QueryProposalsInput,
@@ -94,10 +96,28 @@ export interface McpBuildOptions {
 
 export function buildMcpServer(server: Server, options: McpBuildOptions): McpServer {
   const caller: Caller = server.authenticator.authenticate(options.token);
-  const mcp = new McpServer({
-    name: options.serverInfo?.name ?? 'anchorage',
-    version: options.serverInfo?.version ?? PROTOCOL_VERSION,
-  });
+  // Initialize-time orientation (MCP `instructions`). Clients inject
+  // this into the model's context before any tool call, so a
+  // freshly-connected agent knows the contribute sequence without
+  // having to discover it by trial — the other half (with
+  // `query_causes`) of closing the post-auth first-use gap (PRD
+  // §Read-path tools and resources, "Agent bootstrap"). Kept short and
+  // flow-shaped: the tool descriptions carry the per-step detail.
+  const instructions =
+    'Anchorage is cooperative open research with auditable lineage. ' +
+    'To contribute: call query_causes to see the causes this instance ' +
+    'hosts and their open sub-topics; pick a cause_id; call set_capacity ' +
+    'for that cause; then request_assignment and fulfill the offered task ' +
+    'with the matching propose_* tool or cast_review_vote. The cause://, ' +
+    'sub-topic://, node://, subgraph://, contributor://, and manuscript:// ' +
+    'resources mirror the same data passively for browsing.';
+  const mcp = new McpServer(
+    {
+      name: options.serverInfo?.name ?? 'anchorage',
+      version: options.serverInfo?.version ?? PROTOCOL_VERSION,
+    },
+    { instructions },
+  );
 
   // Role discovery at build time. Used to gate which tools get
   // registered on this session: a contributor's `tools/list` response
@@ -349,6 +369,24 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
   );
 
   // ── Read-path ───────────────────────────────────────────────────
+  // `query_causes` is the bootstrap entry point — see the contracts
+  // note on `QueryCausesInput`. It mirrors the `cause://` resource via
+  // the same `server.resources.getCauseDirectory`, so there is one
+  // implementation behind the passive resource and the active tool.
+  mcp.registerTool(
+    'query_causes',
+    {
+      description:
+        'Start here. List the causes this instance hosts and their open ' +
+        'sub-topics; pick a cause_id, then set_capacity and request_assignment.',
+      inputSchema: QueryCausesInput.shape,
+      outputSchema: QueryCausesOutput.shape,
+    },
+    wrap((caller: Caller, _input: QueryCausesInput) =>
+      server.resources.getCauseDirectory(caller),
+    ),
+  );
+
   mcp.registerTool(
     'query_frontier',
     {

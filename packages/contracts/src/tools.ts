@@ -13,6 +13,7 @@ import {
 } from './ids.js';
 import { ExternalRef, QuotedSpan } from './nodes.js';
 import { Proposal, ProposalPayload, ProposalStatus } from './proposals.js';
+import { CauseDirectory } from './resources.js';
 import { ReviewDecision } from './reviews.js';
 
 // Tool I/O contracts: the input/output shapes for the MCP tools defined
@@ -179,6 +180,26 @@ export const CastReviewVoteOutput = z.object({ vote_id: ReviewVoteId }).strict()
 export type CastReviewVoteOutput = z.infer<typeof CastReviewVoteOutput>;
 
 // ──── Read-path tools ────
+
+// `query_causes` is the agent's bootstrap entry point: the tool-surface
+// twin of the `cause://` resource, returning the identical
+// `CauseDirectory` shape. It exists because the tool surface must be
+// self-sufficient for the *first* contribution. `request_assignment`
+// (and `set_capacity`) require a `cause_id`, but the only other way to
+// obtain one is the passive `cause://` resource — and an MCP client is
+// not guaranteed to surface resources to the model driving it (many
+// expose only tools, or gate resources behind explicit user attach).
+// Without a tool, a freshly-connected agent that just authenticated has
+// no in-band path from "I want to contribute" to a `cause_id`, which is
+// exactly the moment we must not lose a new contributor. Resources stay
+// the canonical passive browsing mirror (PRD §Read-path tools and
+// resources); this is the active enumeration the bootstrap needs. No
+// args: an instance's cause set is small and the directory is the whole
+// answer (filtering is `query_frontier`'s job, one step later).
+export const QueryCausesInput = z.object({}).strict();
+export type QueryCausesInput = z.infer<typeof QueryCausesInput>;
+export const QueryCausesOutput = CauseDirectory;
+export type QueryCausesOutput = z.infer<typeof QueryCausesOutput>;
 
 export const QueryFrontierInput = z
   .object({
@@ -432,6 +453,7 @@ export const ToolName = z.enum([
   'propose_change_of_home',
   'propose_sub_topic',
   'cast_review_vote',
+  'query_causes',
   'query_frontier',
   'query_proposals',
   'fetch_calibration_batch',

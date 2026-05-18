@@ -859,7 +859,10 @@ export class Server {
   private requireActiveCause(causeId: CauseId): Cause {
     const cause = this.store.causes.get(causeId);
     if (!cause) {
-      throw new ServerError('not_found', `cause not found: ${causeId}`);
+      throw new ServerError(
+        'not_found',
+        `cause not found: ${causeId} — call query_causes for the active cause ids`,
+      );
     }
     if (cause.status !== 'active') {
       throw new ServerError('invalid_state', `cause is ${cause.status}`);

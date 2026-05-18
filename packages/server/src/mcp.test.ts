@@ -65,6 +65,7 @@ describe('mcp transport', () => {
     'propose_change_of_home',
     'propose_sub_topic',
     'cast_review_vote',
+    'query_causes',
     'query_frontier',
     'query_proposals',
     'fetch_calibration_batch',

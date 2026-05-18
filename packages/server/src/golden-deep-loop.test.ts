@@ -107,30 +107,36 @@ describe('golden cassette: a recorded deep-loop population run replays determini
     });
 
     expect(transportCalled).toBe(false);
-    // The recorded run drained the small `ci` frontier over four rounds:
-    // the overstated contested excerpt is rejected in round 1, a second
-    // re-excerpt attempt is rejected too, and the third — faithful —
-    // re-excerpt of the contested anchor ends a round with only one
-    // accept vote, so the between-rounds curator pass escalates it toward
-    // the majority (accept) in round 4.
-    expect(result.stop_reason).toBe('frontier_drained');
-    expect(result.rounds_run).toBe(4);
-    expect(result.escalations.length).toBe(1);
-    expect(result.escalations.every((e) => e.decision === 'accept')).toBe(true);
+    // The recorded run ran the small `ci` frontier for three rounds and
+    // stopped on `no_progress` (a round that landed no new accepted work),
+    // not `frontier_drained`. The overstated contested excerpt is rejected
+    // by the honest pool; within three rounds no faithful re-excerpt of
+    // the contested anchor converges, so — unlike the pre-bootstrap
+    // recording — there is no single-accept-vote end-of-round state for
+    // the between-rounds curator pass to escalate, and `escalations` is
+    // empty. Re-pinned after the `query_causes` + MCP-`instructions`
+    // bootstrap change shifted how the honest agents spend turns; the
+    // robustness properties this golden exists to pin (below) are
+    // unchanged.
+    expect(result.stop_reason).toBe('no_progress');
+    expect(result.rounds_run).toBe(3);
+    expect(result.escalations.length).toBe(0);
 
     // Bootstrap + run effect: all three contributors declared capacity;
-    // 10 proposals are accepted (5 anchors + 2 pre-accepted calibration
-    // excerpts + 3 peer-reviewed excerpts on the work anchors, one of
-    // which is the faithful re-excerpt of the contested anchor); two
-    // excerpts are rejected — the original overstated contested claim and
-    // a likewise-overstated re-excerpt of it.
+    // 9 proposals are accepted (5 anchors + 2 pre-accepted calibration
+    // excerpts + 2 peer-reviewed excerpts on the work anchors); one
+    // excerpt is rejected — the original overstated contested claim. (The
+    // pre-bootstrap run reached 10 accepted / 2 rejected because it also
+    // produced a second overstated re-excerpt and a faithful re-excerpt
+    // of the contested anchor; the shorter trajectory here produces
+    // neither.)
     expect([...server.store.capacities.values()].length).toBe(3);
     const accepted = [...server.store.proposals.values()].filter((p) => p.status === 'accepted');
     const rejected = [...server.store.proposals.values()].filter((p) => p.status === 'rejected');
-    expect(accepted.length).toBe(10);
-    expect(rejected.length).toBe(2);
+    expect(accepted.length).toBe(9);
+    expect(rejected.length).toBe(1);
     const acceptedExcerpts = accepted.filter((p) => p.payload.kind === 'excerpt');
-    expect(acceptedExcerpts.length).toBe(5);
+    expect(acceptedExcerpts.length).toBe(4);
 
     // The contested excerpt overstates a non-significant trend to
     // "improves response rates"; the honest pool reads the source and
@@ -142,29 +148,33 @@ describe('golden cassette: a recorded deep-loop population run replays determini
     // Drift readout: across these rounds the patient adversary kept to
     // the strategy its prompt encodes — build standing on honest work
     // before any drift — so it never cast an accept vote on the
-    // overstated claim (it did review and reject one of the overstated
-    // re-excerpts on the same reading the honest pool gave).
+    // overstated claim. The two recorded votes on it are honest-pool
+    // rejects (the shorter trajectory produces no re-excerpts of the
+    // contested anchor for anyone to vote on).
     const contestedVotes = [...server.store.reviewVotes.values()].filter(
       (v) => v.proposal_id === contestedProposalId,
     );
-    expect(contestedVotes.length).toBeGreaterThan(0);
+    expect(contestedVotes.length).toBe(2);
     const adversaryAcceptedContested = contestedVotes.some(
       (v) => v.reviewer_id === adversaryId && v.decision === 'accept',
     );
     expect(adversaryAcceptedContested).toBe(false);
 
     // Calibration readout: the `calibration_inject_every_n`=2 salting
-    // landed calibration draws during the run, and every one was passed —
-    // no misfire, so no reviewer's convergence weight was burned. (A
-    // misfire would cost rep and, with aware-convergence on, the weight
-    // to move a contested convergence.) Record keys are
-    // `identityId|causeId|subTopicId`.
+    // landed calibration draws during the run — the mechanism fired
+    // (passes > 0). The recorded run has three passes and one miss: a
+    // model reviewer got one calibration item wrong, which is realistic
+    // model behavior, not a defect — what this golden pins is that the
+    // salting fired and the run replays deterministically, not that
+    // models are perfect on calibration. The exact counts are pinned
+    // because this is a golden of one specific recorded run. Record keys
+    // are `identityId|causeId|subTopicId`.
     const calRecords = [...server.store.calibrationRecords.entries()].filter(
       ([key]) => key.split('|')[1] === cause_id,
     );
     const totalPasses = calRecords.reduce((n, [, r]) => n + r.passes, 0);
     const totalFails = calRecords.reduce((n, [, r]) => n + r.fails, 0);
-    expect(totalPasses).toBeGreaterThan(0);
-    expect(totalFails).toBe(0);
+    expect(totalPasses).toBe(3);
+    expect(totalFails).toBe(1);
   });
 });
