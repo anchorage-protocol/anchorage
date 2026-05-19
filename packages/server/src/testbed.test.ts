@@ -5,7 +5,6 @@ import {
   type ContentProvider,
   type HallucinationFabricator,
   payloadBiasedDecider,
-  payloadDecliningDecider,
   rejectAllDecider,
   runHallucinator,
   runHonestReviewer,
@@ -43,6 +42,33 @@ async function wireArchetype(server: Server, identity_id: string) {
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await Promise.all([mcp.connect(st), client.connect(ct)]);
   return new AnchorageClient(client);
+}
+
+// Mark identities as cause participants for the rep-based eligible-
+// reviewer pool (PRD §Reviewer assignment; the single-slot reshape
+// dropped capacity, so cause-participation == has-accrued-rep). Seeds
+// neutral (0, 0) entries — the faithful stand-in for the setCapacity
+// step the testbed used before the reshape, not a behavior override:
+// strata stay vote-derived, these entries carry no demonstrated or
+// recent signal.
+function seedReviewerRep(server: Server, causeId: string, ...ids: string[]): void {
+  let subTopicId = 'st_seed';
+  for (const st of server.store.subTopics.values()) {
+    if (st.cause_id === causeId) {
+      subTopicId = st.id;
+      break;
+    }
+  }
+  for (const id of ids) {
+    server.store.reputations.set(`${id}|${causeId}|${subTopicId}` as never, {
+      identity_id: id as never,
+      cause_id: causeId as never,
+      sub_topic_id: subTopicId as never,
+      demonstrated: 0,
+      recent: 0,
+      updated_at: server.clock.now(),
+    });
+  }
 }
 
 // Strategic-adversary deciders shared across the (cause "CRC", sub-
@@ -242,15 +268,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     const result = await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: provider,
     });
 
-    // Action log: capacity, then three (request, accept, submit)
-    // triples, then idle when the frontier dries up.
+    // Action log: three (request, accept, submit) triples, then
+    // idle when the frontier dries up. Single-slot (PRD §Assignment)
+    // means no capacity step — the first action is the first request.
     const actionKinds = result.actions.map((a) => a.kind);
-    expect(actionKinds[0]).toBe('set_capacity');
+    expect(actionKinds[0]).toBe('requested');
     expect(actionKinds.filter((k) => k === 'submitted')).toHaveLength(3);
     expect(actionKinds[actionKinds.length - 1]).toBe('idle');
 
@@ -269,60 +294,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
       (a) => a.status === 'submitted',
     );
     expect(submittedAssignments).toHaveLength(3);
-  });
-
-  it('declines tasks the archetype cannot fulfill, freeing the rate budget', async () => {
-    const server = new Server({
-      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
-      idGen: new SeededIdGen('h'),
-      verifier: new FakeVerifier(),
-    });
-    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
-    const subTopic = server.bootstrap.seedSubTopic({
-      cause_id: cause.id,
-      name: 'st',
-      description: 'x',
-      scope_query: 'x',
-    });
-    // Two orphan anchors.
-    for (let i = 1; i <= 2; i++) {
-      const a = await server.tools.proposeAnchor(
-        { identity_id: alice.id },
-        {
-          cause_id: cause.id,
-          home_sub_topic_id: subTopic.id,
-          content: `p${i}`,
-          external_ref: { kind: 'pmid', value: String(i) },
-        },
-      );
-      server.curator.acceptProposal(a.proposal_id);
-    }
-
-    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
-    const bobClient = await wireArchetype(server, bob.id);
-
-    // Provider rejects every anchor — archetype declines every task.
-    const provider: ContentProvider = { forAnchor: () => null };
-
-    const result = await runHonestStrong(bobClient, {
-      cause_id: cause.id,
-      rate: 1,
-      kinds: ['excerpt'],
-      content: provider,
-    });
-
-    const declines = result.actions.filter((a) => a.kind === 'declined');
-    expect(declines).toHaveLength(2);
-    // Final state: terminates idle (no fulfillable work) — the
-    // archetype didn't get stuck against its rate cap because each
-    // decline freed the budget.
-    const last = result.actions[result.actions.length - 1];
-    if (!last) throw new Error('expected at least one action');
-    expect(last.kind).toBe('idle');
-    expect(
-      [...server.store.proposals.values()].filter((p) => p.payload.kind === 'excerpt'),
-    ).toHaveLength(0);
   });
 
   it('drives proposal → reviewer-pool review → convergent merge end to end', async () => {
@@ -379,8 +350,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // staged excerpt proposals.
     const proposerResult = await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: provider,
     });
     expect(proposerResult.actions.filter((a) => a.kind === 'submitted')).toHaveLength(2);
@@ -389,12 +358,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // two accepts on each proposal should converge it.
     const carolResult = await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     const daveResult = await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -465,8 +432,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: provider,
     });
 
@@ -474,12 +439,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // to rejected on the second reject vote.
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: rejectAllDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: rejectAllDecider,
     });
 
@@ -533,8 +496,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: {
         forAnchor: (id) => ({
           content: `claim ${id}`,
@@ -544,12 +505,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     });
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -609,19 +568,16 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Lazy goes first — votes accept on whatever's offered.
     await runHonestReviewer(lazyClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     // Then the honest rejecters. With threshold 2 rejects, the
     // second one closes the proposal.
     await runHonestReviewer(honest1Client, {
       cause_id: cause.id,
-      rate: 5,
       decide: rejectAllDecider,
     });
     await runHonestReviewer(honest2Client, {
       cause_id: cause.id,
-      rate: 5,
       decide: rejectAllDecider,
     });
 
@@ -696,14 +652,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     const result = await runHallucinator(bobClient, {
       cause_id: cause.id,
-      rate: 5,
       fabricator,
     });
 
-    // Two anchors → two requested+accepted+submit_rejected triples,
-    // then idle.
+    // Single-slot (PRD §Assignment): the first fabricated submit is
+    // refused by the verifier, leaving the assignment `accepted` and
+    // wedging the sole slot — the next request_assignment is refused
+    // and the loop ends. So the hallucinator gets exactly one
+    // requested+accepted+submit_rejected triple, then idle, even
+    // though two orphan anchors exist. This is the throttle the
+    // single-slot model imposes on a pure fabricator (see the
+    // hallucinator archetype's top-of-file comment).
     const submitRejected = result.actions.filter((a) => a.kind === 'submit_rejected');
-    expect(submitRejected).toHaveLength(2);
+    expect(submitRejected).toHaveLength(1);
     expect(
       submitRejected.every((a) => a.kind === 'submit_rejected' && a.code === 'invalid_input'),
     ).toBe(true);
@@ -784,8 +745,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     const result = await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: provider,
     });
 
@@ -795,26 +754,31 @@ describe('testbed: synthetic populations against the wired surface', () => {
     ).toHaveLength(1);
   });
 
-  it('honest-weak archetype: friction rate matches the configured weak fraction', async () => {
+  it('honest-weak archetype: a weak span parks the single slot (PRD §Assignment)', async () => {
     // PRD §Adversary taxonomy (Honest-weak): "modest-capability honest
     // contributor (e.g. small local model). Should largely succeed;
-    // failure-to-contribute rate measures friction." This test pins
-    // the friction measurement: the fraction of attempts the verifier
-    // refuses is observable in the action log, and matches the
-    // fraction the content provider models as weak.
+    // failure-to-contribute rate measures friction." Under the
+    // single-slot model (PRD §Assignment) the friction is paid as
+    // *parking*, not as a fraction over many attempts: a verifier
+    // rejection leaves the assignment `accepted` and wedges the
+    // contributor's sole slot, so the next request_assignment is
+    // refused and the loop ends (see the honest-weak archetype's
+    // top-of-file comment). This test pins that signature.
     //
     // Setup: eight anchors, sources configured for all eight. The
     // content provider returns verifying spans for six and near-but-
-    // wrong spans (text not in the corresponding source) for two —
-    // simulating a smaller model that mostly grounds correctly but
-    // occasionally produces a span the source doesn't actually
-    // contain. Honest-weak's loop catches the verifier rejection,
-    // records `submit_rejected`, and continues.
+    // wrong spans for two (anchors at creation index 1 and 5). The
+    // frontier offers anchors in creation order, so honest-weak
+    // submits paper 1 (verifies, slot resolves and frees), then
+    // paper 2 (the first weak span) is refused and parks the slot.
+    // One submitted, one rejected, then idle — the rest of the weak
+    // fraction is never reached because the slot is held.
     //
-    // The two failures are not adversarial. Hallucinator produces
-    // zero verifying submissions; honest-strong produces only
-    // verifying submissions; honest-weak sits between them, and the
-    // gap *is* the friction the regime imposes on weaker contributors.
+    // The failure is not adversarial. Hallucinator produces zero
+    // verifying submissions; honest-strong produces only verifying
+    // submissions; honest-weak grounds correctly until its first
+    // weak span and is then parked, which is the friction the
+    // single-slot regime imposes on weaker contributors.
     const sources = new Map<string, string>();
     for (let i = 1; i <= 8; i++) {
       sources.set(String(i), `paper ${i} verifying span unique to source ${i}`);
@@ -892,30 +856,32 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     const result = await runHonestWeak(bobClient, {
       cause_id: cause.id,
-      rate: 10,
-      kinds: ['excerpt'],
       content: provider,
     });
 
     const submitted = result.actions.filter((a) => a.kind === 'submitted');
     const rejected = result.actions.filter((a) => a.kind === 'submit_rejected');
-    expect(submitted).toHaveLength(6);
-    expect(rejected).toHaveLength(2);
+    // Single-slot parking signature: paper 1 verifies and resolves
+    // the slot; paper 2 (the first weak span) is refused and wedges
+    // the slot; the next request_assignment is refused and the loop
+    // idles. The remaining weak span (anchor index 5) is never
+    // reached — that is the friction, paid as parking.
+    expect(submitted).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
     expect(rejected.every((a) => a.kind === 'submit_rejected' && a.code === 'invalid_input')).toBe(
       true,
     );
-    // Friction rate observable from the log alone: 2/8 = 0.25.
-    const total = submitted.length + rejected.length;
-    expect(rejected.length / total).toBe(0.25);
+    expect(result.actions[result.actions.length - 1]?.kind).toBe('idle');
 
-    // Server-side cross-check: exactly six excerpt proposals exist —
-    // the verifier prevented the other two from materializing, just
-    // as it does for the hallucinator. The cost is structurally the
-    // same; the difference is intent and fraction.
+    // Server-side cross-check: exactly one excerpt proposal exists —
+    // paper 1. The verifier prevented the weak span from
+    // materializing, just as it does for the hallucinator, and the
+    // single slot held by the refused assignment kept honest-weak
+    // from churning through the rest of the frontier.
     const excerptProposals = [...server.store.proposals.values()].filter(
       (p) => p.payload.kind === 'excerpt',
     );
-    expect(excerptProposals).toHaveLength(6);
+    expect(excerptProposals).toHaveLength(1);
 
     // Reputation: honest-weak earns nothing from rejected submits
     // (no proposal record means no review, means no rep settlement).
@@ -999,8 +965,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     };
     await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: provider,
     });
 
@@ -1012,7 +976,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -1026,12 +989,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const daveClient = await wireArchetype(server, dave.id);
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: naiveBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: naiveBiasedDecider,
     });
 
@@ -1167,8 +1128,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     };
     await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: provider,
     });
 
@@ -1176,7 +1135,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -1186,12 +1144,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const daveClient = await wireArchetype(server, dave.id);
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: naiveBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: naiveBiasedDecider,
     });
 
@@ -1315,8 +1271,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     };
     await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: provider,
     });
 
@@ -1329,7 +1283,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -1339,12 +1292,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const daveClient = await wireArchetype(server, dave.id);
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: naiveBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: naiveBiasedDecider,
     });
 
@@ -1486,8 +1437,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     };
     await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: provider,
     });
 
@@ -1495,7 +1444,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -1510,12 +1458,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const daveClient = await wireArchetype(server, dave.id);
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -1663,8 +1609,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     };
     await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: provider,
     });
 
@@ -1676,7 +1620,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -1686,12 +1629,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const daveClient = await wireArchetype(server, dave.id);
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -1701,12 +1642,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const graceClient = await wireArchetype(server, grace.id);
     await runHonestReviewer(frankClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(graceClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -1847,13 +1786,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    for (const c of [{ identity_id: carol.id }, { identity_id: dave.id }]) {
-      await server.tools.setCapacity(c, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id);
 
     // PRIMING: three bias-aligned excerpts. Carol and Dave both vote
     // accept on each via direct cast_review_vote — bypassing the
@@ -1917,7 +1850,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // contested item via the assignment loop — 1 accept on contested.
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -1930,7 +1862,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // reject under the calibration-aware bias predicate.
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -1942,7 +1873,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // surfaces not_found and the archetype idles.
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -2087,17 +2017,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
     const eveClient = await wireArchetype(server, eve.id);
-    for (const c of [
-      { identity_id: carol.id },
-      { identity_id: dave.id },
-      { identity_id: eve.id },
-    ]) {
-      await server.tools.setCapacity(c, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id, eve.id);
 
     // Priming: Carol and Dave both vote accept on three bias-aligned
     // excerpts, same shape as the stratification-closes-coalition
@@ -2158,22 +2078,18 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // = count by construction), and the contested target flips.
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(eveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -2268,13 +2184,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // architecturally-load-bearing distinction between
     // identity-layer mismatch and work-availability opacity.
     await expect(
-      server.tools.setCapacity(cEve, {
-        cause_id: cause.id,
-        rate: 1,
-        kinds: ['excerpt'],
-      }),
-    ).rejects.toMatchObject({ code: 'unauthorized' });
-    await expect(
       server.tools.requestAssignment(cEve, { cause_id: cause.id }),
     ).rejects.toMatchObject({ code: 'unauthorized' });
     await expect(
@@ -2293,26 +2202,17 @@ describe('testbed: synthetic populations against the wired surface', () => {
       }),
     ).rejects.toMatchObject({ code: 'unauthorized' });
 
-    // Erin mints at threshold and the same seams pass — both
-    // set_capacity and a contributor-initiated propose_anchor
-    // succeed without throwing, confirming that for an above-
-    // threshold identity the gate doesn't fire and each tool's own
-    // logic runs to completion. The successful set_capacity is
-    // load-bearing: the gate fires before set_capacity's body, so
-    // a return without throw is direct evidence the gate was
-    // inert. The successful propose_anchor exercises a different
-    // write seam (contributor-initiated propose) for the same
-    // shape of evidence.
+    // Erin mints at threshold and the same seam passes — a
+    // contributor-initiated propose_anchor succeeds without
+    // throwing, confirming that for an above-threshold identity the
+    // gate doesn't fire and the tool's own logic runs to
+    // completion. The gate fires before propose_anchor's body, so a
+    // return without throw is direct evidence the gate was inert.
     const erin = server.bootstrap.mintIdentity({
       display_name: 'erin',
       attestation_level: 1,
     });
     const cErin = { identity_id: erin.id };
-    await server.tools.setCapacity(cErin, {
-      cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt', 'review'],
-    });
     const erinR = await server.tools.proposeAnchor(cErin, {
       cause_id: cause.id,
       home_sub_topic_id: sub.id,
@@ -2366,13 +2266,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const eve = server.bootstrap.mintIdentity({ display_name: 'eve' });
     const cEve = { identity_id: eve.id };
 
-    // Action 1: set_capacity (budget 1/3).
-    await server.tools.setCapacity(cEve, {
-      cause_id: cause.id,
-      rate: 5,
-      kinds: ['anchor', 'excerpt', 'review'],
-    });
-    // Action 2-3: propose_anchor (budget 2/3, then 3/3).
+    // Actions 1-3: propose_anchor (budget 1/3, 2/3, 3/3).
     await server.tools.proposeAnchor(cEve, {
       cause_id: cause.id,
       home_sub_topic_id: sub.id,
@@ -2385,6 +2279,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
       content: 'paper 2',
       external_ref: { kind: 'pmid', value: '2' },
     });
+    await server.tools.proposeAnchor(cEve, {
+      cause_id: cause.id,
+      home_sub_topic_id: sub.id,
+      content: 'paper 3',
+      external_ref: { kind: 'pmid', value: '3' },
+    });
 
     // Action 4: refuses with `rate_limited`. The cap fires at the
     // shared accountWriteAction helper, before tool-specific
@@ -2394,8 +2294,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
       server.tools.proposeAnchor(cEve, {
         cause_id: cause.id,
         home_sub_topic_id: sub.id,
-        content: 'paper 3',
-        external_ref: { kind: 'pmid', value: '3' },
+        content: 'paper 4',
+        external_ref: { kind: 'pmid', value: '4' },
       }),
     ).rejects.toMatchObject({ code: 'rate_limited' });
     // Cross-tool: a *different* write tool hits the same cap. Pins
@@ -2415,21 +2315,22 @@ describe('testbed: synthetic populations against the wired surface', () => {
       external_ref: { kind: 'pmid', value: '4' },
     });
 
-    // Server state: 3 anchor proposals successfully landed (papers
-    // 1, 2, 4 — paper 3 was refused). The refused calls left no
-    // proposal record, matching the contract that rate-limit
-    // refusal happens before tool-specific state changes.
+    // Server state: 4 anchor proposals successfully landed (papers
+    // 1, 2, 3, then paper 4 after the epoch reset — paper 4's first
+    // attempt was refused). The refused call left no proposal
+    // record, matching the contract that rate-limit refusal happens
+    // before tool-specific state changes.
     const anchors = [...server.store.proposals.values()].filter(
       (p) => p.payload.kind === 'anchor' && p.proposer_id === eve.id,
     );
-    expect(anchors).toHaveLength(3);
+    expect(anchors).toHaveLength(4);
   });
 
   it('cross-cause identity-clustering: pairs voting together across causes surface; single-cause pairs do not (PRD §Identity bullet 4)', async () => {
     // PRD §Identity bullet 4 (cross-cause identity-clustering) —
     // the fourth of the four sybil-resistance layers. Curator-side
-    // projection parallel to `declinePatterns` but on a different
-    // signal: per-(reviewer pair) count of distinct causes where
+    // projection on a per-(reviewer pair) signal: the count of
+    // distinct causes where
     // both reviewers cast votes on the same proposal. Honest
     // reviewers typically work in one cause (per-cause reputation);
     // a pair appearing on shared proposals across multiple causes
@@ -2721,13 +2622,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
       },
     );
 
-    // Carol declares capacity in cause B (the gate is consulted at
-    // request_assignment, not at set_capacity).
-    await server.tools.setCapacity(
-      { identity_id: carol.id },
-      { cause_id: causeB.id, rate: 1, kinds: ['review'] },
-    );
-
+    // Carol requests an assignment in cause B directly — single-slot
+    // (PRD §Assignment) has no capacity step; the demo gate is
+    // consulted at request_assignment.
     // Carol's request_assignment in cause B refuses with `not_found`
     // — the demo gate's null-policy fires (no rep entries in cause
     // B → fail when threshold > 0). Her cause-A demonstrated does
@@ -2774,10 +2671,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
         content: 'cause A excerpt 3',
         quoted_span: { text: 'treatment X works for stage III patients', offset: 0 },
       },
-    );
-    await server.tools.setCapacity(
-      { identity_id: carol.id },
-      { cause_id: causeA.id, rate: 1, kinds: ['review'] },
     );
     const causeAAssignment = await server.tools.requestAssignment(
       { identity_id: carol.id },
@@ -2983,13 +2876,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    for (const c of [{ identity_id: carol.id }, { identity_id: dave.id }]) {
-      await server.tools.setCapacity(c, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id);
 
     // PRIMING: three bias-aligned excerpts. Carol accepts, Dave
     // rejects on each — the decorrelation move. Direct cast_review_
@@ -3045,7 +2932,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Erin runs first (singleton stratum, accepts the contested item).
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -3055,7 +2941,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // pulls the contested item and votes reject.
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -3067,7 +2952,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // onto the contested item.
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -3184,19 +3068,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const ginaClient = await wireArchetype(server, gina.id);
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    for (const c of [
-      { identity_id: erin.id },
-      { identity_id: frank.id },
-      { identity_id: gina.id },
-      { identity_id: carol.id },
-      { identity_id: dave.id },
-    ]) {
-      await server.tools.setCapacity(c, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    seedReviewerRep(server, cause.id, erin.id, frank.id, gina.id, carol.id, dave.id);
 
     // PRIMING. Three "works" proposals; Erin, Frank, Gina each
     // direct-cast accept on each. Direct cast bypasses the
@@ -3248,7 +3120,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // routed yet to compare against, and her accept lands.
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     // Frank and Gina now hit the cross-stratum gate: Erin (already
@@ -3256,24 +3127,20 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // skips the contested item for them. They idle without voting.
     await runHonestReviewer(frankClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(ginaClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     // Carol and Dave (singletons — never voted on priming) walk
     // through. Both reject under the bias predicate.
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -3398,19 +3265,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const ginaClient = await wireArchetype(server, gina.id);
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    for (const c of [
-      { identity_id: erin.id },
-      { identity_id: frank.id },
-      { identity_id: gina.id },
-      { identity_id: carol.id },
-      { identity_id: dave.id },
-    ]) {
-      await server.tools.setCapacity(c, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    seedReviewerRep(server, cause.id, erin.id, frank.id, gina.id, carol.id, dave.id);
 
     for (let i = 0; i < 3; i++) {
       const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
@@ -3454,29 +3309,24 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // the coalition has a chance to vote.
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(frankClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(ginaClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     // Coalition runs — but contested is no longer staged.
     // request_assignment surfaces not_found and they idle.
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -3590,13 +3440,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    for (const c of [{ identity_id: carol.id }, { identity_id: dave.id }]) {
-      await server.tools.setCapacity(c, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id);
 
     // PRIMING with decorrelation: Carol accepts, Dave rejects on
     // each — exactly the move that defeated the positive-only
@@ -3644,7 +3488,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -3655,7 +3498,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // reject.
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     // Dave runs. Carol's vote put Carol in routedReviewers; Dave's
@@ -3664,7 +3506,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // contested slot. He idles.
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -3716,13 +3557,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // on each refinement-alone config so the gap between thresholds
     // remains observable when the composition is unwired. The
     // seam beyond the composition closure — a coalition that
-    // avoids co-voting on any contentious item — has its concrete
-    // instance in the multi-proposal paired-decline coalition,
-    // closed structurally by the encounter-domain extension
-    // (`stratum_include_declines`) + paired-decline floor and
+    // avoids co-voting on any contentious item — is closed
     // operationally by the divergence-closure archival sweep
-    // (PRD §Reviewer assignment, ROADMAP §Status). Adaptations
-    // that route around both closures — coordinating off-platform
+    // (PRD §Reviewer assignment, ROADMAP §Status): a contested
+    // target no honest quorum converges stays staged until the
+    // sweep archives it, denying the coalition a suppression win.
+    // Adaptations that route around it — coordinating off-platform
     // so coalition members share no encounter at all — remain
     // testbed targets if they surface; PRD §Reviewer assignment
     // names calibration-item-specific agreement and payload-
@@ -3790,13 +3630,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    for (const c of [{ identity_id: carol.id }, { identity_id: dave.id }]) {
-      await server.tools.setCapacity(c, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id);
 
     // PRIMING with mixed strategy. Four "works" priming proposals.
     // Carol+Dave's vote pattern: (accept, accept), (accept, reject),
@@ -3864,14 +3698,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
     // Carol runs first, votes reject on contested.
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     // Dave runs. Cluster signal silent (mixed pattern below both
@@ -3880,7 +3712,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // pushing the tally to 2 rejects, which converges reject.
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -3896,149 +3727,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(erinVote?.decision).toBe('accept');
     expect(carolVote?.decision).toBe('reject');
     expect(daveVote?.decision).toBe('reject');
-  });
-
-  it('decline-pattern projection surfaces a reviewer who only declines outside their preferred shape', async () => {
-    // PRD §Adversary testbed names "decline-pattern abuse" as a
-    // distinct vector: declining everything outside the adversary's
-    // preferred sub-topic to approximate selectivity even though
-    // capacity is cause-level. PRD §Capacity and assignment commits
-    // two surfaces on the same per-(cause, reviewer) cumulative-rate
-    // signal: a curator-side projection (`declinePatterns`) for
-    // visibility, and an assignment-time gate
-    // (`assignment_max_decline_rate`) for enforcement. This scenario
-    // wires the projection end-to-end; the assignment-time gate has
-    // its own scenario downstream.
-    //
-    // This test wires the projection end-to-end. Dave declines any
-    // excerpt about "no effect" (a one-line stand-in for "outside
-    // my preferred shape" — the effective signal is the same: high
-    // decline rate within a cause). Erin accepts everything. Both
-    // are offered assignments via the standard pull loop. The
-    // curator-side projection ranks Dave at the top by decline
-    // rate; Erin's rate is zero. The min_rate filter shows the
-    // intended use — surface only patterns above a curator-chosen
-    // threshold.
-    const sources = new Map<string, string>([
-      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
-      ['2', 'arm B: treatment X has no effect in stage IV patients'],
-    ]);
-    const server = new Server({
-      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
-      idGen: new SeededIdGen('h'),
-      verifier: new FakeVerifier(new Set(), new Map(), sources),
-    });
-    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
-    const subTopic = server.bootstrap.seedSubTopic({
-      cause_id: cause.id,
-      name: 'treatment-X',
-      description: 'x',
-      scope_query: 'x',
-    });
-    const aliceCaller = { identity_id: alice.id };
-
-    const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      content: 'paper 1',
-      external_ref: { kind: 'pmid', value: '1' },
-    });
-    server.curator.acceptProposal(anchor1.proposal_id);
-    const anchor1Node = [...server.store.nodes.values()].find(
-      (n) => n.kind === 'anchor' && n.content === 'paper 1',
-    );
-    if (!anchor1Node) throw new Error('paper 1 anchor not materialized');
-    const anchor2 = await server.tools.proposeAnchor(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      content: 'paper 2',
-      external_ref: { kind: 'pmid', value: '2' },
-    });
-    server.curator.acceptProposal(anchor2.proposal_id);
-    const anchor2Node = [...server.store.nodes.values()].find(
-      (n) => n.kind === 'anchor' && n.content === 'paper 2',
-    );
-    if (!anchor2Node) throw new Error('paper 2 anchor not materialized');
-
-    // Three "works" excerpts under paper 1, three "no effect"
-    // excerpts under paper 2. Six staged review-tasks total.
-    for (let i = 0; i < 3; i++) {
-      await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchor1Node.id,
-        content: `treatment X works for stage III ${i}`,
-        quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
-      });
-      await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchor2Node.id,
-        content: `treatment X has no effect for stage IV ${i}`,
-        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-      });
-    }
-
-    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
-    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
-    const erinClient = await wireArchetype(server, erin.id);
-    const daveClient = await wireArchetype(server, dave.id);
-
-    // Erin runs first, accepts everything.
-    await runHonestReviewer(erinClient, {
-      cause_id: cause.id,
-      rate: 10,
-      decide: acceptAllDecider,
-    });
-
-    // Dave's decline pattern: declines anything mentioning "no
-    // effect" (returns null from decide → archetype calls
-    // decline_assignment with reason "outside expertise"). Accepts
-    // the rest. payloadDecliningDecider composes the predicate +
-    // fallback so the abuse shape ("decline outside my preferred
-    // shape, vote normally on the rest") is a one-line archetype.
-    const decliner = payloadDecliningDecider({
-      declineIf: (payload) => 'content' in payload && payload.content.includes('no effect'),
-      fallback: acceptAllDecider,
-    });
-    await runHonestReviewer(daveClient, {
-      cause_id: cause.id,
-      rate: 10,
-      decide: decliner,
-    });
-
-    // Curator-side projection: per-(cause, reviewer) decline rates,
-    // sorted by rate desc.
-    const patterns = server.curator.declinePatterns(cause.id);
-    expect(patterns).toHaveLength(2);
-    const davePattern = patterns.find((p) => p.identity_id === dave.id);
-    const erinPattern = patterns.find((p) => p.identity_id === erin.id);
-    expect(davePattern).toBeDefined();
-    expect(erinPattern).toBeDefined();
-    // Dave was offered all six excerpts and declined the three
-    // "no effect" ones. Decline rate 0.5.
-    expect(davePattern?.offers).toBeGreaterThanOrEqual(3);
-    expect(davePattern?.declines).toBe(3);
-    expect(davePattern?.decline_rate).toBeGreaterThan(0);
-    // Erin declined nothing.
-    expect(erinPattern?.declines).toBe(0);
-    expect(erinPattern?.decline_rate).toBe(0);
-    // Sorted: Dave first (higher rate).
-    expect(patterns[0]?.identity_id).toBe(dave.id);
-
-    // The min_rate filter cuts Erin out. The curator uses this
-    // filter to surface only patterns worth investigating.
-    const filtered = server.curator.declinePatterns(cause.id, { min_rate: 0.3 });
-    expect(filtered).toHaveLength(1);
-    expect(filtered[0]?.identity_id).toBe(dave.id);
-
-    // The min_offers filter prevents small-sample false positives.
-    // Setting min_offers above Dave's offer count hides him; below,
-    // he surfaces. The exact threshold a curator uses is
-    // operationally private (PRD §Verification engine, Rate limits and abuse signals).
-    const tooHigh = server.curator.declinePatterns(cause.id, { min_offers: 999 });
-    expect(tooHigh).toHaveLength(0);
   });
 
   it('archives stale staged proposals via the divergence-closure sweep', async () => {
@@ -4197,669 +3885,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(archivedAgain).toEqual([]);
   });
 
-  it('multi-proposal coalition: distributed lone-rejects with paired declines stall both contested targets, divergence-closure archives them', async () => {
-    // The seam the mixed-strategy-coalition headline pinned by name:
-    // "a coalition that avoids co-voting on any contentious item."
-    // Co-voting on a contentious proposal is what every cluster-signal
-    // refinement (agreement, anti-correlation, contention-weighted)
-    // computes against; if the coalition never has both members vote
-    // on the same contentious proposal, the cluster signal has nothing
-    // to act on. The constraint that makes this *sound* tight —
-    // suppressing the contested target inherently creates a contentious
-    // item — is navigated by distribution: each coalition member
-    // solo-rejects a *different* contested target and declines the
-    // other. With paired-decline as the routing primitive, each
-    // contested target sees one coalition reject and one honest
-    // accept; neither converges; Carol and Dave share zero voting
-    // history, so the cluster signal stays silent by construction.
-    //
-    // The vote-only closure stack does not catch this:
-    //   - cluster signal at the vote-only encounter domain
-    //     (contention-weighted, anti-correlation 1.0, agreement 1.0):
-    //     silent — Carol and Dave share no *vote* proposals, so no
-    //     edge metric has data to fire.
-    //   - calibration-aware convergence: silent — a single biased
-    //     reject per target never builds up a weighted reject sum
-    //     against the honest accept on that target.
-    //   - assignment gates (recent / demonstrated): inert at the v0
-    //     defaults this test runs; turning the demonstrated gate on
-    //     would close a *fresh* multi-proposal coalition (the sybil-
-    //     shaped variant), not a *patient* one primed first via
-    //     contributor-initiated voting.
-    //   - decline-pattern projection: surfaces both Carol and Dave to
-    //     the curator (each declined half their offered review tasks),
-    //     but the projection is a *visibility* surface, not the
-    //     assignment-time gate.
-    //
-    // The terminal outcome is the divergence-closure sweep above:
-    // both contested targets archive as `unresolved-archived` once
-    // the window expires, which from the proposer's perspective is
-    // the suppression result the coalition is driving toward —
-    // neither target accepts.
-    //
-    // Wired closures kept off in this scenario as the regression
-    // handle on the vote-only baseline (each is exercised in its
-    // own scenario with the closure on):
-    //   - encounter-domain widening (`stratum_include_declines`,
-    //     PRD §Reviewer assignment, ROADMAP §Status): widens the
-    //     cluster primitive's encounter domain to {accept, reject,
-    //     decline}; with the knob on, "Carol rejects target1 +
-    //     declines target2; Dave declines target1 + rejects target2"
-    //     reads as 100% pair-disagreement on 2 shared encounters
-    //     under the existing anti-correlation primitive at threshold
-    //     1.0 and the cross-stratum gate fires against the partner.
-    //   - decline-pattern → assignment-gate (`assignment_max_decline_rate`,
-    //     `assignment_decline_min_offers`, PRD §Capacity and
-    //     assignment, ROADMAP §Status): the operational form of the
-    //     curator-side `declinePatterns` projection — refuses
-    //     assignment when the per-(cause, reviewer) cumulative
-    //     decline rate clears the threshold and the offers floor.
-    //
-    // Candidate v0+ defenses still not wired that would close
-    // adjacent cases this scenario does not cover:
-    //   - pool-size enforcement: refuse to start review on a
-    //     proposal until the eligible-pool size clears a floor, so
-    //     a single biased lone-reject cannot persist a tie until
-    //     the divergence window expires — distinct from the wired
-    //     pool-size *scaling* lever (raising votes_to_X to N), which
-    //     this scenario already runs into the small-pool case of.
-    //   - multi-proposal staling pattern: detect "the same identity
-    //     is the lone rejecter on a stalled proposal across N
-    //     proposals" as its own coalition signal, complementary to
-    //     the per-pair cluster signal that needs co-occurrence
-    //     (vote *or* decline-aware) to fire.
-    //
-    // The wired closures above carry the multi-round paired-decline
-    // pattern through cube #3 (`stratum_include_declines`) and cube
-    // #4 (contention-weighting × paired-decline-floor) already; this
-    // scenario stays as a standalone regression handle on the
-    // refinement-bypassed config (declines off) and the divergence-
-    // closure-by-archival outcome shape, which the cubes don't
-    // exercise on this exact contested-target-decline geometry.
-    const sources = new Map<string, string>([
-      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
-      ['2', 'arm B: treatment X has no effect in stage IV patients'],
-      ['3', 'arm C: treatment X has no effect in stage IV patients across the second cohort'],
-    ]);
-    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 1000);
-    const server = new Server({
-      clock,
-      idGen: new SeededIdGen('h'),
-      verifier: new FakeVerifier(new Set(), new Map(), sources),
-      review: {
-        votes_to_accept: 2,
-        votes_to_reject: 2,
-        calibration_inject_every_n: 0,
-        calibration_aware_convergence: false,
-        // Strongest cluster-signal stack on, to make the headline
-        // load-bearing: this seam evades it not by tuning, but by
-        // construction (no shared history → no edge data).
-        stratification_enabled: true,
-        stratum_min_shared_proposals: 2,
-        stratum_agreement_threshold: 1.0,
-        stratum_anti_correlation_threshold: 1.0,
-        stratum_contention_weighted: true,
-        stratum_target_count: 2,
-        stratification_degraded_extra: 1,
-      },
-    });
-
-    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
-    const subTopic = server.bootstrap.seedSubTopic({
-      cause_id: cause.id,
-      name: 'treatment-X',
-      description: 'x',
-      scope_query: 'x',
-    });
-    const aliceCaller = { identity_id: alice.id };
-
-    // Two anchors so each contested target has a distinct parent and
-    // a distinct content shape the coalition deciders can key on.
-    const anchorA = await server.tools.proposeAnchor(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      content: 'paper 2',
-      external_ref: { kind: 'pmid', value: '2' },
-    });
-    server.curator.acceptProposal(anchorA.proposal_id);
-    const anchorANode = [...server.store.nodes.values()].find(
-      (n) => n.kind === 'anchor' && n.content === 'paper 2',
-    );
-    if (!anchorANode) throw new Error('paper 2 anchor not materialized');
-    const anchorB = await server.tools.proposeAnchor(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      content: 'paper 3',
-      external_ref: { kind: 'pmid', value: '3' },
-    });
-    server.curator.acceptProposal(anchorB.proposal_id);
-    const anchorBNode = [...server.store.nodes.values()].find(
-      (n) => n.kind === 'anchor' && n.content === 'paper 3',
-    );
-    if (!anchorBNode) throw new Error('paper 3 anchor not materialized');
-
-    // Two contested targets, distinguishable by cohort label. Each
-    // member's decider keys on the cohort to take exactly one and
-    // decline the other — the explicit "no co-voting on the
-    // contentious item" rule.
-    const targetA = await server.tools.proposeExcerpt(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      parent_anchor_id: anchorANode.id,
-      content: 'treatment X has no effect for stage IV cohort A',
-      quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-    });
-    const targetB = await server.tools.proposeExcerpt(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      parent_anchor_id: anchorBNode.id,
-      content: 'treatment X has no effect for stage IV cohort B',
-      quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-    });
-
-    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
-    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
-    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
-    const erinClient = await wireArchetype(server, erin.id);
-    const carolClient = await wireArchetype(server, carol.id);
-    const daveClient = await wireArchetype(server, dave.id);
-
-    // Carol takes cohort A (votes reject), declines cohort B. Dave
-    // mirrors. Both fall through to the file-hoisted
-    // calAwareBiasedDecider used by every other strategic-coalition
-    // scenario in this file — same hidden objective ("bias against
-    // 'no effect' findings"), expressed through the same primitive,
-    // so the archetype reads as a multi-proposal *variant* of the
-    // strategic-coalition family rather than a new bias model.
-    const carolDecider = payloadDecliningDecider({
-      declineIf: (payload) => 'content' in payload && payload.content.includes('cohort B'),
-      fallback: calAwareBiasedDecider,
-    });
-    const daveDecider = payloadDecliningDecider({
-      declineIf: (payload) => 'content' in payload && payload.content.includes('cohort A'),
-      fallback: calAwareBiasedDecider,
-    });
-
-    // Erin runs first, accepts everything. Both targets sit at 1
-    // accept, awaiting redundancy.
-    await runHonestReviewer(erinClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-    await runHonestReviewer(carolClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: carolDecider,
-    });
-    await runHonestReviewer(daveClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: daveDecider,
-    });
-
-    // Each contested target sits at 1 accept + 1 reject — tied below
-    // both convergence thresholds (votes_to_accept=2, votes_to_reject=2).
-    // No further honest capacity to break the tie: Erin already voted,
-    // Dave declined targetA, Carol declined targetB, and the assignment
-    // surface treats decline as a stable signal (no re-offer to the
-    // same contributor — PRD §Capacity and assignment).
-    expect(server.store.proposals.get(targetA.proposal_id)?.status).toBe('staged');
-    expect(server.store.proposals.get(targetB.proposal_id)?.status).toBe('staged');
-    const targetAVotes = [...server.store.reviewVotes.values()].filter(
-      (v) => v.proposal_id === targetA.proposal_id,
-    );
-    const targetBVotes = [...server.store.reviewVotes.values()].filter(
-      (v) => v.proposal_id === targetB.proposal_id,
-    );
-    expect(targetAVotes).toHaveLength(2);
-    expect(targetBVotes).toHaveLength(2);
-    // No co-voting on either contentious target: Dave never voted on
-    // targetA, Carol never voted on targetB. This is the by-construction
-    // condition that keeps the cluster signal silent.
-    expect(targetAVotes.some((v) => v.reviewer_id === carol.id && v.decision === 'reject')).toBe(
-      true,
-    );
-    expect(targetAVotes.some((v) => v.reviewer_id === erin.id && v.decision === 'accept')).toBe(
-      true,
-    );
-    expect(targetAVotes.some((v) => v.reviewer_id === dave.id)).toBe(false);
-    expect(targetBVotes.some((v) => v.reviewer_id === dave.id && v.decision === 'reject')).toBe(
-      true,
-    );
-    expect(targetBVotes.some((v) => v.reviewer_id === erin.id && v.decision === 'accept')).toBe(
-      true,
-    );
-    expect(targetBVotes.some((v) => v.reviewer_id === carol.id)).toBe(false);
-
-    // Curator-side decline-pattern projection: each coalition member
-    // was offered both targets and declined the partner's cohort,
-    // landing at offers=2, declines=1 — a 0.5 decline rate. The
-    // honest reviewer's rate is 0. The projection's *default*
-    // small-sample floor (min_offers=3, the v0 default that filters
-    // out reviewers whose decline-rate is statistically meaningless)
-    // hides the coalition entirely at this scale: a 2-target run
-    // sits below the floor by construction, and the curator-tunable
-    // threshold a real instance would set is operationally private.
-    // The visibility handle exists, but a small-N coalition lives
-    // under it without a curator who has *also* dropped the
-    // small-sample threshold to the small-N regime — and that drop
-    // surfaces every casual decliner alongside the coalition.
-    const defaultPatterns = server.curator.declinePatterns(cause.id);
-    expect(defaultPatterns).toEqual([]);
-    const surfaced = server.curator.declinePatterns(cause.id, {
-      min_offers: 2,
-      min_rate: 0.3,
-    });
-    expect(surfaced.map((p) => p.identity_id).sort()).toEqual([carol.id, dave.id].sort());
-    for (const p of surfaced) {
-      expect(p.offers).toBe(2);
-      expect(p.declines).toBe(1);
-      expect(p.decline_rate).toBeCloseTo(0.5);
-    }
-
-    // Time passes well past the divergence window, then the sweep
-    // runs. Both stalled targets archive — the terminal outcome of
-    // the seam. From the proposer's perspective neither target was
-    // accepted; the coalition's distributed lone-reject succeeded at
-    // suppression-by-archival.
-    clock.advance(120_000);
-    const archived = server.curator.archiveStaleProposals({
-      window_seconds: 60,
-      cause_id: cause.id,
-    });
-    expect(archived.sort()).toEqual([targetA.proposal_id, targetB.proposal_id].sort());
-    expect(server.store.proposals.get(targetA.proposal_id)?.status).toBe('unresolved-archived');
-    expect(server.store.proposals.get(targetB.proposal_id)?.status).toBe('unresolved-archived');
-  });
-
-  it('cluster signal with declines: paired-decline encounters form a co-stratum edge, cross-stratum gate routes the partner away', async () => {
-    // The structural defense for the multi-proposal seam pinned by the
-    // standalone scenario above. The vote-only cluster primitive is
-    // silent against paired-decline because the coalition shares zero
-    // vote-history by construction; widening the encounter domain to
-    // include declines reads (vote, decline) and (decline, vote) on
-    // the same proposal as pair-disagreement under the existing anti-
-    // correlation primitive, and the cross-stratum gate then routes
-    // the partner away from a target where one coalition member is
-    // already assigned.
-    //
-    // Scenario:
-    //   1. Two priming excerpts staged needs-review.
-    //   2. Carol's request loop: vote on the first offer, decline the
-    //      second. Dave's loop: decline the first, vote on the second.
-    //      Frontier order delivers the same priming proposals to both
-    //      so the actions land mirrored on the same target ids — the
-    //      paired-decline shape by construction.
-    //   3. A third "contested" excerpt is staged. Carol requests an
-    //      assignment first and is routed to it (no co-stratum
-    //      reviewer is routed yet, so the cross-stratum gate has
-    //      nothing to enforce against). Dave then requests.
-    //   4. With `stratum_include_declines: true`, Carol-Dave cluster
-    //      (shared=2 encounters on the priming, both disagreeing → anti-
-    //      correlation 1.0). Cross-stratum gate sees Carol routed to
-    //      the contested target and skips it for Dave; with no other
-    //      frontier candidates, Dave's request_assignment fails with
-    //      `not_found`.
-    //   5. Knob-off control: same setup with the knob off — cluster
-    //      doesn't form (zero shared votes), Dave is offered the
-    //      contested target normally.
-    //
-    // The test pins the knob's *structural* effect on the cluster
-    // primitive. Whole-scenario closure (does the seam's archival
-    // outcome flip?) is timing-dependent — the cross-stratum gate
-    // fires at request_assignment, so it can only protect *future*
-    // routings, and the minimal 2-target seam loses both lone-rejects
-    // before any cluster-history accumulates. The next scenario
-    // wires the multi-round closure with priming history built first,
-    // and cube #3 (`stratum_include_declines`) joins both halves to
-    // the aggregate-ASR property downstream.
-    const sources = new Map<string, string>([
-      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
-      ['2', 'arm B: treatment X has no effect in stage IV patients across cohort A'],
-      ['3', 'arm C: treatment X has no effect in stage IV patients across cohort B'],
-      ['4', 'arm D: treatment X has no effect in stage IV patients across cohort C'],
-    ]);
-
-    async function setupAndRun(
-      includeDeclines: boolean,
-    ): Promise<{ daveContestedRequest: 'offered' | 'not_found' }> {
-      const server = new Server({
-        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
-        idGen: new SeededIdGen(`cd-${includeDeclines ? 'on' : 'off'}`),
-        verifier: new FakeVerifier(new Set(), new Map(), sources),
-        review: {
-          // Cluster-signal stack at the same strength the standalone
-          // multi-proposal scenario uses; only the new knob varies
-          // across the two halves of this test.
-          stratification_enabled: true,
-          stratum_min_shared_proposals: 2,
-          stratum_agreement_threshold: 1.0,
-          stratum_anti_correlation_threshold: 1.0,
-          stratum_contention_weighted: true,
-          stratum_target_count: 2,
-          stratification_degraded_extra: 1,
-          stratum_include_declines: includeDeclines,
-        },
-      });
-      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-      const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
-      const subTopic = server.bootstrap.seedSubTopic({
-        cause_id: cause.id,
-        name: 'treatment-X',
-        description: 'x',
-        scope_query: 'x',
-      });
-      const aliceCaller = { identity_id: alice.id };
-
-      // Three anchors, one per priming target + one for the contested
-      // target. Anchor proposals are accepted by the curator so the
-      // excerpts below have a parent to attach to.
-      const anchorIds: NodeId[] = [];
-      for (let i = 1; i <= 3; i++) {
-        const ap = await server.tools.proposeAnchor(aliceCaller, {
-          cause_id: cause.id,
-          home_sub_topic_id: subTopic.id,
-          content: `paper ${i}`,
-          external_ref: { kind: 'pmid', value: String(i + 1) },
-        });
-        server.curator.acceptProposal(ap.proposal_id);
-        const node = [...server.store.nodes.values()].find(
-          (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
-        );
-        if (!node) throw new Error(`anchor ${i} not materialized`);
-        anchorIds.push(node.id);
-      }
-
-      // Two priming excerpts (the targets the coalition pairs declines
-      // on) and one contested excerpt (the cross-stratum probe). Use
-      // distinct quoted-span text per target so the verifier passes
-      // each independently.
-      const primingA = await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchorIds[0]!,
-        content: 'priming target A',
-        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-      });
-      const primingB = await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchorIds[1]!,
-        content: 'priming target B',
-        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-      });
-      const contested = await server.tools.proposeExcerpt(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        parent_anchor_id: anchorIds[2]!,
-        content: 'contested target',
-        quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-      });
-
-      const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
-      const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
-      const carolCaller = { identity_id: carol.id };
-      const daveCaller = { identity_id: dave.id };
-      await server.tools.setCapacity(carolCaller, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-      await server.tools.setCapacity(daveCaller, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-
-      // Carol's priming: vote on the first offer, decline the second.
-      // Frontier order yields A then B (created first → first), so
-      // Carol's vote lands on A and her decline on B.
-      const carolFirst = await server.tools.requestAssignment(carolCaller, {
-        cause_id: cause.id,
-      });
-      if (carolFirst.task.kind !== 'review') throw new Error('expected review task');
-      expect(carolFirst.task.proposal_id).toBe(primingA.proposal_id);
-      await server.tools.castReviewVote(carolCaller, {
-        proposal_id: carolFirst.task.proposal_id,
-        decision: 'reject',
-        rationale: 'priming reject',
-        assignment_id: carolFirst.assignment_id,
-      });
-      const carolSecond = await server.tools.requestAssignment(carolCaller, {
-        cause_id: cause.id,
-      });
-      if (carolSecond.task.kind !== 'review') throw new Error('expected review task');
-      expect(carolSecond.task.proposal_id).toBe(primingB.proposal_id);
-      await server.tools.declineAssignment(carolCaller, {
-        assignment_id: carolSecond.assignment_id,
-        reason: 'priming decline',
-      });
-
-      // Dave's priming: mirror — decline the first, vote on the second.
-      const daveFirst = await server.tools.requestAssignment(daveCaller, {
-        cause_id: cause.id,
-      });
-      if (daveFirst.task.kind !== 'review') throw new Error('expected review task');
-      expect(daveFirst.task.proposal_id).toBe(primingA.proposal_id);
-      await server.tools.declineAssignment(daveCaller, {
-        assignment_id: daveFirst.assignment_id,
-        reason: 'priming decline',
-      });
-      const daveSecond = await server.tools.requestAssignment(daveCaller, {
-        cause_id: cause.id,
-      });
-      if (daveSecond.task.kind !== 'review') throw new Error('expected review task');
-      expect(daveSecond.task.proposal_id).toBe(primingB.proposal_id);
-      await server.tools.castReviewVote(daveCaller, {
-        proposal_id: daveSecond.task.proposal_id,
-        decision: 'reject',
-        rationale: 'priming reject',
-        assignment_id: daveSecond.assignment_id,
-      });
-
-      // Carol routes to the contested target first — she's still the
-      // only candidate for it (Dave hasn't requested yet), so the
-      // cross-stratum gate has no co-stratum reviewer to enforce
-      // against and lets her through regardless of the knob.
-      const carolContested = await server.tools.requestAssignment(carolCaller, {
-        cause_id: cause.id,
-      });
-      if (carolContested.task.kind !== 'review') throw new Error('expected review task');
-      expect(carolContested.task.proposal_id).toBe(contested.proposal_id);
-
-      // Dave now requests. With include_declines on: cluster forms
-      // (Carol-Dave shared = 2 priming encounters, both disagreeing →
-      // anti-correlation 1.0 → edge), Carol is routed to the contested
-      // target, cross-stratum gate skips it for Dave, no other
-      // frontier candidates remain → request fails with `not_found`.
-      // With the knob off: cluster doesn't form (shared vote-only = 0),
-      // Dave is offered the contested target normally.
-      try {
-        const daveContested = await server.tools.requestAssignment(daveCaller, {
-          cause_id: cause.id,
-        });
-        if (daveContested.task.kind !== 'review') throw new Error('expected review task');
-        expect(daveContested.task.proposal_id).toBe(contested.proposal_id);
-        return { daveContestedRequest: 'offered' };
-      } catch (err) {
-        if (err instanceof ServerError && err.code === 'not_found') {
-          return { daveContestedRequest: 'not_found' };
-        }
-        throw err;
-      }
-    }
-
-    // Knob off: vote-only cluster sees zero shared history, no edge
-    // forms, Dave gets the contested target.
-    const off = await setupAndRun(false);
-    expect(off.daveContestedRequest).toBe('offered');
-
-    // Knob on: declines enter the encounter domain, paired-decline
-    // shape lights up the anti-correlation edge, Dave is gated out
-    // by the cross-stratum draw. The structural seam is closed at
-    // the cluster primitive.
-    const on = await setupAndRun(true);
-    expect(on.daveContestedRequest).toBe('not_found');
-  });
-
-  it('cluster signal with declines, multi-round: paired-decline priming flips a contested target from rejected to accepted', async () => {
-    // The whole-scenario closure the standalone decline-extension test
-    // above pinned as "timing-dependent" and parked. The standalone
-    // test demonstrates the *primitive* — once paired-decline priming
-    // builds the cluster, a future request_assignment refuses the
-    // partner. It does not show that the seam's *outcome* flips,
-    // because in the minimal seam the suppression votes land before
-    // any cluster history accumulates.
-    //
-    // This scenario splits the timeline so the cluster has time to
-    // form before suppression begins:
-    //
-    //   Round 1 (priming, separate proposals from the contested
-    //   target). Two priming excerpts staged. Carol's loop accepts
-    //   the first and declines the second; Dave's loop mirrors —
-    //   decline the first, accept the second. Erin votes accept on
-    //   both. Both priming proposals reach 2 accepts and converge.
-    //   The encounter ledger now records (Carol vote, Dave decline)
-    //   on priming A and (Carol decline, Dave vote) on priming B —
-    //   shared = 2, both disagreement under the decline-aware
-    //   encounter domain. Carol+Dave cluster. Erin shares one
-    //   agreement and one disagreement with each coalition member,
-    //   and Frank/Hank haven't appeared yet, so the rest of the pool
-    //   stays in singleton strata.
-    //
-    //   Round 2 (suppression on a fresh contested target). The
-    //   contested excerpt is staged with the bias-zone content
-    //   ("treatment X has no effect") that calAwareBiasedDecider
-    //   rejects. Carol's loop runs first and votes reject. Dave's
-    //   loop runs next; the suppression attempt is the second reject
-    //   that would land status=rejected under v0 thresholds
-    //   (votes_to_accept=2, votes_to_reject=2). Frank and Hank then
-    //   request and vote accept.
-    //
-    // Closure observed at the proposal status (not just the gate
-    // primitive):
-    //   - Knob OFF: Carol+Dave's paired declines never produce shared
-    //     vote-history, the cluster signal is silent, Dave's request
-    //     in round 2 is offered the contested target, Dave's reject
-    //     lands as the second reject, status flips to 'rejected'
-    //     before Frank or Hank can vote — suppression succeeds.
-    //   - Knob ON: declines enter the encounter domain, Carol+Dave
-    //     anti-correlate at 1.0 across the priming round, the cluster
-    //     forms before round 2 begins. Dave's request_assignment in
-    //     round 2 is gated (Carol's stratum already routed to the
-    //     contested target), Dave idles. Frank and Hank then vote
-    //     accept; the contested target reaches 2 accepts against 1
-    //     reject and converges 'accepted' — suppression fails.
-    //
-    // The same defense stack runs in both halves; only the
-    // `stratum_include_declines` knob varies. The test pins the
-    // outcome flip on the proposal's terminal status, the
-    // observable a real proposer sees. The downstream cluster-decline
-    // sweep cube reuses the same `runMultiRoundDeclineClosureScenario`
-    // helper that powers this test, so the cube and the standalone
-    // assertion stay in lockstep on the closure they both observe.
-    const off = await runMultiRoundDeclineClosureScenario({
-      stratum_include_declines: false,
-    });
-    expect(off.contested_status).toBe('rejected');
-    const on = await runMultiRoundDeclineClosureScenario({
-      stratum_include_declines: true,
-    });
-    expect(on.contested_status).toBe('accepted');
-  });
-
-  it('contention-weighted + decline-aware: a single asymmetric decline false-clusters honest reviewers; the paired-decline floor closes it', async () => {
-    // The interaction the multi-round closure isolated to a single
-    // load-bearing knob (its runner kept stratum_contention_weighted
-    // off precisely because composition with decline-aware turns a
-    // load-bearing closure into a false-positive trap). Under
-    // decline-aware + contention-weighted, the rule that counts
-    // decline-involved encounters at full weight (=1) is what keeps
-    // the paired-decline closure firing — but it also lets a *single*
-    // asymmetric decline-involved encounter dominate a pair whose
-    // entire vote-vote history sits on unanimous-easy items
-    // (contention 0 → weight 0). The pair's weighted-disagreement
-    // ratio collapses to 1.0 against an honest pair that shared no
-    // coalition signal, the anti-correlation edge fires, and the
-    // honest pool false-clusters with itself. The cross-stratum gate
-    // then strangles honest review on the next contested target.
-    //
-    // The refinement is `stratum_decline_min_paired` (default 2): the
-    // full-weight rule for declines only applies when the pair has at
-    // least N decline-involved shared encounters. The paired-decline
-    // closure has 2 by construction (Carol votes A and declines B;
-    // Dave declines A and votes B), so a floor of 2 closes the over-
-    // clustering pathology without weakening the closure.
-    //
-    // Scenario:
-    //   Round 1 (priming). Three honest reviewers — Carol, Dave, Erin
-    //   — vote accept on two unanimous-easy excerpts. Both proposals
-    //   converge accepted at 3 accepts apiece; per-proposal contention
-    //   is 0 across the priming, so every vote-vote agreement
-    //   contributes 0 weight to the cluster signal.
-    //
-    //   Round 2 (asymmetric-decline event). A third "trigger" excerpt
-    //   is staged. Carol's decider declines payloads tagged
-    //   "trigger"; Dave and Erin vote accept normally. Trigger
-    //   converges accepted at 2 accepts. The encounter ledger now
-    //   records (Carol decline, Dave vote) and (Carol decline, Erin
-    //   vote) on trigger — single decline-involved encounters between
-    //   Carol and each of the other two honest reviewers.
-    //
-    //   Round 3 (contested target). A fresh excerpt is staged. All
-    //   three honest reviewers run with acceptAllDecider; under any
-    //   non-pathological cluster computation, the contested target
-    //   converges accepted at the second vote.
-    //
-    // Outcome flip on the proposal's terminal status:
-    //   - Floor 1 (no floor — the buggy regime). Carol-Dave pair
-    //     has 1 decline-involved encounter; weighted_shared = 1,
-    //     weighted_agreed = 0, disagreement ratio 1.0, anti-
-    //     correlation edge fires. Same for Carol-Erin. Dave-Erin has
-    //     no decline-involved encounters and all vote agreements at
-    //     contention 0, so no edge. The graph has Carol-Dave and
-    //     Carol-Erin edges → all three honest reviewers collapse into
-    //     one connected component. The contested target's eligible
-    //     pool covers 1 stratum (below stratum_target_count=2), so
-    //     the proposal is flagged stratification-degraded and votes_
-    //     to_accept tightens to 3. The first reviewer's request is
-    //     routed to the contested target; the other two are gated by
-    //     the cross-stratum rule (co-stratum already routed) and
-    //     their request_assignment returns not_found. The proposal
-    //     sits at 1 accept, the divergence-closure sweep archives it.
-    //   - Floor 2 (default). Carol-Dave / Carol-Erin each have 1
-    //     decline-involved encounter, below the floor → contributes
-    //     0 weight. weighted_shared collapses to 0 across the priming
-    //     and the trigger (all vote agreements at contention 0, the
-    //     decline encounter zeroed by the floor). signalAvailable is
-    //     false for every pair, no edges form, all three honest
-    //     reviewers stay in singleton strata. The contested target is
-    //     not degraded, votes_to_accept stays at 2, all three vote
-    //     accept and the proposal converges accepted at the second
-    //     vote.
-    //
-    // The test pins the closure on terminal status — the observable a
-    // real proposer sees — same shape as the multi-round closure
-    // above. Same defense stack runs in both halves; only
-    // `stratum_decline_min_paired` varies. The runner
-    // (`runOverClusteringScenario`, lifted alongside the multi-round
-    // closure runner below) is shared with the cluster-decline ×
-    // floor sweep cube downstream so the cube and this standalone
-    // observation run the same scenario.
-    const buggy = await runOverClusteringScenario({
-      stratum_contention_weighted: true,
-      stratum_decline_min_paired: 1,
-    });
-    expect(buggy.contested_status).toBe('unresolved-archived');
-    const fixed = await runOverClusteringScenario({
-      stratum_contention_weighted: true,
-      stratum_decline_min_paired: 2,
-    });
-    expect(fixed.contested_status).toBe('accepted');
-  });
-
   it('contention-weighted + anti-correlation together close the mixed-strategy gap', async () => {
     // Companion to the mixed-strategy-coalition test above. The
     // standalone mixed strategy defeats each refinement individually
@@ -4955,13 +3980,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    for (const c of [{ identity_id: carol.id }, { identity_id: dave.id }]) {
-      await server.tools.setCapacity(c, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
 
     // PRIMING with the same 50/50 mixed pattern that defeated each
     // refinement alone.
@@ -5023,12 +4041,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     // Dave's request_assignment hits the cross-stratum gate: Carol
@@ -5038,7 +4054,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // fires. Same cluster. Skip.
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
 
@@ -5224,8 +4239,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     };
     await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 10,
-      kinds: ['excerpt'],
       content: provider,
     });
 
@@ -5241,7 +4254,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const carolClient = await wireArchetype(server, carol.id);
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 20,
       decide: calAwareBiasedDecider,
     });
 
@@ -5252,14 +4264,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 20,
       decide: acceptAllDecider,
     });
     const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
     const frankClient = await wireArchetype(server, frank.id);
     await runHonestReviewer(frankClient, {
       cause_id: cause.id,
-      rate: 20,
       decide: acceptAllDecider,
     });
 
@@ -5463,8 +4473,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     };
     await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 10,
-      kinds: ['excerpt'],
       content: provider,
     });
 
@@ -5474,7 +4482,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const carolClient = await wireArchetype(server, carol.id);
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 20,
       decide: calAwareBiasedDecider,
     });
 
@@ -5483,14 +4490,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 20,
       decide: acceptAllDecider,
     });
     const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
     const frankClient = await wireArchetype(server, frank.id);
     await runHonestReviewer(frankClient, {
       cause_id: cause.id,
-      rate: 20,
       decide: acceptAllDecider,
     });
 
@@ -5668,11 +4673,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // gate at any threshold > 0.
     const eve = server.bootstrap.mintIdentity({ display_name: 'eve' });
     const eveClient = await wireArchetype(server, eve.id);
-    await eveClient.setCapacity({
-      cause_id: cause.id,
-      rate: 10,
-      kinds: ['review', 'excerpt'],
-    });
     await expect(eveClient.requestAssignment({ cause_id: cause.id })).rejects.toMatchObject({
       code: 'not_found',
     });
@@ -5680,8 +4680,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Bootstrap path: contributor-initiated cast_review_vote. Eve
     // votes on staged excerpts directly (no assignment_id). She needs
     // a partner accept on each so the proposal converges and reviewer
-    // rep is awarded — Erin, who has set capacity but is also fresh
-    // and so also subject to the gate, votes alongside Eve via the
+    // rep is awarded — Erin, who is also fresh and so also subject
+    // to the gate, votes alongside Eve via the
     // same contributor-initiated path. Both graduate symmetrically;
     // we focus the assertion on Eve.
     const stagedExcerpts = [...server.store.proposals.values()].filter(
@@ -5719,157 +4719,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Gate now opens. Eve graduates and pulls her first assignment.
     const assignment = await eveClient.requestAssignment({ cause_id: cause.id });
     expect(assignment.assignment_id).toBeDefined();
-  });
-
-  it('decline-pattern assignment gate: cumulative decline rate above threshold refuses further assignments (PRD §Capacity and assignment, decline-pattern abuse signal)', async () => {
-    // First defense knob for the multi-proposal coalition seam pinned
-    // by the standalone scenario above. The seam evades the cluster
-    // signal by paired-decline (no co-voting → no shared history → no
-    // edge metric to fire); PRD §Capacity and assignment commits two
-    // surfaces against it on the same per-(cause, reviewer) cumulative-
-    // rate signal — the curator-side `declinePatterns` projection
-    // (visibility) and this gate (operational enforcement at the rep-
-    // gate seam in `request_assignment`). Same numerator, same
-    // denominator, same per-cause scope, so the projection and the
-    // gate operate on a single signal. The closure on the seam is
-    // throughput-mediated, not retroactive: the gate doesn't undo a
-    // lone-reject that already landed, it caps the rate at which the
-    // coalition can place new ones — for a coalition that paired-
-    // declines half its offers, the gate fires after the second
-    // decline and locks the member out of further routing. The
-    // structural closure on the same seam (the encounter-domain
-    // extension via `stratum_include_declines` reading paired-decline
-    // encounters as 100% disagreement under the existing anti-
-    // correlation primitive) is wired alongside this gate, and cube
-    // #3 (the cluster-signal-decline-aware ASR cube against the co-
-    // voting decorrelated and paired-decline multi-round coalitions
-    // earlier in this file) reads the structural closure's *additive
-    // lift* declines provide on top of the vote-only signal: 50% ASR
-    // vote-only, 0% ASR decline-aware. This test pins the gate's
-    // mechanics standalone — the gate operates on the cumulative-
-    // rate signal at request_assignment time, the structural closure
-    // operates on the per-encounter cluster primitive at vote-cast
-    // time; the two surfaces are complementary on a single signal.
-    //
-    // Properties pinned:
-    //   1. Above threshold + above min_offers → request_assignment refused.
-    //   2. Above threshold but below min_offers → bypass (small-sample
-    //      floor — the same min_offers role on `declinePatterns`).
-    //   3. Fresh reviewer (zero offers) → bypass (bootstrap path, same
-    //      null-policy as the recent-activity gate).
-    //   4. Contributor-initiated path (cast_review_vote without
-    //      assignment_id) → bypass: a contributor whose decline rate
-    //      has spiked retains the recovery path PRD §Capacity and
-    //      assignment names ("Declining individual assignments is
-    //      non-punitive on its own").
-    const server = new Server({
-      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
-      idGen: new SeededIdGen('dg'),
-      verifier: new FakeVerifier(),
-      review: {
-        // Threshold below which the gate stays inert. Carol declines
-        // every offer, so her rate is 1.0 once any offer lands; the
-        // 0.5 threshold catches that, the 2.0 min_offers floor delays
-        // the catch by one offer so Property 2 has something to pin.
-        assignment_max_decline_rate: 0.5,
-        assignment_decline_min_offers: 2,
-      },
-    });
-    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
-    const subTopic = server.bootstrap.seedSubTopic({
-      cause_id: cause.id,
-      name: 'treatment-X',
-      description: 'x',
-      scope_query: 'x',
-    });
-    const aliceCaller = { identity_id: alice.id };
-
-    // Stage four anchor proposals so the frontier has enough
-    // distinct review tasks to offer Carol multiple times — declines
-    // are a stable signal so the same target won't be re-offered to
-    // the same contributor.
-    for (let i = 0; i < 4; i++) {
-      await server.tools.proposeAnchor(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        content: `paper ${i}`,
-        external_ref: { kind: 'pmid', value: String(100 + i) },
-      });
-    }
-
-    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
-    const carolClient = await wireArchetype(server, carol.id);
-    await carolClient.setCapacity({ cause_id: cause.id, rate: 5, kinds: ['review'] });
-
-    // Property 3: zero-offer bypass. Carol's first request goes
-    // through — she has no decline history, so the gate has no
-    // signal to fire on.
-    const a1 = await carolClient.requestAssignment({ cause_id: cause.id });
-    await carolClient.declineAssignment({ assignment_id: a1.assignment_id, reason: 'not now' });
-    // After: offers=1, declines=1, rate=1.0. Above threshold, below
-    // min_offers floor.
-
-    // Property 2: rate above threshold but offers below min_offers
-    // → bypass. The same numerator and denominator the curator-side
-    // projection projects — at min_offers=2 the gate ignores Carol
-    // for the same reason a curator running `declinePatterns` with
-    // its v0 default min_offers=3 wouldn't surface her yet.
-    const a2 = await carolClient.requestAssignment({ cause_id: cause.id });
-    await carolClient.declineAssignment({ assignment_id: a2.assignment_id, reason: 'still not' });
-    // After: offers=2, declines=2, rate=1.0. At/above min_offers
-    // floor now.
-
-    // Property 1: gate fires. Carol's third request is refused with
-    // `not_found` — same refusal mode the rep gates use, so the
-    // contributor-facing surface stays structurally indistinguishable
-    // from "no work available."
-    await expect(carolClient.requestAssignment({ cause_id: cause.id })).rejects.toMatchObject({
-      code: 'not_found',
-    });
-
-    // Confirm the gate's view of Carol's stats matches the curator-
-    // side projection's view byte-for-byte: same offers, same
-    // declines, same rate. The point of this gate is to operate on
-    // the projection's signal, not a separate one — verifying parity
-    // here keeps the contract honest.
-    const patterns = server.curator.declinePatterns(cause.id, { min_offers: 1 });
-    const carolPattern = patterns.find((p) => p.identity_id === carol.id);
-    if (!carolPattern) throw new Error('expected carol in decline-pattern projection');
-    expect(carolPattern.offers).toBe(2);
-    expect(carolPattern.declines).toBe(2);
-    expect(carolPattern.decline_rate).toBe(1.0);
-
-    // Property 3 again, in the gate-on regime: a fresh reviewer with
-    // zero offers walks through. The bootstrap path stays open; the
-    // gate fires only against a built-up decline history.
-    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
-    const erinClient = await wireArchetype(server, erin.id);
-    await erinClient.setCapacity({ cause_id: cause.id, rate: 5, kinds: ['review'] });
-    const erinAssignment = await erinClient.requestAssignment({ cause_id: cause.id });
-    expect(erinAssignment.task.kind).toBe('review');
-
-    // Property 4: contributor-initiated path bypasses the gate.
-    // Carol is locked out of `request_assignment` but can still cast
-    // a contributor-initiated vote on a proposal she didn't author —
-    // PRD §Capacity and assignment names this as the recovery path
-    // and the conflict-of-interest gate (caller != proposer) doesn't
-    // trip since Alice proposed all four anchors. Carol's vote is
-    // recorded, with the contributor-initiated rep factor applied
-    // (PRD §Reputation). The gate lives inside `request_assignment`,
-    // not on the vote-cast path, so this bypass is by construction.
-    if (erinAssignment.task.kind !== 'review') throw new Error('expected review task');
-    const targetProposalId = erinAssignment.task.proposal_id;
-    const carolVote = await carolClient.castReviewVote({
-      proposal_id: targetProposalId,
-      decision: 'accept',
-      rationale: 'looks fine on the contributor-initiated path',
-    });
-    expect(carolVote).toBeDefined();
-    const recorded = [...server.store.reviewVotes.values()].find(
-      (v) => v.reviewer_id === carol.id && v.proposal_id === targetProposalId,
-    );
-    expect(recorded?.decision).toBe('accept');
   });
 
   // Parameter sweep over the (coalition pattern, anti-correlation
@@ -5916,408 +4765,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // Same identities, anchors, priming, contested excerpt, and
   // archetype runs as the standalone tests; only the parametrized
   // bits vary.
-  // Shared runner for the multi-round paired-decline closure scenario
-  // (the standalone test above) and the cluster-decline sweep cube
-  // below. PRD §Reviewer assignment commits the encounter-domain
-  // widening; this scenario is the whole-scenario closure that lands
-  // on the proposal's terminal status rather than the cluster
-  // primitive in isolation.
-  //
-  // Round 1 (priming on separate excerpts). Carol+Dave run paired
-  // declines: Carol accepts primingA + declines primingB, Dave
-  // mirrors. Erin closes both priming proposals at the second accept.
-  // After this sub-block both priming proposals are accepted and the
-  // encounter ledger has the paired-decline shape that lights up
-  // anti-correlation under the decline-aware encounter domain.
-  //
-  // Round 2 (suppression on a fresh contested target). Carol's loop
-  // votes reject first, then Dave's loop attempts the suppression:
-  // knob-off → Dave is offered contested, votes the second reject,
-  // status flips to 'rejected' before Frank/Hank can vote;
-  // knob-on → cross-stratum gate fires (Carol's stratum already
-  // routed), Dave idles, Frank/Hank walk in fresh-singleton and the
-  // proposal converges 'accepted'. The two halves run on the same
-  // defense stack; only `stratum_include_declines` varies.
-  //
-  // Contention-weighted edges default *off* in this runner. Under
-  // decline-aware + contention-weighted at threshold 1.0 with a
-  // floor of 1, a single decline-involved disagreement between an
-  // honest reviewer and a coalition member outweighs every
-  // unanimous-easy vote-agreement (contention 0 → weight 0), and
-  // honest reviewers false-cluster with the coalition. That
-  // interaction is exercised standalone by the over-clustering
-  // scenario above and joined to this runner in the cluster-decline
-  // × floor sweep cube downstream; for the multi-round closure
-  // standalone test the stack stays at raw weights with the floor
-  // default so the honest pool reads as singletons and the
-  // decline-aware primitive's effect on outcome is isolated.
-  async function runMultiRoundDeclineClosureScenario(params: {
-    stratum_include_declines: boolean;
-    stratum_contention_weighted?: boolean;
-    stratum_decline_min_paired?: number;
-  }): Promise<{ contested_status: 'staged' | 'accepted' | 'rejected' | 'unresolved-archived' }> {
-    const sources = new Map<string, string>([
-      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
-      ['2', 'arm B: treatment X has no effect in stage IV patients across cohort A'],
-      ['3', 'arm C: treatment X has no effect in stage IV patients across cohort B'],
-    ]);
-    const cw = params.stratum_contention_weighted ?? false;
-    const floor = params.stratum_decline_min_paired ?? 2;
-    const server = new Server({
-      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
-      idGen: new SeededIdGen(
-        `mr-${params.stratum_include_declines ? 'on' : 'off'}-cw${cw ? '1' : '0'}-f${floor}`,
-      ),
-      verifier: new FakeVerifier(new Set(), new Map(), sources),
-      review: {
-        votes_to_accept: 2,
-        votes_to_reject: 2,
-        stratification_enabled: true,
-        stratum_min_shared_proposals: 2,
-        stratum_agreement_threshold: 1.0,
-        stratum_anti_correlation_threshold: 1.0,
-        stratum_contention_weighted: cw,
-        stratum_target_count: 2,
-        stratification_degraded_extra: 1,
-        stratum_include_declines: params.stratum_include_declines,
-        stratum_decline_min_paired: floor,
-      },
-    });
-    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
-    const subTopic = server.bootstrap.seedSubTopic({
-      cause_id: cause.id,
-      name: 'treatment-X',
-      description: 'x',
-      scope_query: 'x',
-    });
-    const aliceCaller = { identity_id: alice.id };
-
-    // Three anchors: one per priming target + one for the contested
-    // target. Curator-accepted so the excerpts have a parent.
-    const anchorIds: NodeId[] = [];
-    for (let i = 1; i <= 3; i++) {
-      const ap = await server.tools.proposeAnchor(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        content: `paper ${i}`,
-        external_ref: { kind: 'pmid', value: String(i + 1) },
-      });
-      server.curator.acceptProposal(ap.proposal_id);
-      const node = [...server.store.nodes.values()].find(
-        (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
-      );
-      if (!node) throw new Error(`anchor ${i} not materialized`);
-      anchorIds.push(node.id);
-    }
-
-    // Round 1: two priming excerpts. Distinct content tags
-    // ("primingA" / "primingB") let the per-member decliner key on
-    // payload to take exactly one and decline the other. Quoted-span
-    // text is the bias-zone phrase so the verifier accepts each
-    // independently.
-    await server.tools.proposeExcerpt(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      parent_anchor_id: anchorIds[0]!,
-      content: 'primingA: treatment X has no effect in stage IV cohort A',
-      quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-    });
-    await server.tools.proposeExcerpt(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      parent_anchor_id: anchorIds[1]!,
-      content: 'primingB: treatment X has no effect in stage IV cohort B',
-      quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-    });
-
-    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
-    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
-    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
-    const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
-    const hank = server.bootstrap.mintIdentity({ display_name: 'hank' });
-    const erinClient = await wireArchetype(server, erin.id);
-    const carolClient = await wireArchetype(server, carol.id);
-    const daveClient = await wireArchetype(server, dave.id);
-    const frankClient = await wireArchetype(server, frank.id);
-    const hankClient = await wireArchetype(server, hank.id);
-
-    // Priming-round deciders. Carol accepts primingA, declines
-    // primingB. Dave mirrors. Fallback is acceptAllDecider so the
-    // priming behavior is benign on whichever target each takes
-    // (no biased votes during priming — the only signal that forms
-    // the cluster is the paired-decline shape).
-    const carolPrimerDecider = payloadDecliningDecider({
-      declineIf: (payload) => 'content' in payload && payload.content.includes('primingB'),
-      fallback: acceptAllDecider,
-    });
-    const davePrimerDecider = payloadDecliningDecider({
-      declineIf: (payload) => 'content' in payload && payload.content.includes('primingA'),
-      fallback: acceptAllDecider,
-    });
-
-    // Run priming. Order matters: Carol first lays down vote-on-A +
-    // decline-on-B, Dave then mirrors as decline-on-A + vote-on-B
-    // (frontier FIFO returns A then B for each), Erin closes both
-    // priming proposals at the second accept apiece. After this
-    // sub-block, both priming proposals are accepted and the
-    // encounter ledger has the paired-decline shape.
-    await runHonestReviewer(carolClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: carolPrimerDecider,
-    });
-    await runHonestReviewer(daveClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: davePrimerDecider,
-    });
-    await runHonestReviewer(erinClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-    // Priming-round soft sanity: under the standalone runner config
-    // (cw=off, floor=2) the priming proposals reliably converge
-    // accepted because the cluster signal stays decline-blind in the
-    // raw-weight regime until both pair encounters are recorded. The
-    // cube downstream exercises (cw=on, floor=1) regimes where the
-    // over-clustering pathology causes Erin's vote to retroactively
-    // expand the false cluster and stratification-degraded
-    // tightening blocks priming itself. The runner does not throw on
-    // priming failure: the cube reads contested_status directly, and
-    // a contested target that never converges (because the priming
-    // infrastructure broke) reads identically to suppression-by-
-    // archival from the proposer's perspective. Cell expectations
-    // encode whether each (cw, floor) combination is supposed to
-    // keep the priming infrastructure intact.
-
-    // Round 2: stage the contested target. Bias-zone content so
-    // calAwareBiasedDecider rejects ("treatment" + no "works").
-    const contested = await server.tools.proposeExcerpt(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      parent_anchor_id: anchorIds[2]!,
-      content: 'contested: treatment X has no effect in stage IV cohort C',
-      quoted_span: { text: 'treatment X has no effect in stage IV patients', offset: 0 },
-    });
-
-    // Suppression attempt. Carol votes reject first. Dave's loop
-    // then runs — knob-off: gets contested, votes the second
-    // reject, status flips before Frank/Hank vote; knob-on: gated
-    // out, idles, leaving room for Frank+Hank to converge accept.
-    // Frank and Hank are introduced fresh in round 2 so each lands
-    // in a singleton stratum at the gate's eyes.
-    await runHonestReviewer(carolClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: calAwareBiasedDecider,
-    });
-    await runHonestReviewer(daveClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: calAwareBiasedDecider,
-    });
-    await runHonestReviewer(frankClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-    await runHonestReviewer(hankClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-
-    const target = server.store.proposals.get(contested.proposal_id);
-    if (!target) throw new Error('contested proposal vanished');
-    return { contested_status: target.status };
-  }
-
-  // Shared runner for the contention-weighted + decline-aware
-  // over-clustering scenario (the standalone test above) and the
-  // cluster-decline × floor sweep cube downstream. Three honest
-  // reviewers prime on two unanimous-easy excerpts, one declines a
-  // third "trigger" excerpt while the other two vote accept on it
-  // (single asymmetric decline-involved encounter per honest pair),
-  // and a contested target is then staged. PRD §Reviewer assignment
-  // commits the paired-decline floor on contention-weighting's full-
-  // weight rule for declines; this runner exposes how that floor
-  // composes with `stratum_contention_weighted`. Declines stay on
-  // throughout — the scenario is defined on the decline-aware
-  // encounter domain, and the cube reads the (cw, floor) interaction
-  // under that fixed regime.
-  async function runOverClusteringScenario(params: {
-    stratum_contention_weighted: boolean;
-    stratum_decline_min_paired: number;
-  }): Promise<{ contested_status: 'staged' | 'accepted' | 'rejected' | 'unresolved-archived' }> {
-    const sources = new Map<string, string>([
-      ['1', 'arm A: treatment X works in stage III patients across the cohort'],
-      ['2', 'arm B: treatment X works in stage III patients across cohort A'],
-      ['3', 'arm C: treatment X works in stage III patients across cohort B'],
-      ['4', 'arm D: treatment X works in stage III patients across cohort C'],
-    ]);
-    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 1000);
-    const server = new Server({
-      clock,
-      idGen: new SeededIdGen(
-        `oc-cw${params.stratum_contention_weighted ? '1' : '0'}-f${params.stratum_decline_min_paired}`,
-      ),
-      verifier: new FakeVerifier(new Set(), new Map(), sources),
-      review: {
-        stratification_enabled: true,
-        stratum_min_shared_proposals: 2,
-        stratum_agreement_threshold: 1.0,
-        stratum_anti_correlation_threshold: 1.0,
-        stratum_contention_weighted: params.stratum_contention_weighted,
-        stratum_target_count: 2,
-        stratification_degraded_extra: 1,
-        stratum_include_declines: true,
-        stratum_decline_min_paired: params.stratum_decline_min_paired,
-      },
-    });
-    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
-    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'crc' });
-    const subTopic = server.bootstrap.seedSubTopic({
-      cause_id: cause.id,
-      name: 'treatment-X',
-      description: 'x',
-      scope_query: 'x',
-    });
-    const aliceCaller = { identity_id: alice.id };
-
-    const anchorIds: NodeId[] = [];
-    for (let i = 1; i <= 4; i++) {
-      const ap = await server.tools.proposeAnchor(aliceCaller, {
-        cause_id: cause.id,
-        home_sub_topic_id: subTopic.id,
-        content: `paper ${i}`,
-        external_ref: { kind: 'pmid', value: String(i + 1) },
-      });
-      server.curator.acceptProposal(ap.proposal_id);
-      const node = [...server.store.nodes.values()].find(
-        (n) => n.kind === 'anchor' && n.content === `paper ${i}`,
-      );
-      if (!node) throw new Error(`anchor ${i} not materialized`);
-      anchorIds.push(node.id);
-    }
-
-    const primingA = await server.tools.proposeExcerpt(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      parent_anchor_id: anchorIds[0]!,
-      content: 'primingA: treatment X works in stage III cohort A',
-      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
-    });
-    const primingB = await server.tools.proposeExcerpt(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      parent_anchor_id: anchorIds[1]!,
-      content: 'primingB: treatment X works in stage III cohort B',
-      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
-    });
-
-    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
-    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
-    const erin = server.bootstrap.mintIdentity({ display_name: 'erin' });
-    const carolClient = await wireArchetype(server, carol.id);
-    const daveClient = await wireArchetype(server, dave.id);
-    const erinClient = await wireArchetype(server, erin.id);
-
-    await runHonestReviewer(carolClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-    await runHonestReviewer(daveClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-    await runHonestReviewer(erinClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-    if (server.store.proposals.get(primingA.proposal_id)?.status !== 'accepted') {
-      throw new Error('primingA did not converge accepted in priming round');
-    }
-    if (server.store.proposals.get(primingB.proposal_id)?.status !== 'accepted') {
-      throw new Error('primingB did not converge accepted in priming round');
-    }
-
-    const trigger = await server.tools.proposeExcerpt(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      parent_anchor_id: anchorIds[2]!,
-      content: 'trigger: treatment X works in stage III cohort C',
-      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
-    });
-    const carolTriggerDecider = payloadDecliningDecider({
-      declineIf: (payload) => 'content' in payload && payload.content.includes('trigger'),
-      fallback: acceptAllDecider,
-    });
-    await runHonestReviewer(carolClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: carolTriggerDecider,
-    });
-    await runHonestReviewer(daveClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-    await runHonestReviewer(erinClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-    if (server.store.proposals.get(trigger.proposal_id)?.status !== 'accepted') {
-      throw new Error('trigger did not converge accepted in event round');
-    }
-
-    const contested = await server.tools.proposeExcerpt(aliceCaller, {
-      cause_id: cause.id,
-      home_sub_topic_id: subTopic.id,
-      parent_anchor_id: anchorIds[3]!,
-      content: 'contested: treatment X works in stage III cohort D',
-      quoted_span: { text: 'treatment X works in stage III patients', offset: 0 },
-    });
-    await runHonestReviewer(carolClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-    await runHonestReviewer(daveClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-    await runHonestReviewer(erinClient, {
-      cause_id: cause.id,
-      rate: 5,
-      decide: acceptAllDecider,
-    });
-
-    clock.advance(120_000);
-    server.curator.archiveStaleProposals({ window_seconds: 60, cause_id: cause.id });
-
-    const target = server.store.proposals.get(contested.proposal_id);
-    if (!target) throw new Error('contested proposal vanished');
-    return { contested_status: target.status };
-  }
-
   async function runDecorrelationScenario(params: {
     pattern: PrimingPattern;
     anti_correlation_threshold: number;
     contention_weighted: boolean;
-    // Decline-aware encounter domain (PRD §Reviewer assignment, "the
-    // encounter domain becomes {accept, reject, decline}"). Default
-    // off so the legacy 12 cells continue to exercise vote-only
-    // semantics; the cluster-decline cube downstream toggles this on
-    // alongside the paired-decline runner to assert the widening is
-    // non-regressive against a pure co-voting pattern.
-    stratum_include_declines?: boolean;
   }): Promise<{ contested_status: 'staged' | 'accepted' | 'rejected' | 'unresolved-archived' }> {
     const sources = new Map<string, string>([
       ['1', 'arm A: treatment X works in stage III patients across the cohort'],
@@ -6337,7 +4788,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
         stratum_target_count: 2,
         stratification_degraded_extra: 1,
         stratum_contention_weighted: params.contention_weighted,
-        stratum_include_declines: params.stratum_include_declines ?? false,
       },
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
@@ -6378,13 +4828,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
-    for (const c of [{ identity_id: carol.id }, { identity_id: dave.id }]) {
-      await server.tools.setCapacity(c, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id);
     for (let i = 0; i < params.pattern.length; i++) {
       const excerpt = await server.tools.proposeExcerpt(aliceCaller, {
         cause_id: cause.id,
@@ -6435,17 +4879,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
     });
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     const target = server.store.proposals.get(contested.proposal_id);
@@ -6587,14 +5028,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     //
     // Subsequent sweeps follow this template (named defense config
     // → expected ASR, derived off the per-cell expected_status
-    // fields). Cubes #2–5 (assignment-gate thresholds; the
-    // encounter-domain widening; the contention-weighting × paired-
-    // decline-floor interaction; the difficulty-aware re-baseline)
-    // each layered on this shape, and cube #5 generalized the
-    // single-ASR aggregate to the (ASR, lockout-rate) two-metric
-    // split that closes the honest-pool-collapse vs attack-landed
-    // conflation when a defense's failure mode is the former — that
-    // refinement was retrofitted into cube #4 in turn.
+    // fields). Cube #2 (assignment-gate thresholds) and cube #3
+    // (the difficulty-aware re-baseline of cube #2 under alpha < 1)
+    // layer on this shape; cube #3 also generalized the single-ASR
+    // aggregate to the (ASR, lockout-rate) two-metric split that
+    // closes the honest-pool-collapse vs attack-landed conflation
+    // when a defense's failure mode is the former.
     interface AsrCell {
       anti_correlation_threshold: number;
       contention_weighted: boolean;
@@ -6721,19 +5160,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
     assignment_min_recent: number;
     assignment_min_demonstrated: number;
     review_credit_contention_alpha?: number;
-    // Cube #15 (decay-cadence) overrides. Default of 60 / 360 preserves
+    // Cube #13 (decay-cadence) overrides. Default of 60 / 360 preserves
     // the (recent_half_life=60s, quiet=6 half-lives) configuration cubes
     // #2 and #5 are calibrated against — changing the defaults
     // silently de-calibrates those cubes' lockout cells, so callers
     // sweeping the decay axis pass both explicitly.
     recent_half_life_seconds?: number;
     quiet_window_seconds?: number;
-    // Cube #17 (demo-decay-cadence) override. Default Infinity
+    // Cube #15 (demo-decay-cadence) override. Default Infinity
     // preserves the slow-decay-stockpile-holds behavior cubes #2,
     // #5, and #15 are calibrated against (Carol's demonstrated
     // stockpile holds across the quiet window because the demo
     // half-life is infinite by default); finite values opt the demo
-    // component into the same exponential-decay regime cube #15
+    // component into the same exponential-decay regime cube #13
     // sweeps for the recent component, exposing the demo gate's
     // firing axis on the patient archetype.
     demonstrated_half_life_seconds?: number;
@@ -6864,14 +5303,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // under PRD §Reputation's review_credit_contention_alpha
     // primitive). Pairs are carol+erin, carol+frank, erin+frank.
     // The post-bootstrap demonstrated value is load-bearing for the
-    // alpha re-baseline cube (cube #5): cube-#2 thresholds at
+    // alpha re-baseline cube (cube #3): cube-#2 thresholds at
     // alpha=1 expect demonstrated=2.0 (clears demo=1.5); the alpha-
     // shrinkage at alpha=0.5 produces demonstrated=1.0 (fails
     // demo=1.5 → false-positive lockout); the re-tuned demo=0.75
     // recovers the closure with honest-pool headroom of 0.25.
     // Changing BOOTSTRAP_COUNT or the pair structure changes the
     // bootstrap demonstrated value and silently de-calibrates
-    // cube #5's re-tuned threshold — keep the rotation as-is or
+    // cube #3's re-tuned threshold — keep the rotation as-is or
     // re-derive the cube's expected lockout cells.
     const bootstrapPairs: Array<[typeof carol, typeof carol]> = [
       [carol, erin],
@@ -6903,17 +5342,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // composition the rep ledger has against bias.
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 20,
       decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 20,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(frankClient, {
       cause_id: cause.id,
-      rate: 20,
       decide: acceptAllDecider,
     });
 
@@ -6936,7 +5372,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Quiet window: Carol stops being recently active, by definition
     // of the patient-adversary archetype. The default (six recent
     // half-lives) drains her recent by 64x — enough to fall below any
-    // reasonable threshold the gate is set to. Cube #15 overrides
+    // reasonable threshold the gate is set to. Cube #13 overrides
     // QUIET_WINDOW_SECONDS independently of RECENT_HALF_LIFE_SECONDS to
     // sweep the W/T ratio directly.
     clock.advance(QUIET_WINDOW_SECONDS * 1000);
@@ -6972,7 +5408,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // reject votes is the observable signal.
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 20,
       decide: calAwareBiasedDecider,
     });
 
@@ -7020,15 +5455,15 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // — honest defense rather than the lockout the prior bootstrap-less
   // shape produced. At alpha < 1 the honest bootstrap demonstrated
   // shrinks proportionally and the demo gate can re-trip on the
-  // honest pool; the cube #5 sybil alpha-invariance regression below
+  // honest pool; the cube #3 sybil alpha-invariance regression below
   // pins where that re-baseline lands.
   async function runSybilAmplifiedGateScenario(params: {
     assignment_min_recent: number;
     assignment_min_demonstrated: number;
     review_credit_contention_alpha?: number;
-    // Cube #20 ((alpha × stratification) re-baseline) overrides this
+    // Cube #18 ((alpha × stratification) re-baseline) overrides this
     // to sweep the cluster-signal closure axis. Default `true`
-    // preserves the freshness-bypass scenario cubes #2 and #5 are
+    // preserves the freshness-bypass scenario cubes #2 and #3 are
     // built on (the cross-stratum gate closes Dave, the demo gate's
     // null-policy closes Eve, and the honest pool's bootstrap
     // rotation converges contested across singleton strata). With it
@@ -7119,20 +5554,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const carolClient = await wireArchetype(server, carol.id);
     const daveClient = await wireArchetype(server, dave.id);
     const eveClient = await wireArchetype(server, eve.id);
-    for (const c of [
-      { identity_id: carol.id },
-      { identity_id: dave.id },
-      { identity_id: eve.id },
-      { identity_id: erin.id },
-      { identity_id: frank.id },
-      { identity_id: george.id },
-    ]) {
-      await server.tools.setCapacity(c, {
-        cause_id: cause.id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    // Eve is deliberately NOT seeded: the scenario's fresh recruit
+    // must have no rep entry so the recent-gate null-bypass applies
+    // to her (and the demo gate's null-policy is what closes her),
+    // exactly as this runner's review-config comment commits. Carol
+    // and Dave clear the recent gate from their own priming votes;
+    // the seed only restores rep-based pool membership for the
+    // identities the deleted setCapacity loop used to enroll.
+    seedReviewerRep(server, cause.id, carol.id, dave.id, erin.id, frank.id, george.id);
 
     // Honest-pool bootstrap excerpts — three disjoint excerpts on
     // anchor1 that the rotating pairs converge below. Same anchor as
@@ -7225,22 +5654,18 @@ describe('testbed: synthetic populations against the wired surface', () => {
     });
     const erinResult = await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     await runHonestReviewer(eveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: calAwareBiasedDecider,
     });
     // Frank and George run after the coalition has had its shot at
@@ -7251,17 +5676,15 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // George get locked out alongside Eve).
     await runHonestReviewer(frankClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
     await runHonestReviewer(georgeClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
     const target = server.store.proposals.get(contested.proposal_id);
-    // Lockout reading per cube #5's two-metric template: honest
+    // Lockout reading per cube #3's two-metric template: honest
     // review collapsed at the gate. The honest pool is now Erin,
     // Frank, George; if any of them had its requestAssignment loop
     // end on `not_found` before casting a vote and the contested
@@ -7352,7 +5775,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // singleton strata. The bootstrap rotation is what lifts the
     // sybil closure off the prior lockout-driven reading: without
     // it, the demo gate would fire on Erin too and contested would
-    // stall 'staged' for the wrong reason. Cube #5's two-metric
+    // stall 'staged' for the wrong reason. Cube #3's two-metric
     // template surfaces this distinction (ASR vs lockout-rate);
     // here the closure is honest defense at both metrics.
     {
@@ -7417,7 +5840,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   });
 
   it('gate-threshold sweep cube: attack-success-rate and lockout-rate aggregate by defense config', () => {
-    // Two-metric aggregate per cube #5's template (PRD §Adversary
+    // Two-metric aggregate per cube #3's template (PRD §Adversary
     // testbed, Architecture, "Parameter sweeps"): group cells by
     // (defense knobs), read both ASR and lockout-rate. Computed
     // off the static expected fields the per-cell tests already
@@ -7507,502 +5930,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Third parameter sweep cube: the decline-aware encounter-domain
-  // extension joined with the existing vote-only cluster-signal stack.
-  // PRD §Reviewer assignment commits the encounter-domain widening
-  // ({accept, reject, decline}); this cube measures what that
-  // widening buys the defense in attack-success-rate terms across two
-  // attack patterns:
-  //
-  //   - co-voting decorrelated: Carol+Dave both vote on every priming
-  //     proposal but with perfect pairwise disagreement. The vote-
-  //     only cluster signal at anti-correlation threshold 1.0 catches
-  //     this — it's the original closure the first sweep cube above
-  //     pinned. Re-running it here under the include-declines axis
-  //     asserts the widening is non-regressive: turning declines on
-  //     does not break the existing closure for pure co-voting
-  //     coalitions.
-  //   - paired-decline multi-round: Carol+Dave never co-vote;
-  //     instead they pair declines across two priming proposals so
-  //     no shared vote-history forms (the multi-round closure
-  //     scenario above). The vote-only cluster signal is blind to
-  //     this by construction; only the decline-aware extension
-  //     widens the encounter domain enough to detect the pair.
-  //
-  // The defense knob in this cube is `stratum_include_declines`. The
-  // cluster-signal stack stays at the same strength the multi-round
-  // closure pins (anti-correlation 1.0, agreement 1.0, contention-
-  // weighted off — the contention-weighting × paired-decline-floor
-  // interaction is wired as cube #4 below). The headline is
-  // *additive*, not orthogonal: declines extend the encounter domain
-  // on top of votes, and the cube reads the lift the extension
-  // provides.
-  //
-  // Expected ASR shape — vote-only: 50% (co-voting closed, paired-
-  // decline open); decline-aware: 0% (both closed). The widening
-  // closes one named pattern without weakening the other.
-  type ClusterDeclineAttackPattern = 'co-voting-decorrelated' | 'paired-decline-multi-round';
-
-  interface ClusterDeclineSweepCell {
-    name: string;
-    pattern: ClusterDeclineAttackPattern;
-    stratum_include_declines: boolean;
-    expected_attack_succeeded: boolean;
-  }
-  const clusterDeclineSweepCells: ClusterDeclineSweepCell[] = [
-    // Vote-only stack: declines do not enter the encounter domain.
-    // Co-voting decorrelated is closed by the anti-correlation
-    // threshold on the vote signal alone (the prior sweep cube's
-    // 'decorrelated, threshold=1.0' result, replicated here as a
-    // regression handle for the include-declines knob).
-    {
-      name: 'co-voting decorrelated, declines off (vote-only catches)',
-      pattern: 'co-voting-decorrelated',
-      stratum_include_declines: false,
-      expected_attack_succeeded: false,
-    },
-    // Vote-only blind to a paired-decline coalition: zero shared
-    // vote-history → no edge → no cluster → cross-stratum gate has
-    // nothing to enforce against → suppression succeeds. This is the
-    // open seam the decline-aware extension is wired to close.
-    {
-      name: 'paired-decline multi-round, declines off (vote-only blind, suppression succeeds)',
-      pattern: 'paired-decline-multi-round',
-      stratum_include_declines: false,
-      expected_attack_succeeded: true,
-    },
-    // Decline-aware widening + co-voting decorrelated: the widening
-    // is non-regressive against this pattern. Carol+Dave never
-    // decline anything in the decorrelated runner, so the encounter
-    // ledger has no decline records to add; the vote-only closure
-    // for co-voting carries through unchanged.
-    {
-      name: 'co-voting decorrelated, declines on (widening is non-regressive)',
-      pattern: 'co-voting-decorrelated',
-      stratum_include_declines: true,
-      expected_attack_succeeded: false,
-    },
-    // Decline-aware widening + paired-decline: the closure the multi-
-    // round scenario lands on the proposal status. Paired-decline
-    // priming forms the cluster, the cross-stratum gate fires during
-    // the suppression round, fresh honest reviewers walk in and the
-    // contested target converges accepted.
-    {
-      name: 'paired-decline multi-round, declines on (decline-aware closes seam)',
-      pattern: 'paired-decline-multi-round',
-      stratum_include_declines: true,
-      expected_attack_succeeded: false,
-    },
-  ];
-  it.each(
-    clusterDeclineSweepCells,
-  )('cluster-decline sweep: $name → attack_succeeded=$expected_attack_succeeded', async ({
-    pattern,
-    stratum_include_declines,
-    expected_attack_succeeded,
-  }) => {
-    const contested_status =
-      pattern === 'co-voting-decorrelated'
-        ? (
-            await runDecorrelationScenario({
-              pattern: PATTERN_DECORRELATED,
-              anti_correlation_threshold: 1.0,
-              contention_weighted: false,
-              stratum_include_declines,
-            })
-          ).contested_status
-        : (
-            await runMultiRoundDeclineClosureScenario({
-              stratum_include_declines,
-            })
-          ).contested_status;
-    // attack_succeeded is "did the contested target end suppressed"
-    // — the proposer's-perspective failure mode the cluster-signal
-    // refinements exist to prevent. 'rejected' is convergence
-    // suppression; the cube doesn't produce 'unresolved-archived'
-    // outcomes (no time advances past the divergence window in
-    // these runners), so 'rejected' is the only attack-success
-    // signal here.
-    const attack_succeeded = contested_status === 'rejected';
-    expect(attack_succeeded).toBe(expected_attack_succeeded);
-  });
-
-  it('cluster-decline sweep cube: attack-success-rate aggregates by defense config', () => {
-    // Same aggregate-ASR shape the prior cubes pin: group cells by
-    // the defense knob, tally attack-pattern wins, assert per-config
-    // ASR. The metric is computed off the static
-    // `expected_attack_succeeded` fields the per-cell tests already
-    // validated, so the aggregate stays a fast read over locked
-    // observations rather than a re-run of the cube.
-    interface AsrCell {
-      stratum_include_declines: boolean;
-      total: number;
-      attacks_succeeded: number;
-    }
-    const grouped = new Map<string, AsrCell>();
-    for (const cell of clusterDeclineSweepCells) {
-      const key = `${cell.stratum_include_declines}`;
-      const g = grouped.get(key) ?? {
-        stratum_include_declines: cell.stratum_include_declines,
-        total: 0,
-        attacks_succeeded: 0,
-      };
-      g.total += 1;
-      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
-      grouped.set(key, g);
-    }
-    const asr = (key: string): number => {
-      const g = grouped.get(key);
-      if (!g) throw new Error(`missing defense config: ${key}`);
-      return g.attacks_succeeded / g.total;
-    };
-
-    // Vote-only stack: co-voting decorrelated is closed by the
-    // anti-correlation threshold on votes; paired-decline slips
-    // through. Half the named patterns suppress the contested
-    // target → ASR 50%. This is the gap the decline-aware extension
-    // is wired to close.
-    expect(asr('false')).toBe(0.5);
-    // Decline-aware: the encounter-domain widening lands the multi-
-    // round closure on the paired-decline pattern while leaving the
-    // vote-only closure for co-voting unchanged. Both named patterns
-    // close → ASR 0%. The lift is the headline.
-    expect(asr('true')).toBe(0);
-
-    // Coverage invariant: every defense config in the cube has both
-    // attack patterns. A future cell expansion that breaks this
-    // symmetry trips the assertion and forces the aggregate to be
-    // re-keyed rather than silently averaging over uneven groups.
-    for (const cell of grouped.values()) {
-      expect(cell.total).toBe(2);
-    }
-  });
-
-  // Fourth parameter sweep cube: the contention-weighting + paired-
-  // decline-floor interaction joined to the cluster-decline cube. The
-  // prior cube widened the encounter domain along
-  // `stratum_include_declines` and pinned the additive lift; this one
-  // holds declines on and widens along the two knobs that govern how
-  // decline-involved encounters are weighted under contention-
-  // weighted edges:
-  //
-  //   - `stratum_contention_weighted` ∈ {off, on}: under raw weights
-  //     each shared encounter contributes 1; under contention
-  //     weighting vote-vote agreements at unanimous-easy items
-  //     contribute 0 and decline-involved encounters fall under the
-  //     full-weight rule (gated by the floor).
-  //   - `stratum_decline_min_paired` ∈ {1, 2}: PRD §Reviewer
-  //     assignment commits the floor (default 2) on contention-
-  //     weighting's full-weight rule for declines so a single
-  //     asymmetric decline-involved encounter cannot dominate a pair
-  //     whose vote-vote history sits on unanimous-easy items.
-  //
-  // The two attack patterns the cube exercises:
-  //
-  //   - paired-decline multi-round: the runner the prior cube wired
-  //     against the include-declines knob. Carol+Dave coordinate
-  //     across two priming proposals (paired declines), the cluster
-  //     forms before the contested round, and the cross-stratum gate
-  //     fires against Dave during suppression. The closure must
-  //     survive every (cw, floor) combination — the floor is meant
-  //     to suppress over-clustering, not the legitimate paired-
-  //     decline edge. Under (cw=on, floor=1) the runner exposes a
-  //     partial over-clustering artifact (primingB stalls because
-  //     Erin's vote retroactively expands the false cluster) but
-  //     contested still closes through Frank+Hank, who walk in
-  //     fresh in Round 2 and pass below the min-shared filter on
-  //     their first contested vote.
-  //   - over-clustering false-positive: three honest reviewers prime
-  //     on unanimous-easy items, one declines a single trigger
-  //     excerpt, contested staged. Under cw=on + floor=1 the lone
-  //     decline-involved encounter at full weight against vote-vote
-  //     agreements at contention 0 false-clusters all three honest
-  //     reviewers; the cross-stratum gate then strangles honest
-  //     review on contested. Floor=2 closes the false-positive; cw=
-  //     off side-steps it entirely (the full-weight rule is a cw=on
-  //     branch).
-  //
-  // The over-clustering pattern is not adversarial — there is no
-  // coalition in that runner, only three honest reviewers. The
-  // failure mode (contested ≠ accepted) is honest-pool collapse
-  // by the cluster gate, not an attack landing. From the proposer's
-  // perspective the *outcome* is the same shape as a coalition
-  // suppression-by-archival, which is why the patterns sit in one
-  // cube; but the *cause* is opposite, and reading both under one
-  // attack_succeeded metric would conflate "defense closed an
-  // attack" with "defense closed because honest review collapsed."
-  // Cube #5's two-metric template (PRD §Adversary testbed
-  // (Architecture, "Parameter sweeps")) names exactly this
-  // distinction: ASR for real attacks
-  // landing, lockout-rate for honest-pool collapse, and "a defense
-  // that closes by collapsing the honest pool is not a defense."
-  // This cube reads on both: paired-decline contributes to ASR,
-  // over-clustering contributes to lockout-rate.
-  //
-  // Expected shape — (cw=off, floor=any): ASR=0%, lockout=0%
-  // (decline-aware raw-weight closes paired-decline; over-
-  // clustering does not trigger because the full-weight rule is a
-  // cw=on branch). (cw=on, floor=1): ASR=0%, lockout=50%
-  // (paired-decline still closes through Frank/Hank, but the over-
-  // clustering scenario lands the false-positive lockout on
-  // contested — three honest reviewers in the pool with no fresh-
-  // singleton fallback). (cw=on, floor=2): ASR=0%, lockout=0%
-  // (the stable composition — paired-decline closure survives,
-  // over-clustering false-positive closed by the floor). The
-  // headline: the floor is what makes the cw + decline-aware
-  // composition safe against the small-honest-pool case where
-  // there's no fresh-singleton bypass — and what makes that
-  // visible is the lockout-rate metric, not ASR.
-  type ClusterDeclineFloorAttackPattern =
-    | 'paired-decline-multi-round'
-    | 'over-clustering-false-positive';
-  interface ClusterDeclineFloorSweepCell {
-    name: string;
-    pattern: ClusterDeclineFloorAttackPattern;
-    stratum_contention_weighted: boolean;
-    stratum_decline_min_paired: number;
-    expected_attack_succeeded: boolean;
-    expected_false_positive_lockout: boolean;
-  }
-  const clusterDeclineFloorSweepCells: ClusterDeclineFloorSweepCell[] = [
-    // Raw-weight regime, paired-decline multi-round. Carol+Dave's
-    // paired declines form an anti-correlation edge under the raw-
-    // weight signal (2 shared decline-involved encounters, both
-    // disagreements at weight 1 each). Honest pairs (Carol-Erin,
-    // Dave-Erin) have one decline-involved encounter and one vote-
-    // vote agreement; raw ratios sit at 0.5/0.5 and neither edge
-    // fires. Closure works.
-    {
-      name: 'paired-decline, cw=off, floor=1 (raw-weight closure)',
-      pattern: 'paired-decline-multi-round',
-      stratum_contention_weighted: false,
-      stratum_decline_min_paired: 1,
-      expected_attack_succeeded: false,
-      expected_false_positive_lockout: false,
-    },
-    {
-      name: 'paired-decline, cw=off, floor=2 (raw-weight closure; floor inert)',
-      pattern: 'paired-decline-multi-round',
-      stratum_contention_weighted: false,
-      stratum_decline_min_paired: 2,
-      expected_attack_succeeded: false,
-      expected_false_positive_lockout: false,
-    },
-    // Contention-weighted, floor=1: the over-clustering pathology
-    // partially fires on priming — primingB ends staged because
-    // Erin's accept on it causes the Carol-Dave-Erin false cluster
-    // to lock in (now both pairs have shared=2 ≥ min_shared) and
-    // the degraded threshold tightens to 3 before her vote can
-    // push the count past it. primingA already converged before
-    // Erin's second vote (only 1 shared encounter with Dave at
-    // that point so the false-cluster edge hadn't formed yet). In
-    // Round 2 the contested target still gets through: Carol's
-    // reject lands but Dave is gated, Frank walks in fresh and
-    // votes accept (1+1), then Hank walks in fresh and votes
-    // accept (now 1 reject + 2 accepts). At Hank's vote, only
-    // 1 contested-encounter stands between him and any other
-    // reviewer (below min_shared) so {CDEF} + {H} = 2 strata, not
-    // degraded, threshold stays at 2 and contested converges
-    // accepted. The closure fires on outcome — the over-clustering
-    // pathology costs primingB but not contested. The attack does
-    // not succeed.
-    {
-      name: 'paired-decline, cw=on, floor=1 (over-clusters honest pool but Frank/Hank carry)',
-      pattern: 'paired-decline-multi-round',
-      stratum_contention_weighted: true,
-      stratum_decline_min_paired: 1,
-      expected_attack_succeeded: false,
-      expected_false_positive_lockout: false,
-    },
-    // Contention-weighted, floor=2: Carol-Dave clusters cleanly (2
-    // paired declines meet the floor); honest pairs stay singletons
-    // (1 decline-involved encounter < floor). Closure works without
-    // honest-pool over-clustering.
-    {
-      name: 'paired-decline, cw=on, floor=2 (clean closure under composition)',
-      pattern: 'paired-decline-multi-round',
-      stratum_contention_weighted: true,
-      stratum_decline_min_paired: 2,
-      expected_attack_succeeded: false,
-      expected_false_positive_lockout: false,
-    },
-    // Over-clustering, raw weights. Carol-Dave and Carol-Erin each
-    // have 2 vote-vote agreements + 1 decline-involved disagreement;
-    // raw 2/3 agreement, 1/3 disagreement, neither edge fires.
-    // Dave-Erin is 3-for-3 vote-vote agreement → positive-cluster
-    // edge fires (raw agreement = 1.0). Two strata: {Carol},
-    // {Dave, Erin}. Round 3: Carol → singleton admitted votes
-    // accept, Dave → {D,E} not yet routed admitted votes accept.
-    // Converged accepted at the second vote.
-    {
-      name: 'over-clustering, cw=off, floor=1 (raw-weight regime, full-weight rule inert)',
-      pattern: 'over-clustering-false-positive',
-      stratum_contention_weighted: false,
-      stratum_decline_min_paired: 1,
-      expected_attack_succeeded: false,
-      expected_false_positive_lockout: false,
-    },
-    {
-      name: 'over-clustering, cw=off, floor=2 (raw-weight regime, full-weight rule inert)',
-      pattern: 'over-clustering-false-positive',
-      stratum_contention_weighted: false,
-      stratum_decline_min_paired: 2,
-      expected_attack_succeeded: false,
-      expected_false_positive_lockout: false,
-    },
-    // Contention-weighted + floor=1: the named pathology. Carol-
-    // Dave's single decline-involved encounter at full weight
-    // against priming agreements at contention 0 lights up the
-    // anti-correlation edge against an honest pair; same for Carol-
-    // Erin. Carol-Dave-Erin collapse to one stratum, contested is
-    // stratification-degraded with votes_to_accept=3, only Carol is
-    // admitted (votes accept = 1), Dave/Erin gated. Sweep archives
-    // → unresolved-archived → suppression succeeds.
-    {
-      name: 'over-clustering, cw=on, floor=1 (false-positive lockout, contested archives)',
-      pattern: 'over-clustering-false-positive',
-      stratum_contention_weighted: true,
-      stratum_decline_min_paired: 1,
-      expected_attack_succeeded: false,
-      expected_false_positive_lockout: true,
-    },
-    // Floor=2 closes the false-positive: each honest pair has 1
-    // decline-involved encounter < floor → contributes 0 weight,
-    // every vote-vote agreement at contention 0, weighted_shared=0,
-    // signalAvailable=false, no edges. All three stay singletons,
-    // contested converges accepted at the second vote.
-    {
-      name: 'over-clustering, cw=on, floor=2 (composition closes the false-positive)',
-      pattern: 'over-clustering-false-positive',
-      stratum_contention_weighted: true,
-      stratum_decline_min_paired: 2,
-      expected_attack_succeeded: false,
-      expected_false_positive_lockout: false,
-    },
-  ];
-  it.each(clusterDeclineFloorSweepCells)('cluster-decline floor sweep: $name', async ({
-    pattern,
-    stratum_contention_weighted,
-    stratum_decline_min_paired,
-    expected_attack_succeeded,
-    expected_false_positive_lockout,
-  }) => {
-    const contested_status =
-      pattern === 'paired-decline-multi-round'
-        ? (
-            await runMultiRoundDeclineClosureScenario({
-              stratum_include_declines: true,
-              stratum_contention_weighted,
-              stratum_decline_min_paired,
-            })
-          ).contested_status
-        : (
-            await runOverClusteringScenario({
-              stratum_contention_weighted,
-              stratum_decline_min_paired,
-            })
-          ).contested_status;
-    // The cube reads two metrics (per cube #5's template), keyed on
-    // pattern. The paired-decline runner has a real adversary
-    // (Carol+Dave) and contested ≠ accepted is suppression-by-
-    // attack landing → ASR. The over-clustering runner has no
-    // adversary and contested ≠ accepted is honest-pool collapse
-    // by the cluster gate → lockout-rate. The cube exercises three
-    // suppression modes ('rejected', 'unresolved-archived',
-    // 'staged') under the paired-decline runner and the same
-    // outcome shape under the over-clustering runner; what
-    // changes between them is the *cause*, which is what the
-    // pattern-keyed split makes visible.
-    const attack_succeeded =
-      pattern === 'paired-decline-multi-round' && contested_status !== 'accepted';
-    const false_positive_lockout =
-      pattern === 'over-clustering-false-positive' && contested_status !== 'accepted';
-    expect(attack_succeeded).toBe(expected_attack_succeeded);
-    expect(false_positive_lockout).toBe(expected_false_positive_lockout);
-  });
-
-  it('cluster-decline floor sweep cube: attack-success-rate and lockout-rate aggregate by defense config', () => {
-    // Two-metric aggregate per cube #5's template (PRD §Adversary
-    // testbed, Architecture, "Parameter sweeps"): group cells by
-    // defense config and read both ASR and lockout-rate, computed
-    // off the static expected fields the per-cell tests already
-    // validated so the aggregate stays a fast read over locked
-    // observations rather than a re-run of the cube. The split is
-    // what distinguishes "defense closed an attack" from "defense
-    // closed because honest review collapsed at the same gate."
-    interface AsrCell {
-      stratum_contention_weighted: boolean;
-      stratum_decline_min_paired: number;
-      total: number;
-      attacks_succeeded: number;
-      lockouts: number;
-    }
-    const grouped = new Map<string, AsrCell>();
-    for (const cell of clusterDeclineFloorSweepCells) {
-      const key = `${cell.stratum_contention_weighted ? 1 : 0}|${cell.stratum_decline_min_paired}`;
-      const g = grouped.get(key) ?? {
-        stratum_contention_weighted: cell.stratum_contention_weighted,
-        stratum_decline_min_paired: cell.stratum_decline_min_paired,
-        total: 0,
-        attacks_succeeded: 0,
-        lockouts: 0,
-      };
-      g.total += 1;
-      if (cell.expected_attack_succeeded) g.attacks_succeeded += 1;
-      if (cell.expected_false_positive_lockout) g.lockouts += 1;
-      grouped.set(key, g);
-    }
-    const asr = (key: string): number => {
-      const g = grouped.get(key);
-      if (!g) throw new Error(`missing defense config: ${key}`);
-      return g.attacks_succeeded / g.total;
-    };
-    const lockoutRate = (key: string): number => {
-      const g = grouped.get(key);
-      if (!g) throw new Error(`missing defense config: ${key}`);
-      return g.lockouts / g.total;
-    };
-
-    // Raw-weight regime: the contention-weighting full-weight rule
-    // for declines is inactive, so the floor parameter has no
-    // effect. Paired-decline closes via raw anti-correlation on
-    // the 2 paired declines (no attacks land); over-clustering's
-    // asymmetric trigger encounter at raw weights lights nothing
-    // (no honest-pool collapse). Both metrics at 0%.
-    expect(asr('0|1')).toBe(0);
-    expect(lockoutRate('0|1')).toBe(0);
-    expect(asr('0|2')).toBe(0);
-    expect(lockoutRate('0|2')).toBe(0);
-    // Contention-weighted with floor=1 (the unsafe composition):
-    // the paired-decline runner lands no attack — Frank+Hank walk
-    // in fresh in Round 2 and carry contested. The over-clustering
-    // runner lands the false-positive lockout: three honest
-    // reviewers in the small pool all false-cluster, no fresh-
-    // singleton fallback, contested archives. ASR=0%, lockout=50%
-    // — the gap the floor closes, made visible by the two-metric
-    // split. (The previous one-metric aggregate read this cell as
-    // ASR=50%, conflating honest-pool collapse with attack
-    // landing.)
-    expect(asr('1|1')).toBe(0);
-    expect(lockoutRate('1|1')).toBe(0.5);
-    // Contention-weighted with floor=2 (the stable composition):
-    // both metrics at 0%. The headline — the floor is what makes
-    // the cw + decline-aware composition safe against the small-
-    // honest-pool case. cw=off side-steps the issue (the full-
-    // weight rule is a cw=on branch); cw=on requires the floor.
-    expect(asr('1|2')).toBe(0);
-    expect(lockoutRate('1|2')).toBe(0);
-
-    // Coverage invariant: every defense config in the cube has both
-    // attack patterns. A future cell expansion that breaks this
-    // symmetry trips the assertion and forces the aggregate to be
-    // re-keyed rather than silently averaging over uneven groups.
-    for (const cell of grouped.values()) {
-      expect(cell.total).toBe(2);
-    }
-  });
-
-  // Fifth parameter sweep cube: re-baseline cube #2 (the assignment-
+  // Third parameter sweep cube: re-baseline cube #2 (the assignment-
   // gate threshold cube) under the difficulty-aware regime that
   // `review_credit_contention_alpha < 1` enables. PRD §Reputation
   // commits the alpha primitive: reviewer rep deltas scale by
@@ -8062,7 +5990,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // patient runner uses and exhibits the same alpha-shrinkage failure
   // mode under cube-#2 thresholds — bootstrap demonstrated falls from
   // 2.0 to 1.0 and re-trips lockout. The sybil cells would reproduce
-  // cube #5's patient headline (lockout-by-shrunken-bootstrap, recovered
+  // cube #3's patient headline (lockout-by-shrunken-bootstrap, recovered
   // by demo-threshold re-tuning) without surfacing a new closure
   // mechanism, so the sybil baseline at alpha=0.5 is pinned by two
   // dedicated regressions below rather than absorbed here: the
@@ -8070,7 +5998,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // configs at alpha=0.5 (recent-only invariant, demo>0 re-tripping
   // lockout), and a single re-tuned-thresholds cell pins that
   // (recent=0.5, demo=0.75) closes the sybil attack by honest
-  // defense — the same shape cube #5's patient cell reads at the
+  // defense — the same shape cube #3's patient cell reads at the
   // same configuration.
   type AlphaCubeConfig = 'off' | 'cube2-thresholds' | 'retuned-thresholds';
   interface AlphaGateSweepCell {
@@ -8260,7 +6188,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // bypass the recent gate by construction). The cells pin the
   // alpha=0.5 baseline directly rather than asserting equality with
   // alpha=1 — the partial-invariance shape is the load-bearing
-  // observation, and cube #5 stays patient-only because the patient-
+  // observation, and cube #3 stays patient-only because the patient-
   // side re-tuning headline already covers the same shrinkage failure
   // mode at the same gate; adding sybil cells would reproduce the
   // patient cube's lockout-vs-defense split without surfacing a new
@@ -8335,8 +6263,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(result.carol_demonstrated).toBeCloseTo(1.5, 10);
   });
 
-  it('sybil-amplified at alpha=0.5 under cube-#5 re-tuned thresholds: closes attack by honest defense', async () => {
-    // Pins the claim cube #5's patient-only scoping rests on: the
+  it('sybil-amplified at alpha=0.5 under cube-#3 re-tuned thresholds: closes attack by honest defense', async () => {
+    // Pins the claim cube #3's patient-only scoping rests on: the
     // sybil baseline at the re-tuned thresholds (recent=0.5, demo=
     // 0.75) reads honest defense at both metrics, the same shape
     // the patient cube reads at the same configuration. Under the
@@ -8350,7 +6278,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // gated; Erin+Frank's accepts converge contested across
     // singleton strata. If a future change makes the sybil runner
     // diverge from the patient closure under the same re-tuned
-    // thresholds, this fires and the cube #5 patient-only scoping
+    // thresholds, this fires and the cube #3 patient-only scoping
     // needs re-evaluation.
     const result = await runSybilAmplifiedGateScenario({
       assignment_min_recent: 0.5,
@@ -8361,7 +6289,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(result.false_positive_lockout).toBe(false);
   });
 
-  // Sixth parameter sweep cube: the testbed-side `AdversaryBudget`
+  // Fourth parameter sweep cube: the testbed-side `AdversaryBudget`
   // primitive (slice 5) joined with the binding-cost gate (slice 2)
   // as the first sweep on the budget axis PRD §Identity names
   // "coalition-affordable-identities-per-epoch." Eight cells over
@@ -8402,11 +6330,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // cluster signal is structurally inert here — disabling it isolates
   // the budget arithmetic from the cluster-signal closure path that
   // cubes #1/#3/#4 measure on coordinated-voting attacks). The
-  // assignment-time gates (recent, demonstrated, decline-rate) are
+  // assignment-time gates (recent, demonstrated) are
   // also inert: the attack is contributor-initiated, which bypasses
   // assignment-time gates by construction, scoping the cube to the
   // identity layer. Cube #2 measured assignment-gate closure on the
-  // sybil-amplified-coalition pattern; cube #6 measures binding-cost
+  // sybil-amplified-coalition pattern; cube #4 measures binding-cost
   // and issuance-cap closure on a pure-budget pattern with no
   // assignment-driven dependencies, so the two cubes are siblings
   // covering complementary axes of the four-layer architecture.
@@ -8694,37 +6622,37 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Seventh parameter sweep cube: the multi-epoch extension of cube
+  // Fifth parameter sweep cube: the multi-epoch extension of cube
   // #6, joining the `AdversaryBudget` primitive with an epoch-
   // distribution sweep on the same one-shot suppression attack
   // pattern. PRD §Identity bullet 2 names the issuance cap as the
   // *time* primitive on the cost-multiplier — "an adversary affording
-  // K sybils still cannot mint them all in one epoch" — and cube #6
+  // K sybils still cannot mint them all in one epoch" — and cube #4
   // measured the closure on the one-shot (epoch-0-only) case where
-  // the cap fires as a binary stop on K. Cube #7 sweeps the epoch
+  // the cap fires as a binary stop on K. Cube #5 sweeps the epoch
   // axis to read what the cap actually does when an attack persists
   // across epochs: it shapes K's *distribution* across epochs rather
   // than capping K outright. K_eff = min(floor(B/T), N × E) — the
   // budget B caps the total identities the operator can ever afford,
   // the issuance cap N caps per-epoch mints, and the epoch count E
   // multiplies N into the attack window. The attack pattern is the
-  // same one-shot contributor-initiated suppression cube #6 measured
+  // same one-shot contributor-initiated suppression cube #4 measured
   // (K* = 2 sybils race two honest accepts on a contested excerpt),
   // but with sybils spread across epochs rather than packed into
   // epoch 0.
   //
   // Eight cells over (budget B ∈ {1, 4}, epochs E ∈ {1, 2}, issuance
   // cap N ∈ {1, 2}) drive `it.each`. The binding-cost threshold T=1
-  // is held — cube #6 already measured the cost-multiplier axis on
+  // is held — cube #4 already measured the cost-multiplier axis on
   // the (T=2, N=2) cell, and pinning T=1 here isolates the time
   // primitive from the cost-multiplier so the read on (E, N) is not
   // confounded by T's contribution to K_eff. The aggregate groups
   // cells by (E, N) and reads ASR per group across the budget axis:
   //
-  //   (E=1, N=1) at 0% — cube #6's baseline at the minimum-cap
+  //   (E=1, N=1) at 0% — cube #4's baseline at the minimum-cap
   //     defense config: the issuance cap closes the one-shot attack
   //     at any budget.
-  //   (E=1, N=2) at 50% — cube #6's gates-inert reading recovered:
+  //   (E=1, N=2) at 50% — cube #4's gates-inert reading recovered:
   //     the one-shot attack lands at B=4 (K_eff=2) but budget closes
   //     it at B=1 (K_eff=1).
   //   (E=2, N=1) at 50% — *the multi-epoch lift on the time
@@ -8739,8 +6667,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     constrains, same as (E=1, N=2).
   //
   // The headline reading is the (E=1, N=1) → (E=2, N=1) lift from
-  // 0% to 50%. Cube #6's (T=1, N=1) defense config closed the attack
-  // at 0% across both budget cells; cube #7 reads what *that same
+  // 0% to 50%. Cube #4's (T=1, N=1) defense config closed the attack
+  // at 0% across both budget cells; cube #5 reads what *that same
   // defense config* does when the attack persists for two epochs:
   // it lifts to 50%. The remaining 50% is what the *budget* axis
   // closes (B=1 cannot afford a second sybil at any T), and that
@@ -8752,7 +6680,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // N × E) reads the same numbers off the runner's loop structure
   // that the harness fiction operationalizes.
   //
-  // The cluster signal is disabled for the same reason as cube #6:
+  // The cluster signal is disabled for the same reason as cube #4:
   // the per-sybil-acts-once attack has no shared history to cluster
   // on, so the cluster signal is structurally inert here regardless
   // of config. Honest reviewers do not bootstrap demonstrated rep
@@ -8761,7 +6689,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // construction. Scope is the identity layer composed across the
   // time axis. The "buys time for behavior-based defenses" framing
   // PRD §Identity commits is what makes the time primitive
-  // *operationally* load-bearing in production; cube #7 reads the
+  // *operationally* load-bearing in production; cube #5 reads the
   // arithmetic of the time-buying without behavior defenses, leaving
   // the joined cluster-signal-with-budget-axis cube as a follow-up.
   async function runMultiEpochBudgetSybilSuppressionScenario(params: {
@@ -8785,7 +6713,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
         votes_to_accept: 2,
         votes_to_reject: 2,
         min_attestation_level: params.attestation_threshold,
-        // Cluster signal off — same rationale as cube #6's runner:
+        // Cluster signal off — same rationale as cube #4's runner:
         // the per-sybil-acts-once attack has no shared history, so
         // the cluster signal is structurally inert regardless of
         // config; explicit disable keeps the runner's scope honest.
@@ -8946,7 +6874,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       expected_attack_succeeded: false,
     },
     {
-      name: 'B=4, E=1, N=1 (issuance cap caps K_eff=1 in one shot — cube #6 baseline)',
+      name: 'B=4, E=1, N=1 (issuance cap caps K_eff=1 in one shot — cube #4 baseline)',
       budget: 4,
       attestation_threshold: 1,
       issuance_cap_per_epoch: 1,
@@ -8954,7 +6882,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       expected_attack_succeeded: false,
     },
     {
-      name: 'B=4, E=1, N=2 (gates inert at K*-affording budget — cube #6 baseline)',
+      name: 'B=4, E=1, N=2 (gates inert at K*-affording budget — cube #4 baseline)',
       budget: 4,
       attestation_threshold: 1,
       issuance_cap_per_epoch: 2,
@@ -9028,18 +6956,18 @@ describe('testbed: synthetic populations against the wired surface', () => {
       return g.attacks_succeeded / g.total;
     };
 
-    // (E=1, N=1): ASR=0% — cube #6's baseline at the minimum-cap
+    // (E=1, N=1): ASR=0% — cube #4's baseline at the minimum-cap
     // defense config recovered. The issuance cap closes the one-shot
     // attack at any budget; K_eff caps at 1 in a single epoch.
     expect(asr('1|1')).toBe(0);
     // (E=1, N=2): ASR=50% — gates inert at the K*-affording budget.
-    // K_eff=2 at B=4; budget binds at B=1. Same reading as cube #6's
-    // (T=1, N=2) cell (here at 50% rather than 100% because cube #7
-    // sweeps a smaller B-axis where B=1 binds, while cube #6 swept
+    // K_eff=2 at B=4; budget binds at B=1. Same reading as cube #4's
+    // (T=1, N=2) cell (here at 50% rather than 100% because cube #5
+    // sweeps a smaller B-axis where B=1 binds, while cube #4 swept
     // B ∈ {2, 4} both above the K*-affording threshold at T=1).
     expect(asr('1|2')).toBe(0.5);
     // (E=2, N=1): ASR=50% — *the multi-epoch lift on the time
-    // primitive*. Cube #6 at the same (T=1, N=1) defense config read
+    // primitive*. Cube #4 at the same (T=1, N=1) defense config read
     // 0% across both budget cells; here, extending the attack window
     // to E=2 lifts K_eff to 2 at B=4 (one mint per epoch), and the
     // attack lands. B=1 still closes by the budget axis (one sybil
@@ -9065,11 +6993,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Eighth parameter sweep cube: the action-axis sibling of cube #7.
+  // Sixth parameter sweep cube: the action-axis sibling of cube #5.
   // Cubes #6 and #7 measure the K-axis of the four-layer sybil-
-  // resistance architecture — cube #6 reads K_eff = floor(B/T) capped
+  // resistance architecture — cube #4 reads K_eff = floor(B/T) capped
   // at N (the binding-cost gate's cost-multiplier on a one-shot
-  // suppression attack), cube #7 reads K_eff = N × E (the issuance
+  // suppression attack), cube #5 reads K_eff = N × E (the issuance
   // cap as time primitive on multi-epoch suppression). Both cubes
   // pin K=2 fresh sybils each acting *once* (one reject vote per
   // sybil); the per-(identity, epoch) rate-limit T (slice 3, server-
@@ -9080,9 +7008,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // ROADMAP §Status names this directly: "exercising the per-
   // (identity, epoch) rate-limit T at the action axis (the cap
   // binds when one identity does many things, not the K-fresh-
-  // sybils-each-acting-once pattern cubes #6 and #7 measure)."
+  // sybils-each-acting-once pattern cubes #4 and #5 measure)."
   //
-  // Cube #8's attack pattern is multi-target suppression: K=2 sybils
+  // Cube #6's attack pattern is multi-target suppression: K=2 sybils
   // (no priming history; cluster signal disabled by construction
   // matching cubes #6/#7) try to suppress M contested targets.
   // votes_to_reject=2 so each suppressed target needs *both* sybils
@@ -9107,13 +7035,13 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     suppresses 1 target at any M >= 1, never reaches M=2.
   //   (T=1, E=2) at 50% — the time-primitive lift on the rate cap:
   //     T × E = 2 suppresses M=2 fully but stops short of M=4. The
-  //     issuance cap analog from cube #7 is exactly this — the cap
+  //     issuance cap analog from cube #5 is exactly this — the cap
   //     delays but does not prevent multi-epoch suppression at small
   //     attack scope.
   //   (T=2, E=1) at 50% — the per-epoch-cap lift symmetric to the
   //     time-primitive lift: T × E = 2 same as (T=1, E=2). Reading
   //     T and E as interchangeable axes of the K × T × E
-  //     coalition-throughput arithmetic, cube #8 confirms what the
+  //     coalition-throughput arithmetic, cube #6 confirms what the
   //     slice-3 "K × T = coalition's per-epoch budget" framing
   //     committed: the throughput axis is symmetric in T and E
   //     across the attack window.
@@ -9123,14 +7051,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     defense config saturates; widening M to 6 would re-open the
   //     cell with same T × E = 4 < 6 closure.
   //
-  // Cube #8 is the action-axis sibling of cube #7's K-axis: cube #7
-  // reads K_eff = N × E (issuance cap × epochs); cube #8 reads
+  // Cube #6 is the action-axis sibling of cube #5's K-axis: cube #5
+  // reads K_eff = N × E (issuance cap × epochs); cube #6 reads
   // suppression_capacity_eff = T × E (rate-limit cap × epochs).
   // Same arithmetic shape on different axes — identical aggregate
   // numbers ((1, 1) at 0%, (1, 2)/(2, 1) at 50%, (2, 2) at 100%
   // when ASR-grouped by (cap, epoch)) reading two different
-  // primitives on the four-layer architecture: cube #7 the
-  // issuance-frequency cap (slice 2), cube #8 the per-(identity,
+  // primitives on the four-layer architecture: cube #5 the
+  // issuance-frequency cap (slice 2), cube #6 the per-(identity,
   // epoch) rate-limit (slice 3). Together they pin the K × N × T × E
   // coalition-budget arithmetic the four-layer architecture
   // composes against.
@@ -9140,7 +7068,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // `accountWriteAction` cap fire `rate_limited` errors directly.
   // This exercises the slice-3 server-side primitive end-to-end (the
   // adversary-budget-model's `tryAct` is the testbed-side mirror of
-  // exactly this server-side enforcement; cube #8 reads the server
+  // exactly this server-side enforcement; cube #6 reads the server
   // side directly so the wiring is what's measured, not the harness
   // arithmetic). Caught `rate_limited` errors signal "this sybil
   // exhausted this epoch" and the loop moves to the next sybil; the
@@ -9240,8 +7168,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
 
     // K=2 sybils minted at attestation threshold (binding cost gate
-    // passes by construction; cube #8's scope is the action axis,
-    // not the binding-cost axis cube #6 measured).
+    // passes by construction; cube #6's scope is the action axis,
+    // not the binding-cost axis cube #4 measured).
     const sybils = ['s0', 's1'].map((name) =>
       server.bootstrap.mintIdentity({
         display_name: name,
@@ -9467,11 +7395,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
   it('action-axis sweep cube: ASR aggregates by (T, E) and reads the rate-limit cap as throughput primitive', () => {
     // Aggregate per the cube template: group cells by (T, E), read
     // ASR per group across the M (attack-scope) axis. The headline
-    // is the symmetry cube #7's reading anticipated — at fixed K=2
+    // is the symmetry cube #5's reading anticipated — at fixed K=2
     // sybils, the suppression-capacity arithmetic reduces to T × E
     // (per-sybil throughput across the attack window) because every
-    // suppressed target consumes one reject vote per sybil. Cube #8
-    // and cube #7's aggregates are numerically identical (0%, 50%,
+    // suppressed target consumes one reject vote per sybil. Cube #6
+    // and cube #5's aggregates are numerically identical (0%, 50%,
     // 50%, 100% across (cap=1,E=1)/(cap=1,E=2)/(cap=2,E=1)/(cap=2,
     // E=2)) reading two different primitives — the issuance cap and
     // the rate-limit — on the four-layer architecture.
@@ -9509,7 +7437,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // T × E = 2 fully suppresses M=2 (1 target per epoch), stops
     // short of M=4. The cap *delays* but does not *prevent*
     // suppression at small attack scope across epochs, exactly the
-    // shape cube #7 read on the issuance-cap axis.
+    // shape cube #5 read on the issuance-cap axis.
     expect(asr('1|2')).toBe(0.5);
     // (T=2, E=1): ASR=50% — per-epoch lift on the rate cap,
     // symmetric to the time-primitive lift. T × E = 2 same as
@@ -9519,7 +7447,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // attacks, with T and E interchangeable in the product.
     expect(asr('2|1')).toBe(0.5);
     // (T=2, E=2): ASR=100% — composition saturates at the maximum
-    // attack scope cube #8 measures. T × E = 4 covers M=4 (the
+    // attack scope cube #6 measures. T × E = 4 covers M=4 (the
     // saturating cell) and M=2 (where the cap is non-binding).
     // Widening M to 6 would re-open this cell with the same
     // T × E = 4 < 6 closure, sliding the composition's saturation
@@ -9535,7 +7463,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Ninth parameter sweep cube: the cluster-signal × budget-axis
+  // Seventh parameter sweep cube: the cluster-signal × budget-axis
   // composition cube ROADMAP §Status named as the remaining
   // qualitative axis after cubes #6/#7/#8 wired the K-axis and
   // throughput-axis budget primitives. The headline is the
@@ -9546,7 +7474,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // (per-sybil-acts-once attack has no shared history to cluster
   // on, structurally inert by construction); cubes #1/#3/#4 read
   // the cluster signal but disable the identity-layer cost
-  // primitives. Cube #9 is the first cube where both layers are
+  // primitives. Cube #7 is the first cube where both layers are
   // active and the budget axis sweeps how *much* fresh-recruit
   // capacity the operator can field against the cluster signal's
   // closure of the established coalition.
@@ -9581,10 +7509,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     — without cluster signal, Dave walks in and casts reject
   //     too. Carol+Dave+1 Eve = 3. The binding-cost gate would
   //     then need to close Dave's *and* the Eve recruit, requiring
-  //     B < T to refuse all of them. Cube #9 holds cluster signal
+  //     B < T to refuse all of them. Cube #7 holds cluster signal
   //     *on* so the headline is the joint reading rather than the
   //     individual-layer reading; the cluster-off baseline is what
-  //     cube #6 already measured, so cube #9's contribution is the
+  //     cube #4 already measured, so cube #7's contribution is the
   //     joint axis.
   //   Composition (T=2, cluster signal on): the cluster signal
   //     closes Dave, the binding-cost gate refuses Eve(s) when
@@ -9602,12 +7530,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // The (B=2, T=2) cell is the *threshold-budget* for the (K*=3)
   // regime — one Eve affordable, but K*-1=2 needed; doubling
   // budget to B=4 lifts ASR to 100%. The threshold-budget reading
-  // is the cost-multiplier signature cube #6 read at the (T=2,
+  // is the cost-multiplier signature cube #4 read at the (T=2,
   // N=2) cell on the K-axis: the budget needed for attack
   // feasibility scales with the binding-cost multiplier T and the
   // additional-recruits-required floor K*-1.
   //
-  // Cube #9 is the first cube to read the four-layer architecture's
+  // Cube #7 is the first cube to read the four-layer architecture's
   // *full composition* under the named regression-handle attack
   // pattern (sybil-amplified coordinated-voting). PRD §Identity's
   // "the four identity-layer primitives are what closes the seam
@@ -9685,12 +7613,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       scope_query: 'x',
     });
 
-    for (const reviewer of [carol, dave, erin, frank, george]) {
-      await server.tools.setCapacity(
-        { identity_id: reviewer.id },
-        { cause_id: cause.id, rate: 5, kinds: ['review'] },
-      );
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id, erin.id, frank.id, george.id);
 
     const aliceCaller = { identity_id: alice.id };
     const anchor1 = await server.tools.proposeAnchor(aliceCaller, {
@@ -9842,8 +7765,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // `tryMint(0)` deducts T from B (binding-cost layer); refusal
     // mode 'budget' fires when B < T (the operator cannot afford
     // another sybil at this rate). Issuance cap is held at infinity
-    // — cube #7 already measured the time-axis on the issuance cap;
-    // cube #9 isolates the binding-cost × cluster-signal composition.
+    // — cube #5 already measured the time-axis on the issuance cap;
+    // cube #7 isolates the binding-cost × cluster-signal composition.
     const budget = new AdversaryBudget({
       initial: params.budget,
       attestation_cost: params.attestation_threshold,
@@ -9861,10 +7784,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
         attestation_level: params.attestation_threshold,
       });
       evesMinted += 1;
-      await server.tools.setCapacity(
-        { identity_id: eve.id },
-        { cause_id: cause.id, rate: 5, kinds: ['review'] },
-      );
       const eveAssignment = await server.tools.requestAssignment(
         { identity_id: eve.id },
         { cause_id: cause.id },
@@ -10119,9 +8038,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Tenth parameter sweep cube: the calibration-density × calibration-
+  // Eighth parameter sweep cube: the calibration-density × calibration-
   // aware-convergence composition cube. ROADMAP §Status records the
-  // identity-cost design pass (cubes #6-#9) as closed at the cube
+  // identity-cost design pass (cubes #4-#7) as closed at the cube
   // level; this cube opens the *calibration-density* design pass on a
   // non-identity axis the prior cubes left unswept. PRD §What's
   // deliberately not specified names "numeric calibration ratios (what
@@ -10129,7 +8048,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // explicitly deferred to the testbed; the existing strategic-
   // coalition scenarios pin the rep-ledger and convergence-half
   // closures at a single density (every_n=2) without surveying the
-  // axis. Cube #10 is the first cube to read the density axis
+  // axis. Cube #8 is the first cube to read the density axis
   // directly.
   //
   // Attack pattern: strategic-coalition (PRD §Adversary taxonomy,
@@ -10198,7 +8117,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // convergence window closes, and at fixed reviewer-pool size that
   // floor is a function of every_n alone. PRD §Calibration batches
   // commits "a coalition that misfires on calibration items pays
-  // once on the rep ledger and once at convergence"; cube #10 is the
+  // once on the rep ledger and once at convergence"; cube #8 is the
   // first cube to read the *and-once-at-convergence* half's
   // density-dependence directly, complementing the rep-ledger
   // inversion the standalone calibration-injection scenario already
@@ -10274,8 +8193,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     };
     await runHonestStrong(bobClient, {
       cause_id: cause.id,
-      rate: 5,
-      kinds: ['excerpt'],
       content: provider,
     });
 
@@ -10287,7 +8204,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: acceptAllDecider,
     });
 
@@ -10303,12 +8219,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const daveClient = await wireArchetype(server, dave.id);
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: naiveBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 5,
       decide: naiveBiasedDecider,
     });
 
@@ -10502,7 +8416,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Eleventh parameter sweep cube: the stratification × honest-pool-
+  // Ninth parameter sweep cube: the stratification × honest-pool-
   // size cube on the cluster-signal-eligible coalition. PRD §What's
   // deliberately not specified names "Reviewer pool sizes (N for a
   // given proposal class)" as a knob explicitly deferred to the
@@ -10511,10 +8425,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // capturable by the pool-fits-the-coalition dynamic." Existing
   // scenarios pin the closure at one pool size (the 1749 scenario,
   // 'stratification closes the calibration-aware coalition on the
-  // small-pool case') without surveying the pool-size axis. Cube #11
+  // small-pool case') without surveying the pool-size axis. Cube #9
   // is the first cube to read the pool-size axis directly and
   // measure the *quality* of the closure across pool sizes via the
-  // two-metric template cube #5 introduced (ASR + stall-rate).
+  // two-metric template cube #3 introduced (ASR + stall-rate).
   //
   // Attack pattern: the cluster-signal-eligible coalition (Carol+
   // Dave with 3 priming proposals shared so the cluster signal fires
@@ -10580,14 +8494,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //
   // The headline is *graceful degradation*: PRD §Reviewer assignment
   // commits "slower to close but not capturable by the pool-fits-
-  // the-coalition dynamic"; cube #11 reads this property directly.
+  // the-coalition dynamic"; cube #9 reads this property directly.
   // strat=on at H=1 lands the slower-but-not-capturable outcome
   // (staged → archived after divergence-closure window); strat=on
   // at H ≥ 2 lands the full closure (accepted). The pool-size axis
   // does not buy *capture-resistance* (that's the cluster signal's
   // job at any H); it buys *closure-quality* — the difference
   // between "the proposal stalls in the staged state" and "the
-  // proposal converges accepted." The two-metric template cube #5
+  // proposal converges accepted." The two-metric template cube #3
   // introduced (a defense that closes by stalling honest review is
   // partial; full closure requires the honest pool to drive
   // convergence) reads here on the pool-size axis directly: at
@@ -10629,7 +8543,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
         votes_to_reject: 2,
         // Calibration channels off — the cube isolates the
         // stratification × pool-size composition. Calibration density
-        // (cube #10) and calibration-aware convergence (cubes #5/#10)
+        // (cube #8) and calibration-aware convergence (cubes #5/#10)
         // are separate axes pinned by their own cubes.
         calibration_inject_every_n: 0,
         calibration_aware_convergence: false,
@@ -10689,12 +8603,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       const george = server.bootstrap.mintIdentity({ display_name: 'george' });
       honestIdentities.push({ id: george.id, name: 'george' });
     }
-    for (const id of [carol.id, dave.id, ...honestIdentities.map((h) => h.id)]) {
-      await server.tools.setCapacity(
-        { identity_id: id },
-        { cause_id: cause.id, rate: 5, kinds: ['review'] },
-      );
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id, ...honestIdentities.map((h) => h.id));
 
     // PRIMING: three bias-aligned excerpts. Carol and Dave both vote
     // accept on each via direct cast_review_vote — bypassing the
@@ -10949,7 +8858,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   });
 
   it('pool-size × stratification sweep cube: ASR + stall-rate aggregate by stratification', () => {
-    // Aggregate per the two-metric template cube #5 introduced: ASR
+    // Aggregate per the two-metric template cube #3 introduced: ASR
     // (capture rate) + stall_rate (staged-instead-of-converged
     // rate). The two-metric shape distinguishes "defense closes the
     // attack" from "defense closes by stalling honest review" — at
@@ -11071,13 +8980,13 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Twelfth parameter sweep cube: the vote-aggregation thresholds
+  // Tenth parameter sweep cube: the vote-aggregation thresholds
   // cube on the K=2 coalition at coalition-first ordering. PRD
   // §What's deliberately not specified names "Vote-aggregation
   // thresholds (what counts as convergent vs divergent)" as a knob
   // explicitly deferred to the testbed — `votes_to_accept` and
   // `votes_to_reject` are direct config knobs that all prior cubes
-  // held at the (2, 2) default. Cube #12 is the first cube to read
+  // held at the (2, 2) default. Cube #10 is the first cube to read
   // the threshold axes directly and measure how threshold tightening
   // composes with pool size under the two-metric template.
   //
@@ -11108,7 +9017,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     when H < vta; the proposal sits staged with neither side
   //     reaching their threshold.
   //   - honest pool size H ∈ {2, 3} (the closure-quality axis from
-  //     cube #11): the number of honest reviewers running after the
+  //     cube #9): the number of honest reviewers running after the
   //     coalition. Each contributes one accept toward votes_to_
   //     accept; H ≥ vta is the saturation point for full closure.
   //
@@ -11158,7 +9067,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //   - The (vta=3, H=2) stall is the *cost* of the closure-quality
   //     axis — the operator who tightens vta without growing the
   //     honest pool buys closure-quality failures, the same shape
-  //     cube #5 read on the alpha-recalibrated demo gate.
+  //     cube #3 read on the alpha-recalibrated demo gate.
   //
   // The two-metric template generalizes here to the *threshold-pool
   // interaction*: a defense knob that closes the attack by raising
@@ -11166,9 +9075,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // side at the same threshold, and the pool-size axis is what
   // amortizes that cost. PRD §Reviewer assignment commits "the
   // small-sub-topic case slower to close but not capturable by the
-  // pool-fits-the-coalition dynamic"; cube #11 read this on the
+  // pool-fits-the-coalition dynamic"; cube #9 read this on the
   // stratification axis (cluster signal closes capture, pool size
-  // buys closure quality), cube #12 reads the analog on the
+  // buys closure quality), cube #10 reads the analog on the
   // threshold axis (vto closes capture, vta + H interaction buys
   // closure quality). The two cubes cover complementary defenses
   // against the same K=2 coalition at coalition-first ordering, and
@@ -11202,7 +9111,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
         calibration_inject_every_n: 0,
         calibration_aware_convergence: false,
         // Stratification disabled — the cube isolates threshold
-        // arithmetic from cluster-signal closure (cube #11 reads
+        // arithmetic from cluster-signal closure (cube #9 reads
         // the stratification axis on a complementary attack
         // pattern).
         stratification_enabled: false,
@@ -11244,12 +9153,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       const george = server.bootstrap.mintIdentity({ display_name: 'george' });
       honestIdentities.push({ id: george.id, name: 'george' });
     }
-    for (const id of [carol.id, dave.id, ...honestIdentities.map((h) => h.id)]) {
-      await server.tools.setCapacity(
-        { identity_id: id },
-        { cause_id: cause.id, rate: 5, kinds: ['review'] },
-      );
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id, ...honestIdentities.map((h) => h.id));
 
     // CONTESTED: bias-misaligned excerpt. The coalition's
     // naive bias predicate ("accept payloads containing 'works'")
@@ -11489,7 +9393,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(asrOf(groupedByVta, 3)).toBe(0.5);
     expect(stallOf(groupedByVta, 3)).toBeCloseTo(1 / 4); // 1/4 cells stalls — (vto=3, H=2).
 
-    // H axis (the closure-quality axis from cube #11). At fixed H,
+    // H axis (the closure-quality axis from cube #9). At fixed H,
     // ASR averages over (vto, vta). H=3 eliminates stalls because
     // 3 honest reviewers can always reach vta ≤ 3.
     expect(asrOf(groupedByH, 2)).toBe(0.5); // 2/4 (vto=2 cells capture).
@@ -11507,19 +9411,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Thirteenth parameter sweep cube: the deeper calibration-density
-  // sweep on a 4-excerpt runner — direct extension of cube #10
+  // Eleventh parameter sweep cube: the deeper calibration-density
+  // sweep on a 4-excerpt runner — direct extension of cube #8
   // validating its load-bearing framing that "the density floor is
   // a function of (excerpt count × reviewer count × every_n) at
-  // fixed runner shape, not a property of every_n alone." Cube #10
+  // fixed runner shape, not a property of every_n alone." Cube #8
   // measured the floor between every_n=4 (silent) and every_n=2
-  // (closed) on a 2-excerpt runner; cube #13 doubles the excerpt
+  // (closed) on a 2-excerpt runner; cube #11 doubles the excerpt
   // count and predicts the floor halves to between every_n=8
   // (silent) and every_n=4 (closed).
   //
-  // Attack pattern: same strategic-coalition shape as cube #10
+  // Attack pattern: same strategic-coalition shape as cube #8
   // (Carol+Dave with naiveBiasedDecider, Erin with acceptAllDecider)
-  // but the runner stages 4 excerpts (vs cube #10's 2). All four
+  // but the runner stages 4 excerpts (vs cube #8's 2). All four
   // excerpts are bias-misaligned ("no effect" findings, one per
   // anchor); the coalition's naive bias predicate rejects all four
   // alongside every anchor calibration item. Keeping the corpus
@@ -11537,7 +9441,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // bias-misaligned target lands at contaminated weight=2 to
   // converge rejected. The structural closure on that bypass is now
   // wired as `corpus_confirmation_depth_floor` (PRD §Calibration
-  // batches) and CI-checked at cube #16 — the contamination runner
+  // batches) and CI-checked at cube #14 — the contamination runner
   // extended with the floor knob, six cells over (floor ∈ {0, 2, 3})
   // × (contaminate ∈ {off, on}), the closure crossing exactly at
   // floor > votes_to_accept. ASR reads true iff any excerpt converges 'rejected';
@@ -11545,7 +9449,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // capture), or any partial in between.
   //
   // The runner stages excerpts via direct `proposeExcerpt` rather
-  // than `runHonestStrong` (the cube #10 path) — runHonestStrong
+  // than `runHonestStrong` (the cube #8 path) — runHonestStrong
   // proposes one excerpt per anchor offer, which works at 2 anchors
   // but the wider runner needs the proposer-control to map each
   // anchor to a specific bias-aligned-or-misaligned content
@@ -11571,7 +9475,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     offer never fires. Calibration record stays empty for every
   //     reviewer; aware gate silent. ASR=100%. The density-floor
   //     reading at the wider runner — at every_n=8, density is
-  //     below the floor in the same way cube #10's every_n=4 was
+  //     below the floor in the same way cube #8's every_n=4 was
   //     below the floor in the 2-excerpt runner.
   //   aware=true at every_n=4: each reviewer's 4th call is
   //     calibration. Carol fires calibration on call 4 (after
@@ -11583,7 +9487,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     count threshold. ASR=0%. The density-floor crossing at
   //     the wider runner — at every_n=4, calibration items reach
   //     reviewers within the convergence window in the same way
-  //     cube #10's every_n=2 did in the 2-excerpt runner.
+  //     cube #8's every_n=2 did in the 2-excerpt runner.
   //   aware=true at every_n=2: each reviewer hits multiple
   //     calibration items; the closure path is similar but more
   //     pronounced (Carol's weight drops on call 2; Dave's weight
@@ -11594,19 +9498,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // convergence-path defense knob) and reads ASR per group across
   // the density axis: aware=false at 100% across all 4 density
   // cells (calibration alone never closes convergence — same
-  // regression handle as cube #10's aware=false row, validated at
+  // regression handle as cube #8's aware=false row, validated at
   // higher resolution); aware=true at 50% (the gate fires at
   // every_n ∈ {2, 4}; at every_n ∈ {0, 8} the calibration record
   // stays empty and the gate is silent).
   //
   // The complementary aggregate by density reads every_n ∈ {0, 8}
   // at 100% and every_n ∈ {2, 4} at 50% — the density floor
-  // crosses between every_n=8 and every_n=4. Cube #10 placed the
+  // crosses between every_n=8 and every_n=4. Cube #8 placed the
   // floor between every_n=4 and every_n=2 in the 2-excerpt runner;
-  // cube #13 places it between every_n=8 and every_n=4 in the
+  // cube #11 places it between every_n=8 and every_n=4 in the
   // 4-excerpt runner. The floor *halved* in every_n value when
   // the excerpt count doubled — exactly the (excerpt_count ×
-  // every_n) ≈ const relationship cube #10's framing predicted.
+  // every_n) ≈ const relationship cube #8's framing predicted.
   // The headline is the density-floor scaling law: at fixed
   // reviewer count, the floor every_n* satisfies every_n* ≈
   // excerpt_count + 1 (each reviewer needs at least one calibration
@@ -11615,11 +9519,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // condition fires at priorOffers % every_n == 0 on the
   // (every_n)th offer).
   //
-  // Cube #13 is the *resolution refinement* of cube #10 — same
+  // Cube #11 is the *resolution refinement* of cube #8 — same
   // attack pattern, same defense knobs, wider runner. The two
   // cubes together pin the density-floor scaling law as a CI-
-  // checked invariant: cube #10 reads the floor in the 2-excerpt
-  // regime, cube #13 reads it in the 4-excerpt regime, and the
+  // checked invariant: cube #8 reads the floor in the 2-excerpt
+  // regime, cube #11 reads it in the 4-excerpt regime, and the
   // ratio (every_n* / excerpt_count) ≈ 1 holds across both. The
   // architecture commitment "calibration density must be high
   // enough relative to the convergence window for the calibration-
@@ -11646,7 +9550,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // ground truth), restoring Dave's weight and breaking the
     // closure. Keeping all excerpts bias-misaligned ensures the
     // calibration corpus stays anchor-only throughout the run, so
-    // the coalition consistently fails calibration as cube #10's
+    // the coalition consistently fails calibration as cube #8's
     // 2-excerpt runner intended.
     const sources = new Map<string, string>([
       ['1', 'study A: treatment X has no effect in stage I patients across the cohort'],
@@ -11734,7 +9638,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 10,
       decide: acceptAllDecider,
     });
 
@@ -11749,12 +9652,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const daveClient = await wireArchetype(server, dave.id);
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 10,
       decide: naiveBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 10,
       decide: naiveBiasedDecider,
     });
 
@@ -11869,8 +9770,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
   it('wide calibration density × aware sweep cube: ASR aggregates by aware and density, validating the density-floor scaling law', () => {
     // Aggregate per the cube template: group cells by aware and by
     // density and read ASR per group. The headline is the *density-
-    // floor scaling law*: cube #10 placed the floor between
-    // every_n=4 and every_n=2 in the 2-excerpt runner; cube #13
+    // floor scaling law*: cube #8 placed the floor between
+    // every_n=4 and every_n=2 in the 2-excerpt runner; cube #11
     // places it between every_n=8 and every_n=4 in the 4-excerpt
     // runner. The floor halved when the excerpt count doubled —
     // every_n* ≈ excerpt_count, validated at two resolutions.
@@ -11901,30 +9802,30 @@ describe('testbed: synthetic populations against the wired surface', () => {
     };
 
     // aware=false: ASR=100% across all 4 density cells. Validates
-    // cube #10's aware=false-row regression at the wider runner —
+    // cube #8's aware=false-row regression at the wider runner —
     // calibration injection moves the rep ledger but leaves
     // convergence uncalibrated, regardless of density.
     expect(asrOf(groupedByAware, 0)).toBe(1);
     // aware=true: ASR=50% — the gate fires at every_n ∈ {2, 4}
     // (2/4 cells close); at every_n ∈ {0, 8} the calibration record
     // stays empty and the gate is silent (2/4 cells leak). Cube
-    // #10's aware=true row read 67% (1/3 cells closing); cube #13's
+    // #10's aware=true row read 67% (1/3 cells closing); cube #11's
     // 50% (2/4) is consistent — the new closure cell is every_n=4
-    // (silent in cube #10's 2-excerpt runner, active here in the
+    // (silent in cube #8's 2-excerpt runner, active here in the
     // 4-excerpt runner) and the new silent cell is every_n=8
-    // (which cube #10 didn't measure).
+    // (which cube #8 didn't measure).
     expect(asrOf(groupedByAware, 1)).toBe(0.5);
 
     // every_n axis: the density-floor scaling law lands here.
     // every_n=0 at 100% (no calibration data; baseline);
     // every_n=8 at 100% (below floor in 4-excerpt runner — *the
-    // density-floor scaling-law new datum*: cube #10 didn't measure
+    // density-floor scaling-law new datum*: cube #8 didn't measure
     // every_n=8 at all, and the silent reading here confirms the
     // floor scales with excerpt count); every_n=4 at 50% (above
     // floor in the 4-excerpt runner — *the new closure cell*: cube
     // #10's every_n=4 was below the floor in the 2-excerpt runner;
     // here it crosses); every_n=2 at 50% (well above floor, same
-    // as cube #10).
+    // as cube #8).
     expect(asrOf(groupedByDensity, 0)).toBe(1);
     expect(asrOf(groupedByDensity, 8)).toBe(1);
     expect(asrOf(groupedByDensity, 4)).toBe(0.5);
@@ -11942,7 +9843,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Corpus-contamination scenario — the dynamic cube #13's wide runner
+  // Corpus-contamination scenario — the dynamic cube #11's wide runner
   // avoided by construction (all four excerpts kept bias-misaligned so
   // the calibration corpus stays anchor-only throughout the run). PRD
   // §Calibration batches commits the corpus as "validated history" —
@@ -11956,10 +9857,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // those contaminated items as calibration vote with their bias and
   // pass, keeping their calibration record clean and lifting their
   // convergence weight back above the aware-gate threshold. The aware-
-  // closure cube #13 reads holds when the corpus is anchor-only by
+  // closure cube #11 reads holds when the corpus is anchor-only by
   // construction; this scenario reads what happens when it isn't.
   //
-  // Setup mirrors cube #13's wide runner (4 anchors as the calibration
+  // Setup mirrors cube #11's wide runner (4 anchors as the calibration
   // corpus, every_n=2 well above the density floor, aware=true,
   // naiveBiasedDecider on the coalition) with one change: 2 of the 4
   // staged excerpts are bias-aligned ("treatment X works for stage I/II"
@@ -12007,7 +9908,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // anchors and his bias rejects them, calibration record (0, fails),
   // weight=0. His reject on bias-mis #2 lands at weight=0, weighted_
   // reject = 0 < 2, stays staged. 0 of 2 suppressed — full closure,
-  // matching cube #13's aware=true reading at every_n=2.
+  // matching cube #11's aware=true reading at every_n=2.
   //
   // The lift from 0/2 (baseline) to 1/2 (contaminated) at the same
   // defense config is the load-bearing observation: the aware closure's
@@ -12019,7 +9920,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // excerpts dominate calibration draws, so a bias-aligned coalition
   // member can recover their weight as soon as one bias-aligned excerpt
   // converges into the corpus mid-run. The mitigation is not a
-  // calibration-knob change (cube #13 already shows the density floor
+  // calibration-knob change (cube #11 already shows the density floor
   // is well below the runner's offer count); the structural mitigation
   // is the corpus-composition rule wired as
   // `corpus_confirmation_depth_floor` — a depth-floor filter on
@@ -12068,7 +9969,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       idGen: new SeededIdGen(`${params.contaminate ? 'cc-on' : 'cc-off'}${seedSuffix}`),
       verifier: new FakeVerifier(new Set(), new Map(), sources),
       review: {
-        // Above cube #13's density floor for the runner's offer count
+        // Above cube #11's density floor for the runner's offer count
         // (4 anchors + N excerpts), so the aware gate fires; the cube
         // already pins density-floor behavior, and this scenario is
         // about corpus composition at fixed density.
@@ -12156,7 +10057,6 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const erinClient = await wireArchetype(server, erin.id);
     await runHonestReviewer(erinClient, {
       cause_id: cause.id,
-      rate: 10,
       decide: acceptAllDecider,
     });
 
@@ -12172,12 +10072,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const daveClient = await wireArchetype(server, dave.id);
     await runHonestReviewer(carolClient, {
       cause_id: cause.id,
-      rate: 10,
       decide: naiveBiasedDecider,
     });
     await runHonestReviewer(daveClient, {
       cause_id: cause.id,
-      rate: 10,
       decide: naiveBiasedDecider,
     });
 
@@ -12190,7 +10088,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       if (status === 'rejected') rejectedCount += 1;
     }
     return {
-      // ASR semantics for cube #16: any bias-misaligned target
+      // ASR semantics for cube #14: any bias-misaligned target
       // converged 'rejected' is a coalition win on the contamination
       // axis. The baseline (anchor-only corpus) leaves both targets
       // staged; the contaminated corpus reopens at least one target
@@ -12205,7 +10103,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Baseline: corpus stays anchor-only (no bias-aligned excerpts to
     // contaminate it). Coalition fails calibration on every anchor
     // draw, weight collapses to 0, both bias-misaligned targets stay
-    // staged — full closure, matching cube #13's aware=true reading at
+    // staged — full closure, matching cube #11's aware=true reading at
     // every_n=2.
     const off = await runCorpusContaminationScenario({ contaminate: false });
     expect(off.bias_misaligned_rejected_count).toBe(0);
@@ -12231,7 +10129,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(on.bias_misaligned_statuses).toEqual(['staged', 'rejected']);
 
     // The headline lift: at the same (every_n=2, aware=true) defense
-    // configuration cube #13 reads as full closure on the anchor-only
+    // configuration cube #11 reads as full closure on the anchor-only
     // corpus (ASR=0% in the wide runner's aware=true row), corpus
     // contamination by mid-run convergences re-opens the closure on a
     // fraction of the targets. The aware closure's strength is a
@@ -12240,19 +10138,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(on.bias_misaligned_rejected_count).toBeGreaterThan(off.bias_misaligned_rejected_count);
   });
 
-  // Sixteenth parameter sweep cube: the corpus-composition cube on
+  // Fourteenth parameter sweep cube: the corpus-composition cube on
   // the corpus-contamination scenario, joining the new
   // `corpus_confirmation_depth_floor` knob (PRD §Calibration batches,
   // corpus-composition closure rule) with the contaminate-axis the
-  // standalone scenario above already pins. Cube #13's resolution-
-  // refinement of cube #10 closed the *density-floor* axis on the
+  // standalone scenario above already pins. Cube #11's resolution-
+  // refinement of cube #8 closed the *density-floor* axis on the
   // calibration-aware closure and named the corpus-contamination
   // dynamic as the next seam — bias-aligned excerpts converging
   // accepted mid-run join the calibration corpus before independent
   // confirmation has accumulated, so a coalition member's recency-
   // biased calibration draw on subsequent reviewers' loops pulls
   // contaminated items, passes calibration on bias, and lifts their
-  // weighted-vote back above the aware threshold. Cube #13's wide
+  // weighted-vote back above the aware threshold. Cube #11's wide
   // runner avoided the dynamic by construction (anchor-only corpus);
   // the corpus-contamination scenario above pins the dynamic and is
   // the regression handle the depth-floor closes against.
@@ -12299,7 +10197,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     record stays (0, fails), weight stays at 0 — both bias-
   //     misaligned targets stay staged exactly as in the anchor-only
   //     baseline. The closure restored under the same defense stack
-  //     cube #13 read as full at the every_n=2 cell, now also under
+  //     cube #11 read as full at the every_n=2 cell, now also under
   //     contaminate=on rather than only the anchor-only corpus.
   //
   // The aggregate by contaminate reads:
@@ -12312,17 +10210,17 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     boundary cell), 1 closes (floor=3 above the boundary).
   //
   // The headline reading is the *closure boundary at floor >
-  // votes_to_accept*: cube #16 pins the depth-floor's structural role
+  // votes_to_accept*: cube #14 pins the depth-floor's structural role
   // as a corpus-composition rule that closes the contamination
   // dynamic exactly when items must accumulate post-convergence
-  // confirmation before entering the corpus. Cube #13 + the
+  // confirmation before entering the corpus. Cube #11 + the
   // contamination scenario read the calibration-aware closure's
-  // dependence on corpus composition over the run; cube #16 reads
+  // dependence on corpus composition over the run; cube #14 reads
   // the depth-floor as the corpus-side closure of that dependence.
-  // Together cubes #10, #13, and #16 close the calibration-density
-  // design pass at three layers: cube #10 the density-floor axis at
-  // 2 excerpts, cube #13 the density-floor scaling law at 4 excerpts,
-  // cube #16 the corpus-composition closure on the contamination
+  // Together cubes #8, #11, and #14 close the calibration-density
+  // design pass at three layers: cube #8 the density-floor axis at
+  // 2 excerpts, cube #11 the density-floor scaling law at 4 excerpts,
+  // cube #14 the corpus-composition closure on the contamination
   // bypass that density alone cannot reach.
   interface CorpusDepthFloorSweepCell {
     name: string;
@@ -12433,7 +10331,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // items excluded, calibration weight stays at 0, both targets
     // stay staged. The crossing between floor=2 and floor=3 reads the
     // *closure boundary at floor > votes_to_accept* — the headline
-    // observation cube #16 pins.
+    // observation cube #14 pins.
     const byFloor = group((c) => c.corpus_confirmation_depth_floor);
     const asrByFloor = (floor: number): number => {
       const g = byFloor.get(floor);
@@ -12478,17 +10376,17 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(corpusDepthFloorSweepCells.length).toBe(expectedPairs.size);
   });
 
-  // Fourteenth parameter sweep cube: the (stratification × threshold)
+  // Twelfth parameter sweep cube: the (stratification × threshold)
   // composition cube on the K=2 coalition with priming, joining cube
-  // #11's stratification axis with cube #12's vote-to-reject axis on
+  // #11's stratification axis with cube #10's vote-to-reject axis on
   // a single attack pattern. PRD §What's deliberately not specified
   // names "Vote-aggregation thresholds" as a knob deferred to the
   // testbed; PRD §Reviewer assignment commits stratification as the
   // structural closure for the small-pool-eligible regime. Cubes #11
   // and #12 measured each axis against the same K=2 coalition at
-  // coalition-first ordering but with disjoint runners (cube #11
-  // primes so the cluster signal can fire; cube #12 omits priming so
-  // threshold arithmetic reads cleanly). Cube #14 unifies the two
+  // coalition-first ordering but with disjoint runners (cube #9
+  // primes so the cluster signal can fire; cube #10 omits priming so
+  // threshold arithmetic reads cleanly). Cube #12 unifies the two
   // axes on a single primed runner and reads the *orthogonality* of
   // the two closure mechanisms — the load-bearing question is whether
   // tightening vto on top of stratification buys any additional
@@ -12510,15 +10408,15 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // measure.
   //
   // Defense layers in scope:
-  //   - stratification_enabled ∈ {off, on}: cube #11's axis. With
+  //   - stratification_enabled ∈ {off, on}: cube #9's axis. With
   //     priming and strat=on, the cluster signal closes Dave at
   //     request_assignment; the coalition's effective leverage drops
   //     to Carol's lone reject.
-  //   - votes_to_reject ∈ {2, 3}: cube #12's vto axis. At vto=2 the
+  //   - votes_to_reject ∈ {2, 3}: cube #10's vto axis. At vto=2 the
   //     coalition can capture by arithmetic (K=vto, both rejects
   //     converge); at vto=3 the coalition cannot reach the threshold
   //     by arithmetic (K<vto), regardless of whether Dave is gated.
-  //   - honest pool size H ∈ {1, 2}: cube #11's closure-quality axis
+  //   - honest pool size H ∈ {1, 2}: cube #9's closure-quality axis
   //     (vta=2 fixed). At H=1 the honest pool reaches 1 accept (below
   //     vta=2) and the proposal stalls; at H=2 it reaches vta and
   //     converges accepted.
@@ -12527,17 +10425,17 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //   (strat=off, vto=2): K=vto, coalition captures by arithmetic
   //     before honest pool votes. ASR=100% across both H — H buys
   //     nothing at coalition-first ordering with K=vto. The regression
-  //     handle on default-threshold capture, identical to cube #12's
+  //     handle on default-threshold capture, identical to cube #10's
   //     vto=2 row.
   //   (strat=off, vto=3): K<vto, capture closed *by threshold alone*.
   //     Dave votes (no cluster signal closure) but the coalition's
   //     two rejects don't reach vto=3. Honest pool drives convergence
   //     at H=2 (full closure) or stalls at H=1 (1 accept < vta=2).
-  //     This is cube #12's vto=3 row at a smaller H axis.
+  //     This is cube #10's vto=3 row at a smaller H axis.
   //   (strat=on, vto=2): K=vto, but Dave is cluster-gated. Carol's
   //     lone reject is below vto=2, so capture is closed *by
   //     stratification alone* — the load-bearing path the cube
-  //     measures: vto is at the K-affording threshold where cube #12
+  //     measures: vto is at the K-affording threshold where cube #10
   //     reads ASR=100%, but the cluster signal closes the same attack
   //     anyway. Honest pool drives convergence at H=2; stalls at
   //     H=1.
@@ -12579,7 +10477,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // coalition each is independently sufficient. The (strat=on, vto=
   // 2) pair specifically reads "closure-by-stratification-not-by-
   // threshold" — the cell where vto is at the K-affording value
-  // (cube #12 reads 100% ASR at vto=2 without stratification) but
+  // (cube #10 reads 100% ASR at vto=2 without stratification) but
   // capture is still closed because stratification fires first. The
   // (strat=on, vto=3) overdetermined pair reads no extra closure
   // beyond either alone — *redundant*, not *multiplicative*.
@@ -12593,7 +10491,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // both stratification and vto-tightening pay the same closure-
   // quality cost (1 stall at H=1) when capture is closed. PRD
   // §Reviewer assignment commits "slower to close but not capturable
-  // by the pool-fits-the-coalition dynamic"; cube #14 reads this as
+  // by the pool-fits-the-coalition dynamic"; cube #12 reads this as
   // a property that survives the (strat × vto) composition rather
   // than being tied to a specific closure mechanism.
   //
@@ -12601,7 +10499,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // at strat=on; vto-independent) is the regression handle on the
   // cluster-signal closure path itself, surfacing a wiring regression
   // that disabled or weakened the cluster signal before downstream
-  // ASR drift, the same shape cube #11 carries.
+  // ASR drift, the same shape cube #9 carries.
   async function runStratificationThresholdScenario(params: {
     stratification_enabled: boolean;
     votes_to_reject: number;
@@ -12684,16 +10582,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
       const frank = server.bootstrap.mintIdentity({ display_name: 'frank' });
       honestIdentities.push({ id: frank.id, name: 'frank' });
     }
-    for (const id of [carol.id, dave.id, ...honestIdentities.map((h) => h.id)]) {
-      await server.tools.setCapacity(
-        { identity_id: id },
-        { cause_id: cause.id, rate: 5, kinds: ['review'] },
-      );
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id, ...honestIdentities.map((h) => h.id));
 
     // PRIMING: three bias-aligned excerpts. Carol and Dave both vote
     // accept on each via direct cast_review_vote — the same priming
-    // pattern cube #11 uses. The first auto-converges on Carol+Dave's
+    // pattern cube #9 uses. The first auto-converges on Carol+Dave's
     // unanimous accept; the second and third stay staged after the
     // cluster forms and are curator-accepted to clear the frontier.
     // The priming is a no-op for the cluster signal at strat=off
@@ -12856,7 +10749,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   const stratThresholdSweepCells: StratThresholdSweepCell[] = [
     // (strat=off, vto=2): K=vto, coalition-first capture. ASR=100%
     // across both H — the regression handle on default-threshold
-    // capture (cube #12's vto=2 row, replayed under priming).
+    // capture (cube #10's vto=2 row, replayed under priming).
     {
       name: 'strat=off, vto=2, H=1 (K=vto, coalition captures by arithmetic; H irrelevant)',
       stratification_enabled: false,
@@ -12961,7 +10854,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   });
 
   it('stratification × threshold sweep cube: ASR + stall-rate aggregate by (strat, vto), strat, vto, and H', () => {
-    // Aggregate per the two-metric template cube #5 introduced and
+    // Aggregate per the two-metric template cube #3 introduced and
     // cubes #11/#12 carried forward: ASR (capture rate) + stall_rate
     // (staged-instead-of-converged rate). The cube's three axes
     // (strat, vto, H) read how each contributes to the (capture,
@@ -13016,8 +10909,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(stallOf(groupedByStratVto, [false, 3])).toBe(0.5);
     //   (on, 2): closure-by-stratification at K=vto — the load-
     //     bearing closure-by-stratification-not-by-threshold cell.
-    //     Cube #12 reads ASR=100% at (strat=off, vto=2); cube #11
-    //     reads ASR=0% at (strat=on, vto=2 default); cube #14 here
+    //     Cube #10 reads ASR=100% at (strat=off, vto=2); cube #9
+    //     reads ASR=0% at (strat=on, vto=2 default); cube #12 here
     //     reads the latter directly under the same (strat × vto)
     //     coordinates. Stall_rate=50% (H=1 stalls).
     expect(asrOf(groupedByStratVto, [true, 2])).toBe(0);
@@ -13052,7 +10945,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // stall_rate). At H=2 only (off, 2) captures (1/4); every
     // closure cell reaches vta and stall_rate=0%. The H axis
     // cleanly separates capture from closure-quality regardless of
-    // which defense fired — the property cube #11 named (graceful
+    // which defense fired — the property cube #9 named (graceful
     // degradation on the closure-quality axis) survives the (strat
     // × vto) composition.
     expect(asrOf(groupedByH, 1)).toBe(0.25);
@@ -13074,7 +10967,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Fifteenth parameter sweep cube: the (recent half-life × quiet
+  // Thirteenth parameter sweep cube: the (recent half-life × quiet
   // window) ratio-invariance cube on the patient-adversary archetype,
   // opening the reputation-decay axis the prior cubes left unswept.
   // PRD §What's deliberately not specified names "reputation decay
@@ -13087,7 +10980,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // *what determines whether the gate fires* — the half-life value T,
   // the quiet-window length W, or their ratio W/T (decay measured in
   // half-lives). Cube #2 holds (T=60, W=360) fixed and reads the
-  // gate-firing axis through the threshold; cube #15 holds the
+  // gate-firing axis through the threshold; cube #13 holds the
   // threshold fixed at the cube-#2-tuned value (`assignment_min_recent`
   // = 0.5) and sweeps (T, W) directly.
   //
@@ -13110,9 +11003,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // Defense layers in scope:
   //   - recent_half_life_seconds T ∈ {60, 600}: decay rate axis. The
   //     patient-adversary scenario at line 5117 hardcodes T=60; cube
-  //     #15 lifts it to a parameter via the runner extension on
+  //     #13 lifts it to a parameter via the runner extension on
   //     runPatientAdversaryGateScenario, with T=60 preserved as the
-  //     default for cubes #2 and #5.
+  //     default for cubes #2 and #3.
   //   - quiet_window_seconds W ∈ {T×1, T×2, T×6}: drift-cadence axis.
   //     The cube derives W from T at three ratios so the W/T axis is
   //     directly read across all six cells; W is NOT held constant
@@ -13160,14 +11053,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // identically across T groups.
   //
   // The cube is the third design pass on a non-identity axis after
-  // cube #11 (pool-size, graceful-degradation reading) and cube #12
+  // cube #9 (pool-size, graceful-degradation reading) and cube #10
   // (vote-aggregation thresholds, K+1-honest-reviewer dynamic). The
-  // composition with cube #14's (stratification × threshold) cube is
+  // composition with cube #12's (stratification × threshold) cube is
   // the natural follow-up: a coalition that times its quiet window
   // against the half-life can re-acquire assignment after the gate
   // re-opens, which re-introduces the multi-round dynamic the
   // standalone patient-adversary scenarios pin at fixed cadence.
-  // That cube is testbed-territory follow-up; cube #15 stays on the
+  // That cube is testbed-territory follow-up; cube #13 stays on the
   // single-axis ratio-invariance reading.
   interface DecayCadenceSweepCell {
     name: string;
@@ -13239,7 +11132,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       quiet_window_seconds,
     });
     expect(result.attack_succeeded).toBe(expected_attack_succeeded);
-    // false_positive_lockout is alpha-invariant at alpha=1 (cube #5's
+    // false_positive_lockout is alpha-invariant at alpha=1 (cube #3's
     // baseline) — the bootstrap rotation gives Erin/Frank
     // demonstrated=2.0, well above any threshold the cube uses
     // (assignment_min_demonstrated=0). Pinning lockout=false on every
@@ -13312,26 +11205,26 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // Seventeenth parameter sweep cube: the (demonstrated half-life ×
+  // Fifteenth parameter sweep cube: the (demonstrated half-life ×
   // quiet window) ratio-invariance cube on the patient-adversary
-  // archetype, the demonstrated-component sibling of cube #15. PRD
+  // archetype, the demonstrated-component sibling of cube #13. PRD
   // §Reputation commits the two-component bookkeeping ("every
   // reputation event moves a slow-decay demonstrated and a fast-decay
-  // recent component together"); cube #15 read the recent-component
-  // closure axis through the recent gate. Cube #17 reads the
+  // recent component together"); cube #13 read the recent-component
+  // closure axis through the recent gate. Cube #15 reads the
   // demonstrated-component closure axis through the demo gate, with
   // the recent path inert by both knob and value (recent gate
   // disabled, recent half-life Infinity), isolating the demo-decay
-  // axis from the recent-decay axis cube #15 measured.
+  // axis from the recent-decay axis cube #13 measured.
   //
   // Defense layers in scope:
   //   - demonstrated_half_life_seconds T_demo ∈ {60, 600}: decay rate
   //     axis on the demonstrated component, the runner extension on
   //     `runPatientAdversaryGateScenario` plumbed through to the
   //     server's `demonstrated_half_life_seconds` config (default
-  //     Infinity preserves cubes #2, #5, and #15's calibration).
+  //     Infinity preserves cubes #2, #3, and #13's calibration).
   //   - quiet_window_seconds W = T_demo × r: drift-cadence axis,
-  //     same shape as cube #15 — the cube derives W from T_demo at
+  //     same shape as cube #13 — the cube derives W from T_demo at
   //     four ratios so the W/T_demo axis is directly read across all
   //     eight cells, with two T_demo values per ratio for the
   //     ratio-invariance aggregate.
@@ -13361,29 +11254,29 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     decay law at the demo threshold.
   //   r=6 (W = 6 T_demo): demo(W) = R₀/64 ≈ 0.125. Below 1.5 →
   //     gate fires → ASR=0%. Same at both T_demo values; the
-  //     cube #15 r=6 closure cell replayed on the demo axis.
+  //     cube #13 r=6 closure cell replayed on the demo axis.
   //
   // Eight cells over (T_demo ∈ {60, 600}) × (r ∈ {1, 2, 3, 6}) drive
   // `it.each`, with W computed as T_demo × r per cell. The aggregate
   // by ratio reads (100%, 100%, 0%, 0%) at (r=1, 2, 3, 6) — the
   // closure cross-point is bracketed by adjacent-ratio cells at r ∈
-  // {2, 3}, sharper than cube #15's r ∈ {2, 6} bracket since the demo
+  // {2, 3}, sharper than cube #13's r ∈ {2, 6} bracket since the demo
   // threshold (1.5) sits closer to the per-half-life decay step than
   // the recent threshold (0.5). The aggregate by T_demo reads (50%,
   // 50%) — *identical values across both T_demo axes*, the ratio-
-  // invariance reading on the demo axis paralleling cube #15's
+  // invariance reading on the demo axis paralleling cube #13's
   // observation on the recent axis.
   //
   // The headline reading is the *cross-point dependence on the gate
-  // threshold*: cube #15 closes at log2(R₀/0.5) ≈ 4 half-lives
-  // (between r=2 and r=6 in cube #15's coarser bracket); cube #17
+  // threshold*: cube #13 closes at log2(R₀/0.5) ≈ 4 half-lives
+  // (between r=2 and r=6 in cube #13's coarser bracket); cube #15
   // closes at log2(R₀/1.5) ≈ 2.4 half-lives (between r=2 and r=3 in
-  // cube #17's tighter bracket). Both cubes show ratio invariance —
+  // cube #15's tighter bracket). Both cubes show ratio invariance —
   // the closure depends on W/T, not on T or W independently — but
   // the *value* of the W/T cross-point depends on the threshold the
-  // gate is configured against. Together cubes #15 and #17 close
+  // gate is configured against. Together cubes #13 and #15 close
   // the reputation-decay design pass at three layers: the recent
-  // axis (cube #15), the demonstrated axis (cube #17), and the
+  // axis (cube #13), the demonstrated axis (cube #15), and the
   // structural ratio-invariance both cubes pin as the CI-checked
   // invariant on PRD §Reputation's exponential-decay commitment.
   // Any future change to the decay law that breaks ratio invariance
@@ -13449,7 +11342,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     },
     // r=6: W equals six demo half-lives. demo(W) = R₀/64 ≈ 0.125 <
     // 1.5 → gate fires. Same outcome at both T_demo values, the
-    // cube #15 r=6 closure cell replayed on the demo axis.
+    // cube #13 r=6 closure cell replayed on the demo axis.
     {
       name: 'T_demo=60s, W=360s (6 demo half-lives: R₀/64 below demo threshold; gate fires)',
       demonstrated_half_life_seconds: 60,
@@ -13553,14 +11446,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // (recent-decay × cluster-signal) sweep — cube #18, the natural
+  // (recent-decay × cluster-signal) sweep — cube #16, the natural
   // follow-up the prior milestones tail named after closing the
   // reputation-decay design pass at the solo patient archetype with
-  // cubes #15 and #17. Cubes #15/#17 hold the cluster signal
+  // cubes #13 and #15. Cubes #13/#15 hold the cluster signal
   // structurally inert (solo patient adversary, no shared vote
   // history to cluster on) and read the exponential-decay law as
-  // ratio invariance on the (T × W) axes; cube #18 holds the decay
-  // parameters at cube #15's calibrated configuration (recent_half_
+  // ratio invariance on the (T × W) axes; cube #16 holds the decay
+  // parameters at cube #13's calibrated configuration (recent_half_
   // life=60s, quiet=6 half-lives) and reads the recent-decay gate's
   // role on a *coalition* multi-round attack pattern where Carol+
   // Dave time their quiet window against the half-life and re-prime
@@ -13584,7 +11477,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //      routes her first (no co-stratum reviewer yet routed for
   //      contested), she casts reject. Dave request_assignment is
   //      either cross-stratum gated (cluster on; the cluster signal
-  //      closure path cube #11 reads on the same primitive) or
+  //      closure path cube #9 reads on the same primitive) or
   //      routes him to also cast reject (cluster off → contested
   //      converges 'rejected' at vto=2).
   //   3. Quiet window: clock advances past 6 recent half-lives.
@@ -13638,17 +11531,17 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // accumulation cost upstream of the gate. PRD §Reputation names
   // the recent gate's design role at the *solo* patient adversary
   // where re-priming is unamortized (cube #2's lockout cells
-  // calibrated against the solo runner); cube #18 reads that role
+  // calibrated against the solo runner); cube #16 reads that role
   // as inert against the *coalition* variant where re-priming is
   // paid once and the cluster-signal closure does the actual work.
   //
-  // The cube is the (decay × cluster-signal) sibling of cube #11
-  // (pool-size × cluster-signal) and cube #14 ((stratification ×
+  // The cube is the (decay × cluster-signal) sibling of cube #9
+  // (pool-size × cluster-signal) and cube #12 ((stratification ×
   // threshold) composition): all three cubes read the cluster
   // signal alongside a non-cluster axis on the coalition attack
-  // pattern, with cube #18's non-cluster axis being the recent-
+  // pattern, with cube #16's non-cluster axis being the recent-
   // decay gate the cube #2 lockout cells calibrated on the *solo*
-  // patient archetype. Together cubes #11, #14, and #18 pin the
+  // patient archetype. Together cubes #9, #12, and #16 pin the
   // cluster signal as the load-bearing coalition-amplification
   // closure across three orthogonal axes (pool-size, threshold,
   // decay-rate) — the (ASR-by-cluster) reading is invariantly
@@ -13678,10 +11571,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
       review: {
         votes_to_accept: 2,
         votes_to_reject: 2,
-        // Calibration channels off — cube #18 isolates the
+        // Calibration channels off — cube #16 isolates the
         // (decay × cluster-signal) composition on the convergence
-        // path. Calibration is a separate axis pinned by cubes #10
-        // / #13 / #16; mixing it in here would confound the read.
+        // path. Calibration is a separate axis pinned by cubes #8
+        // / #11 / #14; mixing it in here would confound the read.
         calibration_inject_every_n: 0,
         calibration_aware_convergence: false,
         stratification_enabled: params.stratification_enabled,
@@ -13696,23 +11589,23 @@ describe('testbed: synthetic populations against the wired surface', () => {
         // on cells once the cluster forms after the second shared
         // accept, leaving Carol+Dave's coalition rep at the +1 from
         // iteration 0 only and the recent-decay axis unmeasurable).
-        // The convergence-threshold tightening is what cube #11
+        // The convergence-threshold tightening is what cube #9
         // measures (closure-quality on the small-pool axis); cube
-        // #18 isolates the routing gate to read the (decay × cluster
+        // #16 isolates the routing gate to read the (decay × cluster
         // -signal) interaction without confounding by the
         // convergence-threshold knob.
         stratification_degraded_extra: 0,
-        // Cube #15's calibrated configuration: T=60s recent half-
-        // life, W=6 half-lives quiet window. Cube #15 already swept
+        // Cube #13's calibrated configuration: T=60s recent half-
+        // life, W=6 half-lives quiet window. Cube #13 already swept
         // the W/T ratio axis and pinned ratio invariance on the
-        // solo patient archetype; cube #18 holds the configuration
-        // at cube #15's calibrated value and sweeps the cluster-
+        // solo patient archetype; cube #16 holds the configuration
+        // at cube #13's calibrated value and sweeps the cluster-
         // signal axis alongside the recent gate threshold on the
         // coalition variant.
         recent_half_life_seconds: RECENT_HALF_LIFE_SECONDS,
-        // Demo gate stays off — cube #18's axis is the recent-decay
+        // Demo gate stays off — cube #16's axis is the recent-decay
         // gate; the demo gate is read on the patient archetype by
-        // cubes #2 and #17. With demo off, fresh Carol+Dave bypass
+        // cubes #2 and #15. With demo off, fresh Carol+Dave bypass
         // by construction (no rep entries yet at first request_
         // assignment, but priming runs through contributor-initiated
         // votes that don't traverse the assignment gate at all).
@@ -13754,12 +11647,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
     const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
-    for (const id of [carol.id, dave.id]) {
-      await server.tools.setCapacity(
-        { identity_id: id },
-        { cause_id: cause.id, rate: 5, kinds: ['review'] },
-      );
-    }
+    seedReviewerRep(server, cause.id, carol.id, dave.id);
 
     // Phase 1 — coalition priming. Three bias-aligned excerpts under
     // anchor 1; Carol+Dave both contributor-initiated-accept on each.
@@ -14127,7 +12015,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // of the gate. PRD §Reputation names the recent gate's design
     // role at the *solo* patient adversary where re-priming is
     // unamortized (cube #2's lockout cells calibrated against the
-    // solo runner); cube #18 reads that role as inert against the
+    // solo runner); cube #16 reads that role as inert against the
     // *coalition* variant where re-priming is paid once and the
     // cluster-signal closure does the actual work.
     expect(asrOf(groupedByRecent, '0')).toBe(0.5);
@@ -14135,7 +12023,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(asrOf(groupedByRecent, '0')).toBe(asrOf(groupedByRecent, '0.5'));
 
     // Coverage invariants: 4 cells, 2 per (cluster) value, 2 per
-    // (recent) value. Same shape cubes #6-#17 carry; a future cell
+    // (recent) value. Same shape cubes #4-#15 carry; a future cell
     // expansion that breaks the symmetry trips the assertion and
     // forces the aggregate to be re-keyed.
     for (const cell of groupedByCluster.values()) {
@@ -14146,14 +12034,14 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // (cross-cause-sybil × min_signal) sweep — cube #19, the adversary
+  // (cross-cause-sybil × min_signal) sweep — cube #17, the adversary
   // -measurement cube on the cross-cause identity-clustering surface
   // ROADMAP §Status's prior next-milestones tail named ("slice 4 of
   // identity-cost is wired as a curator projection but not yet cube-
-  // checked against multi-cause sybil farms"). Cubes #6-#9 read the
+  // checked against multi-cause sybil farms"). Cubes #4-#7 read the
   // four-layer sybil-resistance architecture's *enforcement* layers
   // (binding cost, issuance cap, per-identity rate-limit) at the
-  // write-path gate; cube #19 reads the *visibility* layer (cross-
+  // write-path gate; cube #17 reads the *visibility* layer (cross-
   // cause identity-clustering, `server.curator.identityClusters`) on
   // the regression-handle attack pattern PRD §Identity bullet 4
   // names: a sybil pair working multiple causes whose cross-cause
@@ -14161,7 +12049,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // graph, with a single-cause honest pair as noise control to read
   // the precision axis alongside recall.
   //
-  // The cube is structurally distinct from the prior 18 in that the
+  // The cube is structurally distinct from the prior 16 in that the
   // closure is *visibility for curator action*, not enforcement at
   // the write-path. PRD §Identity bullet 4 commits the projection as
   // a curator surface (specific signals operationally private at the
@@ -14218,19 +12106,19 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // M=3) for tighter precision the M=2 default already buys for
   // free. The curator's threshold choice is operationally private
   // per PRD §Identity bullet 4 ("methodology is public, tuning is
-  // not") — cube #19 reads the public methodology's precision-
+  // not") — cube #17 reads the public methodology's precision-
   // recall structure across thresholds without committing the v0
   // default to a particular tuning regime.
   //
-  // Cube #19 is the visibility-layer sibling of cube #9 (the
+  // Cube #17 is the visibility-layer sibling of cube #7 (the
   // enforcement-layer cube on the four-layer sybil-resistance
-  // architecture): cube #9 reads the cluster-signal × budget-axis
+  // architecture): cube #7 reads the cluster-signal × budget-axis
   // composition where the closure is structural at the assignment
-  // gate (cross-stratum routing); cube #19 reads the cross-cause
+  // gate (cross-stratum routing); cube #17 reads the cross-cause
   // identity-clustering projection where the closure is
   // visibility for curator action. The two cubes cover
-  // complementary modalities of the same architecture: cube #9 the
-  // write-path gate, cube #19 the curator-side surface, both
+  // complementary modalities of the same architecture: cube #7 the
+  // write-path gate, cube #17 the curator-side surface, both
   // reading regression-handle attack patterns PRD §Identity names
   // by structural framing.
   async function runCrossCauseSybilDetectionScenario(params: {
@@ -14246,7 +12134,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   }> {
     if (params.sybil_cause_count < 2) {
       throw new Error(
-        `runCrossCauseSybilDetectionScenario: sybil_cause_count=${params.sybil_cause_count} below 2 — single-cause coordination is not the cross-cause projection's domain by design (PRD §Identity bullet 4); other cubes (e.g. cube #11 stratification on coalition) measure single-cause closure paths`,
+        `runCrossCauseSybilDetectionScenario: sybil_cause_count=${params.sybil_cause_count} below 2 — single-cause coordination is not the cross-cause projection's domain by design (PRD §Identity bullet 4); other cubes (e.g. cube #9 stratification on coalition) measure single-cause closure paths`,
       );
     }
     const sources = new Map<string, string>();
@@ -14263,7 +12151,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
       verifier: new FakeVerifier(new Set(), new Map(), sources),
       // No special review config — the projection is a curator-side
       // surface, agnostic to assignment-time and convergence-time
-      // knobs. Defaults keep the runner's scope honest: cube #19
+      // knobs. Defaults keep the runner's scope honest: cube #17
       // measures the projection itself, not its interaction with
       // assignment gates or convergence thresholds.
     });
@@ -14509,7 +12397,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(fprOf(groupedByK, 3)).toBeCloseTo(1 / 3);
 
     // Coverage invariants: 6 cells, 2 per (min_signal) value, 3
-    // per (K_sybil) value. Same shape cubes #6-#18 carry; a future
+    // per (K_sybil) value. Same shape cubes #4-#16 carry; a future
     // cell expansion that breaks the symmetry trips the assertion
     // and forces the aggregate to be re-keyed.
     for (const cell of groupedByMin.values()) {
@@ -14520,24 +12408,24 @@ describe('testbed: synthetic populations against the wired surface', () => {
     }
   });
 
-  // (alpha × stratification × demo-threshold) sweep — cube #20, the
-  // re-baseline of cube #5's difficulty-aware findings on cube #11's
-  // stratification axis the prior next-milestones tail named. Cube #5
+  // (alpha × stratification × demo-threshold) sweep — cube #18, the
+  // re-baseline of cube #3's difficulty-aware findings on cube #9's
+  // stratification axis the prior next-milestones tail named. Cube #3
   // swept `review_credit_contention_alpha` ∈ {1.0, 0.5} on the
   // patient-adversary gate-threshold cube #2 and pinned the alpha-
   // shrinkage failure mode: at alpha=0.5 the bootstrap demonstrated
   // shrinks from 2.0 to 1.0 and a demo gate calibrated against the
   // alpha=1 bootstrap (1.5) false-positive-locks-out the honest pool,
   // with the re-tuned demo=0.75 recovering the closure with the same
-  // 0.25 headroom; cube #5 pinned the recovery on the sybil pattern
+  // 0.25 headroom; cube #3 pinned the recovery on the sybil pattern
   // as a single companion regression at the re-tuned thresholds.
-  // Cube #20 generalizes that companion regression into a cube across
+  // Cube #18 generalizes that companion regression into a cube across
   // (alpha × stratification × demo-threshold) on the sybil-amplified-
   // coalition pattern (`runSybilAmplifiedGateScenario`), reading the
-  // alpha-recalibration on cube #11's stratification axis — the
+  // alpha-recalibration on cube #9's stratification axis — the
   // closure mechanism here is the cross-stratum gate (cluster signal
   // closes Dave) plus the demo gate's null-policy (closes the fresh
-  // recruit Eve), not cube #2/#5's recent gate.
+  // recruit Eve), not cube #2/#13's recent gate.
   //
   // Eight cells over (`review_credit_contention_alpha` ∈ {1.0, 0.5})
   // × (`stratification_enabled` ∈ {off, on}) × (`assignment_min_
@@ -14581,7 +12469,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   //     contested stalls 'staged'. ASR=0%, lockout=true — *the
   //     misleading-closure cell*: the closure observation (ASR=0%)
   //     reads as honest defense but is actually honest-pool collapse,
-  //     the same shape cube #5 read on the recent-gate closure
+  //     the same shape cube #3 read on the recent-gate closure
   //     mechanism. This is the cell the re-tuned threshold recovers.
   //   - (alpha=0.5, strat=on, demo=0.75): Erin's bootstrap
   //     demonstrated=1.0 ≥ 0.75 → honest pool passes and converges
@@ -14599,7 +12487,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // observation misleading. *ASR is stratification-determined: the
   // cluster signal is the capture-closure, alpha-invariant; alpha
   // and demo only move the lockout metric* — the closure-quality
-  // axis, exactly cube #5's two-metric template generalized to the
+  // axis, exactly cube #3's two-metric template generalized to the
   // stratification mechanism.
   //
   // Aggregate by alpha: alpha=1=(ASR=50%, lockout=0%) — the alpha=1
@@ -14612,23 +12500,23 @@ describe('testbed: synthetic populations against the wired surface', () => {
   // Aggregate by demo-threshold: demo=1.5=(ASR=50%, lockout=50%) —
   // the threshold calibrated against the alpha=1 bootstrap locks out
   // the honest pool at alpha=0.5 regardless of stratification.
-  // demo=0.75=(ASR=50%, lockout=0%) — cube #5's re-tuned threshold
+  // demo=0.75=(ASR=50%, lockout=0%) — cube #3's re-tuned threshold
   // preserves the 0.25 headroom at alpha=0.5 and is trivially clear
   // at alpha=1, so zero lockout at both alphas. *The re-tuned
-  // threshold's recovery is mechanism-agnostic*: cube #5 pinned it
-  // on the recent-gate closure (patient archetype); cube #20 reads
+  // threshold's recovery is mechanism-agnostic*: cube #3 pinned it
+  // on the recent-gate closure (patient archetype); cube #18 reads
   // the same recovery on the stratification closure (coalition
   // archetype), converting the mechanism-agnostic-recalibration
   // claim into a CI-checked invariant.
   //
-  // Cube #20 is the alpha-axis sibling of cube #5 (the difficulty-
-  // aware re-baseline of cube #2 on the patient archetype): cube #5
+  // Cube #18 is the alpha-axis sibling of cube #3 (the difficulty-
+  // aware re-baseline of cube #2 on the patient archetype): cube #3
   // reads the alpha-recalibration on the recent-gate closure, cube
   // #20 on the stratification closure. Together they pin the
   // recalibration as a property of the demo gate's eligibility-tier
   // role (a threshold calibrated for alpha=1 false-positive-locks-out
   // at alpha < 1, and the re-tuned demo=0.75 recovers it), invariant
-  // to which mechanism does the actual capture-closure — cube #14's
+  // to which mechanism does the actual capture-closure — cube #12's
   // closure-quality-independence reading applied to the alpha axis.
   interface AlphaStratSweepCell {
     name: string;
@@ -14726,12 +12614,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // contested phase, where Carol's reject becomes inaccurate
     // (and alpha-contention-scaled) if contested converges, so
     // it's only 3 × alpha on cells where contested stalls. The
-    // priming arithmetic itself is pinned by cube #5's standalone
+    // priming arithmetic itself is pinned by cube #3's standalone
     // `carol_demonstrated ≈ 1.5` regression (demo=1.5, alpha=0.5,
-    // contested stalls staged); cube #20 doesn't re-pin it.
+    // contested stalls staged); cube #18 doesn't re-pin it.
   });
 
-  it('(alpha × stratification × demo) sweep cube: ASR is stratification-determined; lockout-rate carries the alpha-recalibration, recovered by cube #5 re-tuned demo=0.75 (PRD §Reputation, difficulty-normalized review credit)', () => {
+  it('(alpha × stratification × demo) sweep cube: ASR is stratification-determined; lockout-rate carries the alpha-recalibration, recovered by cube #3 re-tuned demo=0.75 (PRD §Reputation, difficulty-normalized review credit)', () => {
     interface AlphaStratAggCell {
       key: string;
       total: number;
@@ -14775,9 +12663,9 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // *meaning* differs: at strat=off it's collateral damage (the
     // attack wins anyway), at strat=on it's the misleading-closure
     // failure mode (the attack appears closed because honest review
-    // collapsed). The two-metric template cube #5 introduced reads
+    // collapsed). The two-metric template cube #3 introduced reads
     // both — "a defense that closes the attack by collapsing the
-    // honest pool is not a defense" — and cube #20 generalizes it
+    // honest pool is not a defense" — and cube #18 generalizes it
     // from the recent-gate to the stratification closure mechanism.
     expect(asrOf(groupedByStrat, 'off')).toBe(1);
     expect(asrOf(groupedByStrat, 'on')).toBe(0);
@@ -14792,7 +12680,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // demo=1.5 threshold at both stratification settings). *This is
     // the alpha-recalibration headline*: the demo gate calibrated
     // against the alpha=1 bootstrap false-positive-locks-out at
-    // alpha < 1, the same shape cube #5 read on the patient
+    // alpha < 1, the same shape cube #3 read on the patient
     // archetype.
     expect(asrOf(groupedByAlpha, '1')).toBe(0.5);
     expect(asrOf(groupedByAlpha, '0.5')).toBe(0.5);
@@ -14803,10 +12691,10 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // ASR, not the demo threshold). lockout-rate: demo=1.5 at 50%
     // (the threshold calibrated against the alpha=1 bootstrap locks
     // out at alpha=0.5 regardless of stratification), demo=0.75 at
-    // 0% (cube #5's re-tuned threshold preserves the 0.25 headroom
+    // 0% (cube #3's re-tuned threshold preserves the 0.25 headroom
     // at alpha=0.5 and is trivially clear at alpha=1). *The re-tuned
-    // threshold's recovery is mechanism-agnostic* — cube #5 pinned
-    // it on the recent-gate closure, cube #20 reads it on the
+    // threshold's recovery is mechanism-agnostic* — cube #3 pinned
+    // it on the recent-gate closure, cube #18 reads it on the
     // stratification closure.
     expect(asrOf(groupedByDemo, '1.5')).toBe(0.5);
     expect(asrOf(groupedByDemo, '0.75')).toBe(0.5);
@@ -14836,16 +12724,12 @@ describe('testbed: synthetic populations against the wired surface', () => {
     });
     const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
     const aliceClient = await wireArchetype(server, alice.id);
-    // Calling set_capacity for a cause that doesn't exist surfaces
-    // `not_found` over the wire — the testbed's adversary harness
-    // pattern-matches on this code, so the round-trip is what we
-    // exercise here.
+    // Requesting an assignment for a cause that doesn't exist
+    // surfaces `not_found` over the wire — the testbed's adversary
+    // harness pattern-matches on this code, so the round-trip is
+    // what we exercise here.
     await expect(
-      aliceClient.setCapacity({
-        cause_id: 'cau_missing' as never,
-        rate: 1,
-        kinds: ['excerpt'],
-      }),
+      aliceClient.requestAssignment({ cause_id: 'cau_missing' as never }),
     ).rejects.toMatchObject({ code: 'not_found' });
   });
 });

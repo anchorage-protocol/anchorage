@@ -54,14 +54,14 @@ export interface LlmRole {
 const GRAPH_ORIENTATION = [
   'You are connected to the Anchorage MCP server, an open cooperative-research graph.',
   'The graph is organized as cause -> sub-topic -> atomic claims, each claim anchored to a',
-  'verifiable source span. Contributors declare capacity for a cause, pull frontier tasks',
-  '(orphan anchors needing excerpts, or proposals needing review), and either fulfill or',
-  'decline each. An excerpt task wants a short atomic claim plus a verbatim quoted span from',
+  'verifiable source span. Request an assignment for a cause and the server hands you one',
+  'task at a time — an orphan anchor needing an excerpt, or a proposal needing review. You',
+  'hold a single slot: you cannot pull another task until the one in hand resolves, and there',
+  'is no decline. An excerpt task wants a short atomic claim plus a verbatim quoted span from',
   'the assigned anchor. A review task wants an accept/reject vote with a rationale. Reputation',
   'is tracked per (cause, sub-topic): it is built by work that survives peer review and by',
   'review votes that match ground truth on injected calibration items, and review votes are',
-  'staked against the outcome they converge. Decline tasks you genuinely cannot do — declining',
-  'work outside your wheelhouse is non-punitive. Stop when the frontier is drained:',
+  'staked against the outcome they converge. Stop when no work is available:',
   'request_assignment will come back with a not_found error.',
 ].join(' ');
 
@@ -82,7 +82,7 @@ export const honestStrongRole: LlmRole = {
     'Do not pad the graph with low-value or speculative claims to look productive.',
   ].join(' '),
   buildTask: (cause_id) =>
-    `Cause id: ${cause_id}. Begin by declaring your excerpt capacity for this cause, then work the frontier — pull a task, fulfill or decline it, repeat — until it is empty.`,
+    `Cause id: ${cause_id}. Begin by requesting an assignment for this cause, then work the frontier — pull a task, fulfill it, request the next once it resolves, repeat — until no work is available.`,
 };
 
 export interface AdversaryRoleOptions {
@@ -129,7 +129,7 @@ export function strategicAdversaryRole(opts: AdversaryRoleOptions): LlmRole {
       'a contested item in front of you now is one you act on now.',
     ].join(' '),
     buildTask: (cause_id) =>
-      `Cause id: ${cause_id}. Begin by declaring your excerpt capacity for this cause, then work the frontier — pull a task, fulfill or decline it, repeat — until it is empty.`,
+      `Cause id: ${cause_id}. Begin by requesting an assignment for this cause, then work the frontier — pull a task, fulfill it, request the next once it resolves, repeat — until no work is available.`,
   };
 }
 
@@ -160,7 +160,7 @@ export function patientAdversaryRole(opts: AdversaryRoleOptions): LlmRole {
       'outcome they converge. If in doubt, keep building — patience is the weapon.',
     ].join(' '),
     buildTask: (cause_id) =>
-      `Cause id: ${cause_id}. Begin by declaring your excerpt capacity for this cause, then work the frontier — pull a task, fulfill or decline it, repeat — until it is empty. You are early; build standing.`,
+      `Cause id: ${cause_id}. Begin by requesting an assignment for this cause, then work the frontier — pull a task, fulfill it, request the next once it resolves, repeat — until no work is available. You are early; build standing.`,
   };
 }
 

@@ -1,6 +1,4 @@
 import {
-  AcceptAssignmentInput,
-  AcceptAssignmentOutput,
   CastReviewVoteInput,
   CastReviewVoteOutput,
   type CauseId,
@@ -8,12 +6,8 @@ import {
   CuratorAcceptProposalOutput,
   CuratorArchiveStaleProposalsInput,
   CuratorArchiveStaleProposalsOutput,
-  CuratorDeclinePatternsInput,
-  CuratorDeclinePatternsOutput,
   CuratorDeferSubTopicInput,
   CuratorDeferSubTopicOutput,
-  CuratorExpireStaleAssignmentsInput,
-  CuratorExpireStaleAssignmentsOutput,
   CuratorIdentityClustersInput,
   CuratorIdentityClustersOutput,
   CuratorRejectProposalInput,
@@ -22,8 +16,6 @@ import {
   CuratorReverifyAnchorsOutput,
   CuratorRevokeIdentityInput,
   CuratorRevokeIdentityOutput,
-  DeclineAssignmentInput,
-  DeclineAssignmentOutput,
   FetchCalibrationBatchInput,
   FetchCalibrationBatchOutput,
   IdentityId,
@@ -53,8 +45,6 @@ import {
   QueryReputationOutput,
   RequestAssignmentInput,
   RequestAssignmentOutput,
-  SetCapacityInput,
-  SetCapacityOutput,
   SubTopicId,
 } from '@anchorage/contracts';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -106,8 +96,8 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
   const instructions =
     'Anchorage is cooperative open research with auditable lineage. ' +
     'To contribute: call query_causes to see the causes this instance ' +
-    'hosts and their open sub-topics; pick a cause_id; call set_capacity ' +
-    'for that cause; then request_assignment and fulfill the offered task ' +
+    'hosts and their open sub-topics; pick a cause_id; call ' +
+    'request_assignment for that cause and fulfill the offered task ' +
     'with the matching propose_* tool or cast_review_vote. The cause://, ' +
     'sub-topic://, node://, subgraph://, contributor://, and manuscript:// ' +
     'resources mirror the same data passively for browsing.';
@@ -235,45 +225,20 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
   // the SDK's generic inference recovers the per-tool input type
   // rather than widening to a generic raw shape.
 
-  // ── Capacity & assignment ───────────────────────────────────────
-  mcp.registerTool(
-    'set_capacity',
-    {
-      description: 'Declare cause-level capacity (rate cap + accepted work kinds).',
-      inputSchema: SetCapacityInput.shape,
-      outputSchema: SetCapacityOutput.shape,
-    },
-    wrap(server.tools.setCapacity),
-  );
-
+  // ── Assignment ──────────────────────────────────────────────────
+  // Single FIFO slot per (identity, cause): no capacity declaration,
+  // no decline, no accept step. request_assignment returns the slot
+  // already held; fulfill it via the matching propose_* /
+  // cast_review_vote (PRD §Write-path tools, "Assignment").
   mcp.registerTool(
     'request_assignment',
     {
-      description: 'Pull an assignment from the frontier within declared capacity.',
+      description:
+        'Pull a single task from the frontier. Refused while you hold an unresolved slot for the cause; optional kind is a strict filter.',
       inputSchema: RequestAssignmentInput.shape,
       outputSchema: RequestAssignmentOutput.shape,
     },
     wrap(server.tools.requestAssignment),
-  );
-
-  mcp.registerTool(
-    'accept_assignment',
-    {
-      description: 'Move an offered assignment to accepted.',
-      inputSchema: AcceptAssignmentInput.shape,
-      outputSchema: AcceptAssignmentOutput.shape,
-    },
-    wrap(server.tools.acceptAssignment),
-  );
-
-  mcp.registerTool(
-    'decline_assignment',
-    {
-      description: 'Decline an offered assignment with a reason.',
-      inputSchema: DeclineAssignmentInput.shape,
-      outputSchema: DeclineAssignmentOutput.shape,
-    },
-    wrap(server.tools.declineAssignment),
   );
 
   // ── Proposals (assignment-fulfilling or contributor-initiated) ──
@@ -378,7 +343,7 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
     {
       description:
         'Start here. List the causes this instance hosts and their open ' +
-        'sub-topics; pick a cause_id, then set_capacity and request_assignment.',
+        'sub-topics; pick a cause_id, then request_assignment.',
       inputSchema: QueryCausesInput.shape,
       outputSchema: QueryCausesOutput.shape,
     },
@@ -506,41 +471,6 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
         if (input.cause_id !== undefined) opts.cause_id = input.cause_id;
         const ids = server.curator.archiveStaleProposals(opts);
         return { proposal_ids: ids };
-      }),
-    );
-
-    mcp.registerTool(
-      'curator_expire_stale_assignments',
-      {
-        description:
-          'Expire offered/accepted assignments idle longer than window_seconds (status -> expired). Curator role required.',
-        inputSchema: CuratorExpireStaleAssignmentsInput.shape,
-        outputSchema: CuratorExpireStaleAssignmentsOutput.shape,
-      },
-      wrapCurator((_caller, input: CuratorExpireStaleAssignmentsInput) => {
-        const opts: { window_seconds: number; cause_id?: CauseId } = {
-          window_seconds: input.window_seconds,
-        };
-        if (input.cause_id !== undefined) opts.cause_id = input.cause_id;
-        const ids = server.curator.expireStaleAssignments(opts);
-        return { assignment_ids: ids };
-      }),
-    );
-
-    mcp.registerTool(
-      'curator_decline_patterns',
-      {
-        description:
-          'Per-reviewer offer/decline/rate within a cause, small-sample-filtered. Curator role required.',
-        inputSchema: CuratorDeclinePatternsInput.shape,
-        outputSchema: CuratorDeclinePatternsOutput.shape,
-      },
-      wrapCurator((_caller, input: CuratorDeclinePatternsInput) => {
-        const options: { min_offers?: number; min_rate?: number } = {};
-        if (input.min_offers !== undefined) options.min_offers = input.min_offers;
-        if (input.min_rate !== undefined) options.min_rate = input.min_rate;
-        const entries = server.curator.declinePatterns(input.cause_id, options);
-        return { entries };
       }),
     );
 

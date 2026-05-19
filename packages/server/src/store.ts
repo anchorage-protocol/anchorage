@@ -3,7 +3,6 @@ import type {
   AgentCredentialId,
   Assignment,
   AssignmentId,
-  Capacity,
   Cause,
   CauseId,
   Edge,
@@ -67,11 +66,6 @@ export interface Store {
   readonly edges: MapLike<EdgeId, Edge>;
   readonly reviewVotes: MapLike<ReviewVoteId, ReviewVote>;
   readonly assignments: MapLike<AssignmentId, Assignment>;
-  // Capacity is one declaration per (identity, cause) — PRD §Capacity
-  // and assignment: capacity is cause-scoped, not sub-topic-scoped.
-  // The composite key keeps lookups O(1) without scanning all records,
-  // and set_capacity is naturally an upsert under that key.
-  readonly capacities: MapLike<`${IdentityId}|${CauseId}`, Capacity>;
   // Per-(identity, cause, sub_topic) reputation. PRD §Reputation: rep
   // is anchored at the cause level and refined by sub-topic landing
   // pattern. The composite key keeps lookups O(1); the values are
@@ -151,7 +145,6 @@ export class MemoryStore implements Store {
   readonly edges = new Map<EdgeId, Edge>();
   readonly reviewVotes = new Map<ReviewVoteId, ReviewVote>();
   readonly assignments = new Map<AssignmentId, Assignment>();
-  readonly capacities = new Map<`${IdentityId}|${CauseId}`, Capacity>();
   readonly reputations = new Map<`${IdentityId}|${CauseId}|${SubTopicId}`, Reputation>();
   readonly calibrationRecords = new Map<
     `${IdentityId}|${CauseId}|${SubTopicId}`,

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { escapeHtml, html, raw, renderDocument } from './render.js';
 import {
   matchContributorRoute,
-  matchCuratorDeclinePatternsRoute,
   matchManuscriptRoute,
   matchNodeRoute,
   matchSubTopicRoute,
@@ -61,18 +60,6 @@ describe('route matchers', () => {
   });
   it('matchManuscriptRoute returns the id segment for /manuscript/:id', () => {
     expect(matchManuscriptRoute('/manuscript/sub-topic_01HXXXX')).toBe('sub-topic_01HXXXX');
-  });
-  it('matchCuratorDeclinePatternsRoute returns the cause_id segment for /curator/decline-patterns/:id', () => {
-    expect(matchCuratorDeclinePatternsRoute('/curator/decline-patterns/cau_abc')).toBe('cau_abc');
-    expect(matchCuratorDeclinePatternsRoute('/curator/decline-patterns/abc%20def')).toBe('abc def');
-    // The matcher does not greedy-match the parent prefix.
-    expect(matchCuratorDeclinePatternsRoute('/curator')).toBeUndefined();
-    expect(matchCuratorDeclinePatternsRoute('/curator/decline-patterns')).toBeUndefined();
-    expect(matchCuratorDeclinePatternsRoute('/curator/decline-patterns/')).toBeUndefined();
-    expect(matchCuratorDeclinePatternsRoute('/curator/decline-patterns/abc/extra')).toBeUndefined();
-    // And neighboring curator routes are not matched as decline-pattern routes.
-    expect(matchCuratorDeclinePatternsRoute('/curator/queue')).toBeUndefined();
-    expect(matchCuratorDeclinePatternsRoute('/curator/identity-clusters')).toBeUndefined();
   });
   it('returns undefined for unrelated paths', () => {
     for (const m of [

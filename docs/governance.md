@@ -26,11 +26,9 @@ Anchorage supports stable pseudonymous participation while retaining bounded ide
 
 ## The contribution flow
 
-The default flow is *assignment-driven*: contributors declare cause-level capacity, the system assigns work from the frontier, and reputation accrues on assigned work. A contributor-initiated path exists for genuinely novel proposals but with weaker rep weighting. The shape:
+The default flow is *assignment-driven*: the system assigns work from the frontier, and reputation accrues on assigned work. A contributor-initiated path exists for genuinely novel proposals but with weaker rep weighting. The shape:
 
-0. **Capacity.** Contributor declares, at the cause level (not sub-topic), how often they want assignments and what kinds they'll accept. Capacity is the system's only signal of availability; sub-topic selection is the system's choice. (This is what closes the rep-laundering vector — there is no shopping list.)
-
-1. **Assignment.** The system draws a frontier task across all sub-topics in the cause, matched to capacity and prior expertise (where measurable). Contributor accepts or declines. Declining individual assignments is not punitive — narrow specialists legitimately decline outside their wheelhouse — but decline patterns are tracked and sustained selectivity is an abuse signal.
+1. **Assignment.** The contributor requests work; the system draws a frontier task across all sub-topics in the cause on frontier priority alone — no expertise matching, no declared capacity. A contributor holds one assignment slot per cause and accepts it; there is no decline. A task that cannot be honestly completed (a source that will not resolve, a lapsed precondition) resolves as its own correct negative result rather than being refused, so selectivity has no surface to act on. The single slot is itself the only availability signal — there is no shopping list, which is what closes the rep-laundering vector.
 
 2. **Submit.** The contributor submits work via the assigned-proposal tool; verification (grounding, lineage, rate) gates the submission synchronously.
 
@@ -42,7 +40,7 @@ The default flow is *assignment-driven*: contributors declare cause-level capaci
 
 6. **Settle.** Once merged, the proposal accrues reputation to its contributor and to reviewers who evaluated it correctly. Reputation gain is weighted by claim difficulty and by whether the work was assignment-driven (full weight) or contributor-initiated (reduced weight, conditional on independent confirmation). Later supersedes events update reputation in both directions.
 
-The contributor-initiated path skips steps 0–1 and weights step 6 lower. It exists so genuine novel synthesis is not bottlenecked by the system's frontier model — but it is not the default.
+The contributor-initiated path skips step 1 and weights step 6 lower. It exists so genuine novel synthesis is not bottlenecked by the system's frontier model — but it is not the default.
 
 ---
 
@@ -85,7 +83,7 @@ This avoids the failure mode where bad sub-topics fragment effort.
 
 Most disputes resolve at the proposal level: redundant review, divergence-as-signal, parallel synthesis nodes for genuine disagreement. The cases that escalate:
 
-- **Bad-faith behavior** (sybil farms, coordinated reputation farming, persistent ungrounded citation, sustained decline-pattern selectivity that proxies for sub-topic shopping): handled by curator review with documented action; specific moderation actions are logged in the tamper-evident audit log, with affected contributors notified of the action category and specific signals redacted only where exposure would aid evasion. Aggregate moderation reporting (counts and categories per period) is published.
+- **Bad-faith behavior** (sybil farms, coordinated reputation farming, persistent ungrounded citation): handled by curator review with documented action; specific moderation actions are logged in the tamper-evident audit log, with affected contributors notified of the action category and specific signals redacted only where exposure would aid evasion. Aggregate moderation reporting (counts and categories per period) is published.
 - **Governance disagreement** (a contributor or reviewer disagrees with how the regime itself works): handled through the governance-change process below, not through individual disputes.
 
 ---

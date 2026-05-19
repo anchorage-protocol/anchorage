@@ -12,14 +12,15 @@ import { type AnchorageClient, AnchorageClientError } from '../client.js';
 //
 // After a verifier rejection the assignment stays `accepted` (the
 // status flip to `submitted` only happens after the propose_* layer
-// returns). decline_assignment requires `offered`, so the archetype
-// can't tidy up — and it shouldn't anyway, because a real adversary
-// wouldn't volunteer to clear its own failed slots. The capacity slot
-// stays consumed; under rate=N the hallucinator wedges at N stuck
-// `accepted` assignments across N distinct anchors and then goes
-// idle. That's the right shape for the testbed: the cost of
-// hallucinating is paid in rate-budget exhaustion, which the harness
-// will measure as a throughput metric in later sweeps.
+// returns). There is no decline (PRD §Assignment), and a real
+// adversary wouldn't volunteer to clear its own failed slot anyway.
+// Under the single-slot model this is even more contained than the
+// old capacity model: the hallucinator gets exactly one shot, wedges
+// its sole slot on the first rejection, and the next
+// request_assignment answers not_found until TTL shadow-reassignment
+// re-offers that anchor to a backup. The cost of hallucinating is
+// paid as a parked slot producing zero staged excerpts — which the
+// harness measures as a containment metric in later sweeps.
 //
 // The Phase-1 measurement claim that hangs on this archetype:
 //
@@ -52,15 +53,11 @@ export interface HallucinationFabricator {
 
 export interface HallucinatorConfig {
   cause_id: CauseId;
-  rate: number;
   fabricator: HallucinationFabricator;
 }
 
 export type HallucinatorAction =
-  | { kind: 'set_capacity' }
   | { kind: 'requested'; assignment_id: string; task_kind: string }
-  | { kind: 'accepted'; assignment_id: string }
-  | { kind: 'declined'; assignment_id: string; reason: string }
   // The signature failure mode: submit threw at the verifier seam.
   // The action records the typed code so the harness can distinguish
   // verifier rejections from other failures (e.g. invalid_state) when
@@ -88,19 +85,15 @@ export async function runHallucinator(
 ): Promise<HallucinatorResult> {
   const actions: HallucinatorAction[] = [];
 
-  await client.setCapacity({
-    cause_id: config.cause_id,
-    rate: config.rate,
-    kinds: ['excerpt'],
-  });
-  actions.push({ kind: 'set_capacity' });
-
   const MAX_ITERATIONS = 1000;
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     let offered: Awaited<ReturnType<AnchorageClient['requestAssignment']>>;
     try {
-      offered = await client.requestAssignment({ cause_id: config.cause_id });
+      offered = await client.requestAssignment({
+        cause_id: config.cause_id,
+        kind: 'excerpt',
+      });
     } catch (err) {
       if (err instanceof AnchorageClientError) {
         actions.push({ kind: 'idle', reason: err.code });
@@ -115,20 +108,11 @@ export async function runHallucinator(
     });
 
     if (offered.task.kind !== 'excerpt') {
-      await client.declineAssignment({
-        assignment_id: offered.assignment_id,
-        reason: `hallucinator only handles excerpt tasks, got ${offered.task.kind}`,
-      });
-      actions.push({
-        kind: 'declined',
-        assignment_id: offered.assignment_id,
-        reason: 'unhandled task kind',
-      });
-      continue;
+      // Unreachable given the `kind: 'excerpt'` filter; a non-excerpt
+      // offer is a server bug. No decline channel (PRD §Assignment).
+      actions.push({ kind: 'idle', reason: 'unexpected_task_kind' });
+      return { actions };
     }
-
-    await client.acceptAssignment({ assignment_id: offered.assignment_id });
-    actions.push({ kind: 'accepted', assignment_id: offered.assignment_id });
 
     const fabricated = config.fabricator.fabricateForAnchor(offered.task.parent_anchor_id);
 
@@ -152,8 +136,9 @@ export async function runHallucinator(
         assignment_id: offered.assignment_id,
         code: err.code,
       });
-      // No tidy-up: the assignment stays `accepted` and burns a rate
-      // slot for the rest of the loop. See top-of-file comment.
+      // No tidy-up: the assignment stays `accepted` and wedges the
+      // sole slot, so the next request_assignment answers not_found
+      // and the loop ends. See top-of-file comment.
     }
   }
 

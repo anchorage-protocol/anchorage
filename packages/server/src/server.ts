@@ -1,12 +1,9 @@
 import {
-  AcceptAssignmentInput,
-  type AcceptAssignmentOutput,
   type AgentCredential,
   type AnchorNode,
   type Assignment,
   type AssignmentId,
   type AssignmentTask,
-  type Capacity,
   CastReviewVoteInput,
   type CastReviewVoteOutput,
   type Cause,
@@ -14,8 +11,6 @@ import {
   type CauseId,
   type ContributorProfile,
   type CreditAttribution,
-  DeclineAssignmentInput,
-  type DeclineAssignmentOutput,
   type DerivesEdge,
   type Edge,
   type ExcerptNode,
@@ -63,16 +58,14 @@ import {
   type RequestAssignmentOutput,
   type ReviewBatchItem,
   type ReviewVote,
-  SetCapacityInput,
-  type SetCapacityOutput,
   type Subgraph,
   type SubTopic,
   type SubTopicDetail,
   type SubTopicId,
   type SupersedesEdge,
   type SynthesisNode,
-  type Timestamp,
-  type WorkKind,
+  Timestamp,
+  WorkKind,
 } from '@anchorage/contracts';
 import { z } from 'zod';
 import {
@@ -395,57 +388,6 @@ export interface ReviewConfig {
   // below 1.0 admit organic disagreement as honest false positives,
   // which is the signal/cost trade-off the testbed sweeps.
   stratum_anti_correlation_threshold: number;
-  // Include declined assignments alongside review votes in the cluster
-  // signal's encounter map. PRD §Reviewer assignment: the v0 cluster
-  // primitive operates on shared *votes*, which is silent against
-  // paired-decline coalitions (Carol votes A and declines B; Dave
-  // declines A and votes B → zero shared vote-history → cluster
-  // signal cannot fire). Widening the agreement/disagreement primitive
-  // from `{accept, reject}` to `{accept, reject, decline}` reads the
-  // paired-decline pattern as 100% disagreement on the shared targets:
-  // (vote, decline) and (decline, vote) on the same proposal are
-  // different actions, the existing anti-correlation primitive treats
-  // them as a co-stratum cue, and the cross-stratum gate trips against
-  // the coalition just as it does for the vote-only decorrelating
-  // pattern. Two encounters per (reviewer, proposal): a real vote
-  // takes priority over a decline (a contributor-initiated vote after
-  // declining is "I changed my mind"), and revise votes are still
-  // dropped from the cluster computation. Contention-weighting
-  // (`stratum_contention_weighted`) treats decline-involved encounters
-  // at full weight (contention=1.0) — declines are inherently
-  // informative and the per-proposal accept/reject tally underweights
-  // them by construction. Defaults to off so existing scenarios are
-  // unaffected; turning it on widens the cluster signal but does not
-  // shrink it (vote-only encounters still fire the existing edges).
-  stratum_include_declines: boolean;
-  // Minimum decline-involved encounters between a pair before
-  // contention-weighting's full-weight rule for declines applies. PRD
-  // §Reviewer assignment commits the floor as the refinement that
-  // scopes the decline-aware × contention-weighting interaction so
-  // honest reviewers stay singletons. Without it, a single asymmetric
-  // decline (one reviewer declines a proposal, another votes on it)
-  // produces a single decline-involved encounter at full weight that
-  // outweighs every unanimous-easy vote-agreement (contention 0 →
-  // weight 0); the pair's weighted-disagreement ratio collapses to 1.0
-  // and the anti-correlation edge fires against an honest pair that
-  // shared no actual coalition signal. The paired-decline closure the
-  // floor has to preserve has *two* decline-involved encounters per
-  // pair by construction (Carol votes A and declines B; Dave declines
-  // A and votes B), so a floor of 2 closes the over-clustering
-  // pathology without weakening the multi-round paired-decline
-  // closure. Below the floor, decline-involved encounters contribute
-  // zero weight to both weighted_shared and weighted_agreed —
-  // equivalent to the pair being decline-blind for cluster purposes —
-  // while raw shared count still includes them (the brand-new-reviewer
-  // floor is unaffected). Only consulted when both
-  // stratum_contention_weighted and stratum_include_declines are on;
-  // under raw or vote-only weighting the knob has no effect. Default 2
-  // is the production value the testbed tunes against; raising it
-  // weakens declines as a coalition signal further (more paired-
-  // decline activity required before a coalition surfaces). A value
-  // of 1 reduces to "no floor" — the buggy regime the over-clustering
-  // scenario pins.
-  stratum_decline_min_paired: number;
   // Half-life (in seconds) of the *demonstrated*-competence reputation
   // component. PRD §Reputation: "A demonstrated-competence component,
   // slow-decay, gates eligibility tiers." Applied as exponential decay
@@ -504,35 +446,15 @@ export interface ReviewConfig {
   // surfaces that need accumulated activity per identity. Default 0
   // leaves the gate inert and preserves existing-scenario behavior.
   assignment_min_demonstrated: number;
-  // Maximum cumulative decline rate (declines / offers in this cause)
-  // allowed at request_assignment. PRD §Capacity and assignment commits
-  // two surfaces on the same per-(cause, reviewer) cumulative-rate
-  // signal: a curator-side projection (`declinePatterns`) for
-  // visibility, and an assignment-time gate
-  // (`assignment_max_decline_rate`, `assignment_decline_min_offers`)
-  // for enforcement. This knob is the gate. The signal it consumes
-  // matches what the projection computes — same numerator and
-  // denominator, same per-cause scope — so the two surfaces operate
-  // on a single signal. The first defense knob for the multi-proposal
-  // coalition seam (a coalition that avoids co-voting on any
-  // contentious item by using paired-decline as the routing primitive):
-  // the gate makes "decline as routing primitive" expensive without
-  // making single declines punitive — a legitimate narrow specialist
-  // who declines occasionally stays well below threshold; a coalition
-  // member who declines half their offers to route around the
-  // partner's contested target burns the budget fast. Default 1.0
-  // leaves the gate inert and preserves existing-scenario behavior.
-  assignment_max_decline_rate: number;
-  // Minimum offers below which the decline-rate gate is bypassed —
-  // small-sample noise floor, the same role `min_offers` plays on
-  // `curator.declinePatterns`. Bootstrap-friendly: a fresh reviewer
-  // with zero offers cannot be locked out before having been offered
-  // anything to decline. Default 1: once `assignment_max_decline_rate`
-  // is below 1.0 the gate fires from the very first decline. Curators
-  // running the projection with a higher floor (the v0 default there
-  // is 3) can wire a higher floor here too if false-positive cost on
-  // small samples is the dominant concern.
-  assignment_decline_min_offers: number;
+  // Seconds after which an unresolved single-holder slot is
+  // *additionally* shadow-offered to a backup contributor (PRD
+  // §Write-path tools, "Assignment": TTL-as-shadow-reassignment). Not
+  // a holder-expiry — the holder keeps their slot; a parallel shadow
+  // re-offer is created lazily on the next caller's pull and whichever
+  // resolves first releases both. Default Infinity disables shadowing
+  // entirely (no `ttl_at` is ever stamped), so every pre-TTL scenario
+  // is unaffected; the testbed sweeps the production value.
+  assignment_ttl_seconds: number;
   // Difficulty-normalization mix for reviewer rep deltas. PRD
   // §Reputation: "Review-credit normalized by claim difficulty.
   // Without normalization, the regime selects for reviewers who
@@ -560,9 +482,9 @@ export interface ReviewConfig {
   // `attestation_level` on the identity at mint, opaque to the
   // server (the server gates on threshold; it does not interpret
   // what the level *means*). The gate fires at every tool that
-  // resolves a caller for write — `set_capacity`,
-  // `request_assignment`, `accept_assignment`, `decline_assignment`,
-  // all `propose_*` tools, and `cast_review_vote` — refusing with
+  // resolves a caller for write — `request_assignment`, all
+  // `propose_*` tools, and `cast_review_vote`
+  // — refusing with
   // `unauthorized` mode rather than the rep gates' `not_found`
   // opacity, because the binding-cost mismatch is identity-level (a
   // stable property of the IdP-issued credential) and there's no
@@ -579,8 +501,7 @@ export interface ReviewConfig {
   // per epoch. PRD §Identity bullet 3 (per-identity rate-limit
   // accounting): the third of the four sybil-resistance layers.
   // The cap is on observable write actions across all write tools
-  // (`set_capacity`, `request_assignment`, `accept_assignment`,
-  // `decline_assignment`, all `propose_*` tools, `cast_review_vote`)
+  // (`request_assignment`, all `propose_*` tools, `cast_review_vote`)
   // — single bucket rather than per-tool, so the cap measures total
   // throughput per identity per epoch directly. The cost-multiplier
   // reads as the per-sybil-throughput axis: at K sybils with
@@ -691,14 +612,11 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   stratification_degraded_extra: 1,
   stratum_contention_weighted: false,
   stratum_anti_correlation_threshold: 0,
-  stratum_include_declines: false,
-  stratum_decline_min_paired: 2,
   demonstrated_half_life_seconds: Infinity,
   recent_half_life_seconds: Infinity,
   assignment_min_recent: 0,
   assignment_min_demonstrated: 0,
-  assignment_max_decline_rate: 1.0,
-  assignment_decline_min_offers: 1,
+  assignment_ttl_seconds: Number.POSITIVE_INFINITY,
   review_credit_contention_alpha: 1,
   min_attestation_level: 0,
   rate_limit_actions_per_epoch: Number.POSITIVE_INFINITY,
@@ -983,12 +901,19 @@ export class Server {
     // only kicks in once the proposal exists. A population of N
     // concurrent contributors hits this window N-deep on a fresh
     // frontier without it.
+    //
+    // A slot past its `ttl_at` stops covering: the anchor re-enters the
+    // frontier so the next caller's pull mints a `shadow_of` re-offer
+    // (PRD §Write-path tools, "Assignment": TTL-as-shadow). Liveness
+    // without a curator expiry sweep — a permanently-dead holder simply
+    // stops shielding the work once its TTL passes.
+    const nowMs = Date.parse(this.clock.now());
     const hasInFlightExcerptAssignment = new Set<NodeId>();
     for (const a of this.store.assignments.values()) {
       if (a.task.kind !== 'excerpt') continue;
-      if (a.status === 'offered' || a.status === 'accepted') {
-        hasInFlightExcerptAssignment.add(a.task.parent_anchor_id);
-      }
+      if (a.status !== 'accepted') continue;
+      if (a.ttl_at !== undefined && Date.parse(a.ttl_at) <= nowMs) continue;
+      hasInFlightExcerptAssignment.add(a.task.parent_anchor_id);
     }
 
     for (const node of this.store.nodes.values()) {
@@ -1108,18 +1033,18 @@ export class Server {
   }
 
   // Resolve an assignment that belongs to the given identity and sits
-  // in one of the allowed states — the entry point for the
-  // contributor-driven transitions. `accept_assignment` allows only
-  // `offered`; `decline_assignment` allows `offered` *or* `accepted`
-  // (a contributor who accepted and then can't deliver bails out the
-  // same way — PRD §Capacity and assignment (decline_assignment)). The
-  // expiry transition (`curator.expireStaleAssignments`) covers the
-  // same `offered`/`accepted` set but is curator-side — no owning
-  // identity to check — so it doesn't pass through here.
+  // in one of the allowed states — the entry point for the single
+  // contributor-driven transition. Fulfillment via a `propose_*` /
+  // `cast_review_vote` allows `accepted` (a pulled slot is `accepted`
+  // from `request_assignment` — there is no accept step and no
+  // `offered` waiting state). There is no contributor-driven exit (no
+  // `decline_assignment`): a slot the contributor cannot complete
+  // resolves through precondition-lapse or TTL-shadow, never a refusal
+  // (PRD §Write-path tools, "Assignment").
   private requireOwnedAssignment(
     assignmentId: AssignmentId,
     identityId: IdentityId,
-    allowedStatuses: readonly Assignment['status'][] = ['offered'],
+    allowedStatuses: readonly Assignment['status'][] = ['accepted'],
   ): Assignment {
     const a = this.store.assignments.get(assignmentId);
     if (!a) {
@@ -1238,12 +1163,84 @@ export class Server {
   // undefined for a contributor-initiated proposal. Mirrors the
   // optional-`assignment_id` shape `cast_review_vote` has for review
   // work: one tool per node kind, with or without an assignment.
+  // Cause of a proposal payload, for the single-slot off-slot guard.
+  // Mirrors `locateProposalForReview` but works on the bare payload
+  // (no staged proposal yet). Curator-gated kinds carry no cause/slot
+  // semantics and return undefined.
+  private causeOfProposalPayload(p: ProposalPayload): CauseId | undefined {
+    switch (p.kind) {
+      case 'anchor':
+      case 'excerpt':
+      case 'synthesis':
+      case 'open_question':
+        return p.cause_id;
+      case 'membership':
+        return this.store.subTopics.get(p.sub_topic_id)?.cause_id;
+      case 'supersedes': {
+        const fromNode = this.store.nodes.get(p.from_node_id);
+        if (!fromNode) return undefined;
+        return this.store.subTopics.get(fromNode.home_sub_topic_id)?.cause_id;
+      }
+      case 'sub_topic':
+      case 'change_of_home':
+        return undefined;
+    }
+  }
+
+  // Single-slot off-slot guard (PRD §Write-path tools / §Assignment).
+  // A contributor-initiated write (`propose_*` or `cast_review_vote`
+  // with no `assignment_id`) is off-slot work. While the caller holds
+  // an unresolved (`accepted`, post-lapse) slot in `causeId`, refuse it:
+  // single-slot means there is no parallel work channel to shop into
+  // (PRD §Assignment: "you do not progress until this slot resolves, so
+  // there is nothing to shop into"), so the held slot must be fulfilled
+  // (echo its assignment_id) or allowed to resolve first. Cause-scoped
+  // because single-slot is per (identity, cause): a slot held in
+  // another cause does not block contributor-initiated work here. Runs
+  // before anything is persisted, so a refused call records nothing and
+  // the model's corrected re-call is not tripped by any
+  // already-acted-this-turn rule (e.g. one-vote-per-(reviewer,
+  // proposal)). Caught by the model-backed testbed: an honest reviewer
+  // cast a correct vote without echoing assignment_id and — review
+  // tasks never lapse on target resolution and are TTL-shadow-exempt —
+  // was wedged out of all further work with no recovery.
+  private assertNoHeldSlot(
+    identityId: IdentityId,
+    causeId: CauseId,
+    ctx: { action: string; votingOnProposalId?: ProposalId },
+  ): void {
+    for (const a of this.store.assignments.values()) {
+      if (a.contributor_id !== identityId) continue;
+      if (this.causeOfTask(a.task) !== causeId) continue;
+      const resolved = this.lapseIfPreconditionGone(a);
+      if (resolved.status !== 'accepted') continue;
+      const fulfillsThisVote =
+        resolved.task.kind === 'review' &&
+        ctx.votingOnProposalId !== undefined &&
+        resolved.task.proposal_id === ctx.votingOnProposalId;
+      const exit = fulfillsThisVote
+        ? `re-call cast_review_vote with assignment_id=${resolved.id} to fulfill this review slot with this vote, or let it resolve first`
+        : `fulfill or let assignment ${resolved.id} resolve before this contributor-initiated ${ctx.action}`;
+      throw new ServerError(
+        'invalid_state',
+        `single-slot: ${identityId} holds an unresolved assignment (${resolved.id}, ${resolved.status}) in cause ${causeId} — a contributor-initiated ${ctx.action} is off-slot work; ${exit}`,
+      );
+    }
+  }
+
   private resolveProposalAssignment(
     identityId: IdentityId,
     assignmentId: AssignmentId | undefined,
     payload: ProposalPayload,
   ): Assignment | undefined {
-    if (assignmentId === undefined) return undefined;
+    if (assignmentId === undefined) {
+      // Contributor-initiated propose: off-slot. Refuse while a slot is
+      // held in this payload's cause (curator-gated kinds carry no
+      // cause/slot semantics → undefined → no guard).
+      const cause = this.causeOfProposalPayload(payload);
+      if (cause) this.assertNoHeldSlot(identityId, cause, { action: `${payload.kind} proposal` });
+      return undefined;
+    }
     const a = this.requireOwnedAssignment(assignmentId, identityId, ['accepted']);
     if (a.task.kind === 'review') {
       throw new ServerError(
@@ -1264,13 +1261,135 @@ export class Server {
   // Transition an assignment to `submitted`, pointing `fulfilled_by` at
   // the proposal that just fulfilled it. The caller has already staged
   // the proposal and stamped its `assignment_id`.
+  //
+  // TTL-shadow resolution invariant (PRD §Write-path tools,
+  // "Assignment"): a single-holder task target (everything except
+  // `review`, which is intentionally offered to N reviewers in
+  // parallel) may have a shadow re-offer outstanding after its TTL
+  // lapsed. The first accepted fulfillment by *anyone* resolves the
+  // slot; every other still-unresolved assignment on the same target —
+  // the original holder if a shadow won, or any shadow if the original
+  // won — transitions to `lapsed`, releasing that holder with no
+  // credit and no penalty. A later duplicate fulfillment of an
+  // already-resolved slot cannot land: its assignment is now `lapsed`,
+  // so `resolveProposalAssignment`'s `accepted`-state guard refuses it
+  // before any proposal is staged (dropped, credited nothing).
   private fulfillAssignment(assignment: Assignment, proposalId: ProposalId): void {
+    const now = this.clock.now();
     this.store.assignments.set(assignment.id, {
       ...assignment,
       status: 'submitted',
       fulfilled_by: proposalId,
-      updated_at: this.clock.now(),
+      updated_at: now,
     });
+    if (assignment.task.kind === 'review') return;
+    const slotKey = assignmentTaskKey(assignment.task);
+    for (const sibling of this.store.assignments.values()) {
+      if (sibling.id === assignment.id) continue;
+      if (sibling.status !== 'accepted') continue;
+      if (sibling.task.kind === 'review') continue;
+      if (assignmentTaskKey(sibling.task) !== slotKey) continue;
+      this.store.assignments.set(sibling.id, {
+        ...sibling,
+        status: 'lapsed',
+        updated_at: now,
+      });
+    }
+  }
+
+  // Lazy precondition-lapse (PRD §Write-path tools, "Assignment"):
+  // returns the assignment, transitioned to `lapsed` if it is still
+  // open (`offered`/`accepted`) but can no longer be honestly
+  // completed — the slot resolves with no contributor action, no
+  // credit, no penalty. Terminal assignments pass through unchanged.
+  // Driven lazily (the single-slot walk in request_assignment, and
+  // fulfillment) rather than by a scheduler — PRD commits no curator
+  // expiry sweep for liveness.
+  //
+  // A lapsed precondition is *not* the same as an unresolvable-as-
+  // fulfillment finding: a child whose parent anchor went `unresolvable`
+  // lapses here (the work can't be done), whereas an anchor whose own
+  // `external_ref` will not resolve materializes a real negative-result
+  // fulfillment through `propose_supersedes`, not this path.
+  private lapseIfPreconditionGone(a: Assignment): Assignment {
+    if (a.status !== 'accepted') return a;
+    if (!this.assignmentPreconditionHolds(a)) {
+      const lapsed: Assignment = { ...a, status: 'lapsed', updated_at: this.clock.now() };
+      this.store.assignments.set(a.id, lapsed);
+      return lapsed;
+    }
+    return a;
+  }
+
+  // The precondition for an open assignment: its scope is still open
+  // and its target still admits the work. Conservative — only the
+  // committed lapse triggers (cause/sub-topic closed; review target
+  // gone or archived-without-resolution; excerpt parent anchor gone
+  // `unresolvable`). A review task is NOT lapsed merely because its
+  // proposal left `staged`: a calibration review task is — by design,
+  // structurally indistinguishable from a real one — pointed at an
+  // `accepted` validated-history proposal, and a real review task
+  // whose proposal resolved concurrently degrades to a calibration-
+  // style late vote scored against ground truth. Only `unresolved-
+  // archived` (divergence-closure, no ground truth) makes the review
+  // genuinely moot.
+  private assignmentPreconditionHolds(a: Assignment): boolean {
+    if (a.task.kind === 'review') {
+      const proposal = this.store.proposals.get(a.task.proposal_id);
+      if (!proposal || proposal.status === 'unresolved-archived') return false;
+      const route = this.locateProposalForReview(proposal);
+      if (!route) return false;
+      return this.scopeOpen(route.cause_id, route.sub_topic_id);
+    }
+    if (!this.scopeOpen(a.task.cause_id, a.task.sub_topic_id)) return false;
+    if (a.task.kind === 'excerpt') {
+      const parent = this.store.nodes.get(a.task.parent_anchor_id);
+      if (!parent || (parent.kind === 'anchor' && parent.status === 'unresolvable')) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private scopeOpen(causeId: CauseId, subTopicId: SubTopicId): boolean {
+    const cause = this.store.causes.get(causeId);
+    if (!cause || cause.status !== 'active') return false;
+    const subTopic = this.store.subTopics.get(subTopicId);
+    if (!subTopic || subTopic.status !== 'active') return false;
+    return true;
+  }
+
+  // A finite `assignment_ttl_seconds` stamps an absolute `ttl_at` on
+  // every minted assignment; past it the covering slot stops covering
+  // its frontier item (`deriveFrontier`) so the next caller's pull
+  // mints a `shadow_of` re-offer. Default Infinity → no stamp, no
+  // shadowing: every pre-TTL scenario is unaffected.
+  private ttlStamp(now: Timestamp): { ttl_at?: Timestamp } {
+    const ttl = this.review.assignment_ttl_seconds;
+    if (!Number.isFinite(ttl) || ttl <= 0) return {};
+    return { ttl_at: Timestamp.parse(new Date(Date.parse(now) + ttl * 1000).toISOString()) };
+  }
+
+  // The covering slot (if any) that has gone past its `ttl_at` for a
+  // single-holder task target — what makes a fresh pull on that target
+  // a shadow re-offer rather than a first offer. Review tasks never
+  // shadow (N parallel reviewers by design). Returns the oldest such
+  // slot for a stable `shadow_of` target across concurrent shadows.
+  private staleCoveringSlot(task: AssignmentTask): Assignment | undefined {
+    if (task.kind === 'review') return undefined;
+    const ttl = this.review.assignment_ttl_seconds;
+    if (!Number.isFinite(ttl) || ttl <= 0) return undefined;
+    const nowMs = Date.parse(this.clock.now());
+    const key = assignmentTaskKey(task);
+    let oldest: Assignment | undefined;
+    for (const a of this.store.assignments.values()) {
+      if (a.status !== 'accepted') continue;
+      if (a.task.kind === 'review') continue;
+      if (assignmentTaskKey(a.task) !== key) continue;
+      if (a.ttl_at === undefined || Date.parse(a.ttl_at) > nowMs) continue;
+      if (!oldest || a.created_at < oldest.created_at) oldest = a;
+    }
+    return oldest;
   }
 
   // The cause an assignment task is scoped to. Most task variants
@@ -1396,10 +1515,7 @@ export class Server {
       if (voted) continue;
       const taskKey = `review:${p.id}`;
       const alreadySeen = callerAssignments.some(
-        (a) =>
-          a.status !== 'expired' &&
-          a.status !== 'submitted' &&
-          assignmentTaskKey(a.task) === taskKey,
+        (a) => a.status === 'accepted' && assignmentTaskKey(a.task) === taskKey,
       );
       if (alreadySeen) continue;
       candidates.push(p);
@@ -1627,45 +1743,11 @@ export class Server {
   };
 
   readonly tools = {
-    // PRD §Capacity and assignment (set_capacity): set_capacity declares the
-    // contributor's availability at the cause level — a maximum rate
-    // (a cap, not a schedule) and which kinds of work they will accept.
-    // Sub-topic granularity is deliberately not allowed; it would
-    // reopen the rep-laundering vector by letting contributors cherry-
-    // pick easy sub-topics. Idempotent under (identity, cause): calling
-    // set_capacity again replaces the existing declaration. Capacity
-    // is the only way the system learns availability — without one
-    // the contributor receives no assignments.
-    setCapacity: async (caller: Caller, input: SetCapacityInput): Promise<SetCapacityOutput> => {
-      const parsed = SetCapacityInput.parse(input);
-      const { identity } = resolveCaller(this.store, caller);
-      this.requireMinAttestation(identity);
-      this.accountWriteAction(identity);
-      this.requireActiveCause(parsed.cause_id);
-      // De-duplicate kinds at the boundary: the schema has min(1) but
-      // doesn't enforce uniqueness. A contributor declaring `[review,
-      // review]` is almost certainly a client bug; coalescing keeps
-      // downstream selection logic from having to special-case it.
-      const kinds = [...new Set(parsed.kinds)];
-      const now = this.clock.now();
-      const capacity: Capacity = {
-        identity_id: identity.id,
-        cause_id: parsed.cause_id,
-        rate: parsed.rate,
-        kinds,
-        updated_at: now,
-      };
-      this.store.capacities.set(`${identity.id}|${parsed.cause_id}`, capacity);
-      return { ok: true };
-    },
-
-    // PRD §Capacity and assignment (request_assignment): request_assignment pulls
-    // a task from the frontier within the caller's declared capacity.
-    // The system selects across all sub-topics in the cause based on
-    // frontier priority; expertise fit and capacity-balancing are v1
-    // refinements (no expertise-history signal exists yet, and
-    // capacity-balancing matters once the population is non-trivial —
-    // testbed territory).
+    // PRD §Write-path tools ("Assignment"): request_assignment pulls a
+    // single task from the frontier. There is no capacity declaration —
+    // the contributor holds one FIFO slot per (identity, cause), so the
+    // only availability signal is the act of asking, and a fresh pull is
+    // refused while the slot it would occupy is still unresolved.
     //
     // v0 maps two frontier kinds onto assignment tasks:
     //
@@ -1678,26 +1760,33 @@ export class Server {
     // frontier-derivation heuristic. Both surface in query_frontier
     // and are reachable via contributor-initiated propose_* calls.
     //
-    // Eligibility gates:
+    // Eligibility gates, in order:
     //
-    //   1. Caller has a capacity record for the cause.
-    //   2. The work kind is in the caller's declared kinds (and the
-    //      optional `kind` argument, treated here as a strict filter
-    //      rather than the soft preference PRD §Capacity and assignment (request_assignment) describes —
-    //      v0 simplification; the soft path lands when expertise-fit
-    //      logic does).
-    //   3. Outstanding assignments (offered + accepted) for the
-    //      caller in this cause are below the rate cap (PRD §Capacity and assignment:
-    //      "rate caps how many will be granted in a window"; v0
-    //      windows are "currently outstanding").
+    //   1. Single-slot: the caller holds no unresolved (offered or
+    //      accepted) assignment in this cause. This subsumes the old
+    //      capacity rate cap entirely — over-pull is impossible without
+    //      trusting client behavior, and frontier starvation becomes a
+    //      non-property rather than a tuned bound. A held slot whose
+    //      precondition has lapsed is auto-resolved here (lazily, no
+    //      scheduler) before the gate is evaluated, so a contributor is
+    //      never wedged by a slot that can no longer be completed.
+    //   2. Reputation gates (`assignment_min_recent` /
+    //      `assignment_min_demonstrated`, PRD §Reputation).
+    //   3. `kind`, when supplied, is a strict per-kind filter — not a
+    //      soft preference and not an expertise signal (PRD §Write-path
+    //      tools, "No expertise routing": every task is a corpus task
+    //      any contributor can pull).
     //   4. Caller isn't the proposer of a needs_review task — same
     //      conflict-of-interest invariant cast_review_vote enforces.
-    //   5. Caller doesn't already hold an outstanding assignment for
-    //      this same task target — no double-offer per contributor.
     //
     // The same review task may be offered to multiple contributors
     // simultaneously (PRD §Reviewer assignment: N reviewers per
-    // proposal); cross-contributor exclusion is not enforced here.
+    // proposal); cross-contributor exclusion is not enforced here. A
+    // frontier item whose covering slot is past its `ttl_at` re-enters
+    // the frontier and the assignment minted here carries `shadow_of`
+    // pointing at the original slot — TTL-as-shadow-reassignment (PRD
+    // §Write-path tools, "Assignment"), driven lazily by the next
+    // caller rather than a curator expiry sweep.
     requestAssignment: async (
       caller: Caller,
       input: RequestAssignmentInput,
@@ -1708,12 +1797,24 @@ export class Server {
       this.accountWriteAction(identity);
       this.requireActiveCause(parsed.cause_id);
 
-      const capacity = this.store.capacities.get(`${identity.id}|${parsed.cause_id}`);
-      if (!capacity) {
-        throw new ServerError(
-          'invalid_state',
-          `no capacity declared for cause ${parsed.cause_id} — call set_capacity first`,
-        );
+      // Single-slot enforcement (PRD §Write-path tools, "Assignment").
+      // Walk the caller's assignments in this cause once: lazily resolve
+      // any whose precondition has lapsed, then refuse the pull if an
+      // unresolved slot remains. A `shadow_of` assignment counts as the
+      // backup holder's working slot just like a directly-pulled one —
+      // it is work in hand, not a second slot.
+      const callerAssignmentsForTarget: Assignment[] = [];
+      for (const a of this.store.assignments.values()) {
+        if (a.contributor_id !== identity.id) continue;
+        if (this.causeOfTask(a.task) !== parsed.cause_id) continue;
+        const resolved = this.lapseIfPreconditionGone(a);
+        callerAssignmentsForTarget.push(resolved);
+        if (resolved.status === 'accepted') {
+          throw new ServerError(
+            'invalid_state',
+            `single-slot: ${identity.id} already holds an unresolved assignment (${resolved.id}, ${resolved.status}) in cause ${parsed.cause_id} — fulfill or let it resolve before pulling another`,
+          );
+        }
       }
 
       // Reputation gates (PRD §Reputation). Two thresholds compose at
@@ -1780,73 +1881,13 @@ export class Server {
         }
       }
 
-      // Decline-pattern assignment gate (PRD §Capacity and assignment).
-      // PRD commits two surfaces on the same per-(cause, reviewer)
-      // cumulative-rate signal: the curator-side `declinePatterns`
-      // projection (visibility) and this gate (operational
-      // enforcement). The gate fires at the same seam as the rep
-      // gates. The first defense knob for the multi-proposal coalition
-      // seam: the seam evades the cluster signal by paired-decline (no
-      // co-voting → no shared history → no edge metric to fire), and
-      // every decline burns budget against this gate. Same null-policy
-      // as the recent gate — callers below the `min_offers` floor
-      // bypass — and the contributor-initiated review path
-      // (cast_review_vote without assignment_id) doesn't traverse here,
-      // so a contributor whose decline rate has spiked retains the
-      // recovery path PRD §Capacity and assignment names ("Declining
-      // individual assignments is non-punitive on its own"). Refusal
-      // mode mirrors the rep gates: `not_found` so the contributor-
-      // facing surface stays structurally indistinguishable from "no
-      // work available." Default 1.0 / 1 leaves the gate inert.
-      if (this.review.assignment_max_decline_rate < 1.0) {
-        let offers = 0;
-        let declines = 0;
-        for (const a of this.store.assignments.values()) {
-          if (a.contributor_id !== identity.id) continue;
-          if (this.causeOfTask(a.task) !== parsed.cause_id) continue;
-          offers += 1;
-          if (a.status === 'declined') declines += 1;
-        }
-        if (offers >= this.review.assignment_decline_min_offers && offers > 0) {
-          const declineRate = declines / offers;
-          if (declineRate > this.review.assignment_max_decline_rate) {
-            throw new ServerError(
-              'not_found',
-              `decline rate above assignment threshold (${declineRate.toFixed(4)} > ${this.review.assignment_max_decline_rate}) for ${identity.id} in cause ${parsed.cause_id} (${declines}/${offers})`,
-            );
-          }
-        }
-      }
-
-      // Rate cap: count outstanding (offered + accepted) assignments
-      // owned by this caller in this cause. Submitted/declined/expired
-      // don't count — they've left the rate window.
-      let outstanding = 0;
-      const callerAssignmentsForTarget: Assignment[] = [];
-      for (const a of this.store.assignments.values()) {
-        if (a.contributor_id !== identity.id) continue;
-        const aCause = this.causeOfTask(a.task);
-        if (aCause !== parsed.cause_id) continue;
-        if (a.status === 'offered' || a.status === 'accepted') outstanding += 1;
-        callerAssignmentsForTarget.push(a);
-      }
-      if (outstanding >= capacity.rate) {
-        throw new ServerError(
-          'invalid_state',
-          `rate cap reached: ${outstanding}/${capacity.rate} outstanding assignments`,
-        );
-      }
-
-      const allowedKinds = new Set<WorkKind>(capacity.kinds);
-      if (parsed.kind && !allowedKinds.has(parsed.kind)) {
-        throw new ServerError(
-          'invalid_input',
-          `requested kind ${parsed.kind} is not in declared capacity kinds`,
-        );
-      }
+      // `kind` is a strict per-kind filter when supplied (PRD
+      // §Write-path tools): not a soft preference, not an expertise
+      // signal. Absent, every assignable work kind is in scope — there
+      // is no declared-kinds set to intersect with anymore.
       const wantedKinds: ReadonlySet<WorkKind> = parsed.kind
         ? new Set<WorkKind>([parsed.kind])
-        : allowedKinds;
+        : new Set<WorkKind>(WorkKind.options);
 
       // Calibration injection. PRD §Calibration batches + §Why assignment-driven contribution closes several attack surfaces:
       // calibration items arrive on the same assignment surface as real
@@ -1877,9 +1918,10 @@ export class Server {
               id: this.idGen.assignmentId(),
               contributor_id: identity.id,
               task: calTask,
-              status: 'offered',
+              status: 'accepted',
               created_at: now,
               updated_at: now,
+              ...this.ttlStamp(now),
             };
             this.store.assignments.set(assignment.id, assignment);
             return { assignment_id: assignment.id, task: calTask };
@@ -1933,7 +1975,7 @@ export class Server {
               for (const a of this.store.assignments.values()) {
                 if (a.task.kind !== 'review') continue;
                 if (a.task.proposal_id !== target.id) continue;
-                if (a.status !== 'offered' && a.status !== 'accepted') continue;
+                if (a.status !== 'accepted') continue;
                 routedReviewers.add(a.contributor_id);
               }
               for (const v of this.store.reviewVotes.values()) {
@@ -1951,32 +1993,38 @@ export class Server {
           }
         }
 
-        // No double-offer: skip items where the caller already holds
-        // an outstanding (offered/accepted) assignment for the same
-        // target. Submitted assignments are fine — that's a different
-        // proposal that will land separately. Declined assignments
-        // also block re-offer to the same contributor: PRD §Capacity and assignment (decline)
-        // expects the system to respect "outside my wheelhouse" as a
-        // stable signal, not retry the same target on the same
-        // contributor in a loop. Different contributors get the
-        // target offered independently.
+        // Don't re-offer a target this caller already delivered. The
+        // single-slot gate above guarantees the caller holds no
+        // unresolved assignment, so the only same-target history that
+        // can exist here is a terminal one: `submitted` (already
+        // delivered — skip) or `lapsed` (precondition gone or lost a
+        // TTL-shadow race — re-offering is fine, the frontier already
+        // re-derived it). Different contributors get the target offered
+        // independently.
         const taskKey = assignmentTaskKey(task);
-        const alreadySeen = callerAssignmentsForTarget.some(
-          (a) =>
-            a.status !== 'expired' &&
-            a.status !== 'submitted' &&
-            assignmentTaskKey(a.task) === taskKey,
+        const alreadyDelivered = callerAssignmentsForTarget.some(
+          (a) => a.status === 'submitted' && assignmentTaskKey(a.task) === taskKey,
         );
-        if (alreadySeen) continue;
+        if (alreadyDelivered) continue;
 
+        // TTL-as-shadow (PRD §Write-path tools, "Assignment"). If the
+        // frontier re-exposed this target only because another
+        // contributor's covering slot went past its `ttl_at`, the
+        // assignment minted here is a shadow re-offer: it points at the
+        // original slot via `shadow_of`, and whichever of the two
+        // resolves first releases both (`fulfillAssignment`). A target
+        // with no past-TTL covering slot mints an ordinary first offer.
+        const shadowed = this.staleCoveringSlot(task);
         const now = this.clock.now();
         const assignment: Assignment = {
           id: this.idGen.assignmentId(),
           contributor_id: identity.id,
           task,
-          status: 'offered',
+          status: 'accepted',
           created_at: now,
           updated_at: now,
+          ...(shadowed ? { shadow_of: shadowed.id } : {}),
+          ...this.ttlStamp(now),
         };
         this.store.assignments.set(assignment.id, assignment);
         return { assignment_id: assignment.id, task };
@@ -1986,70 +2034,6 @@ export class Server {
         'not_found',
         `no eligible frontier item for ${identity.id} in cause ${parsed.cause_id}`,
       );
-    },
-
-    // PRD §Capacity and assignment (accept_assignment): accept_assignment moves
-    // an offered assignment to `accepted`. Idempotent under the same
-    // contributor: re-accepting an already-accepted assignment is a
-    // no-op error rather than silent — the contributor likely
-    // miscounts their queue.
-    acceptAssignment: async (
-      caller: Caller,
-      input: AcceptAssignmentInput,
-    ): Promise<AcceptAssignmentOutput> => {
-      const parsed = AcceptAssignmentInput.parse(input);
-      const { identity } = resolveCaller(this.store, caller);
-      this.requireMinAttestation(identity);
-      this.accountWriteAction(identity);
-      const a = this.requireOwnedAssignment(parsed.assignment_id, identity.id);
-      const now = this.clock.now();
-      this.store.assignments.set(a.id, { ...a, status: 'accepted', updated_at: now });
-      return { ok: true };
-    },
-
-    // PRD §Capacity and assignment (decline_assignment): decline_assignment
-    // moves an offered assignment to `declined`. Reason is required
-    // and persisted — pattern-decline surfaces to the curator-side
-    // `declinePatterns` projection (PRD §Verification engine, Rate
-    // limits and abuse signals: "suspicious patterns ... flag for
-    // curator review") where the reason is what a curator inspects
-    // when a pattern surfaces; the assignment-time
-    // `assignment_max_decline_rate` gate reads only the cumulative
-    // rate (PRD §Capacity and assignment), so the reason stays
-    // curator-facing by construction. Declining individual
-    // assignments is explicitly non-punitive on its own (PRD
-    // §Capacity and assignment (decline)). An `accepted` assignment is
-    // declinable too: a contributor who accepted and then can't
-    // deliver (the task turned out beyond them, or their client wedged
-    // mid-fulfillment) bails the same way rather than stranding the
-    // slot — the target frees up for another contributor, and the
-    // decline counts toward the same cumulative-rate gate, so an
-    // accept-then-decline churn pattern surfaces exactly like a
-    // bare-decline pattern. (Stale `accepted` assignments a wedged
-    // client never declines at all are the residual case
-    // `curator.expireStaleAssignments` reclaims — non-punitively,
-    // since "went silent" is the curator's signal to weigh, not the
-    // decline channel's.)
-    declineAssignment: async (
-      caller: Caller,
-      input: DeclineAssignmentInput,
-    ): Promise<DeclineAssignmentOutput> => {
-      const parsed = DeclineAssignmentInput.parse(input);
-      const { identity } = resolveCaller(this.store, caller);
-      this.requireMinAttestation(identity);
-      this.accountWriteAction(identity);
-      const a = this.requireOwnedAssignment(parsed.assignment_id, identity.id, [
-        'offered',
-        'accepted',
-      ]);
-      const now = this.clock.now();
-      this.store.assignments.set(a.id, {
-        ...a,
-        status: 'declined',
-        decline_reason: parsed.reason,
-        updated_at: now,
-      });
-      return { ok: true };
     },
 
     // PRD §Write-path tools: propose_anchor stages an anchor proposal.
@@ -2588,6 +2572,11 @@ export class Server {
     // required rationale. With assignment_id set, the vote fulfills a
     // review-kind assignment and accrues full assigned-review reputation;
     // without it, the review is contributor-initiated and weighted lower.
+    // Under single-slot the contributor-initiated form is also refused
+    // while the caller holds an unresolved assignment in the proposal's
+    // cause (it is off-slot work; the held slot must be fulfilled or
+    // resolved first) — this is what keeps an assigned reviewer who omits
+    // assignment_id from stranding its sole slot.
     // Self-review is rejected as a conflict-of-interest invariant: the
     // whole point of redundant peer review is that a contributor's own
     // claim be evaluated by other reviewers (PRD §Reviewer assignment
@@ -2646,10 +2635,10 @@ export class Server {
 
       // If the reviewer asserts assignment fulfillment, the assignment
       // must exist, belong to them, target this proposal, and be in a
-      // state that admits fulfillment. Until the assignment-creation
-      // tools land (set_capacity, request_assignment), no assignment_id
-      // will resolve — which is the correct behavior: a reviewer can't
-      // claim assignment credit for an assignment that doesn't exist.
+      // state that admits fulfillment. Without a prior
+      // `request_assignment`, no assignment_id will resolve — which is
+      // the correct behavior: a reviewer can't claim assignment credit
+      // for an assignment that doesn't exist.
       if (parsed.assignment_id) {
         const assignment = this.store.assignments.get(parsed.assignment_id);
         if (!assignment) {
@@ -2673,11 +2662,26 @@ export class Server {
             `assignment ${assignment.id} targets a different proposal`,
           );
         }
-        if (assignment.status !== 'accepted' && assignment.status !== 'offered') {
+        if (assignment.status !== 'accepted') {
           throw new ServerError(
             'invalid_state',
             `assignment ${assignment.id} is ${assignment.status}`,
           );
+        }
+      }
+
+      // Single-slot off-slot guard, shared with the `propose_*` path —
+      // see `assertNoHeldSlot`. A contributor-initiated review (no
+      // assignment_id) is off-slot work; refuse it while the caller
+      // holds a slot in this proposal's cause (curator-gated kinds carry
+      // no cause → undefined → no guard).
+      if (!parsed.assignment_id) {
+        const proposalCause = this.locateProposalForReview(proposal)?.cause_id;
+        if (proposalCause) {
+          this.assertNoHeldSlot(identity.id, proposalCause, {
+            action: 'review',
+            votingOnProposalId: proposal.id,
+          });
         }
       }
 
@@ -2733,7 +2737,7 @@ export class Server {
         // would be a category error: there's no contention to
         // measure on a single calibration vote, and the calibration
         // signal's whole point is to be a clean honesty channel
-        // independent of the convergence-tally seam. Cube #5 (the
+        // independent of the convergence-tally seam. Cube #3 (the
         // alpha re-baseline) reads off this distinction: the recent
         // gate's threshold survives alpha < 1 because the recent
         // buffer's quiet-window decay is dominated by alpha-
@@ -3398,32 +3402,8 @@ export class Server {
       return { proposals };
     },
 
-    // Per-(cause, reviewer) cumulative decline rate. Same projection
-    // shape (and same small-sample floor) as the
-    // `curator_decline_patterns` MCP tool returns; the in-process
-    // namespace is the single computation path.
-    getCuratorDeclinePatterns: async (
-      caller: Caller,
-      causeId: CauseId,
-      options?: { min_offers?: number; min_rate?: number },
-    ): Promise<{
-      entries: Array<{
-        identity_id: IdentityId;
-        offers: number;
-        declines: number;
-        decline_rate: number;
-      }>;
-    }> => {
-      this.requireCurator(caller);
-      const inner: { min_offers?: number; min_rate?: number } = {};
-      if (options?.min_offers !== undefined) inner.min_offers = options.min_offers;
-      if (options?.min_rate !== undefined) inner.min_rate = options.min_rate;
-      const entries = this.curator.declinePatterns(causeId, inner);
-      return { entries };
-    },
-
-    // Cross-cause identity-clustering projection. Same delegation
-    // pattern as `getCuratorDeclinePatterns`.
+    // Cross-cause identity-clustering projection. Delegates to the
+    // in-process curator namespace, the single computation path.
     getCuratorIdentityClusters: async (
       caller: Caller,
       options?: { window_seconds?: number; min_signal?: number },
@@ -3610,90 +3590,10 @@ export class Server {
       });
     },
 
-    // PRD §Sub-topic creation: "Curator accepts as `active`,
-    // defers as `proposed`, or rejects." This is the deferral path —
-    // the curator has decided to record the sub-topic but hold off on
-    // activation pending more evidence (corpus density, articulable
-    // scope envelope, real audience). The SubTopic is materialized
-    // with status `proposed`; a future curator action flips it to
-    // `active` without going through the proposal system again. The
-    // proposal itself is marked accepted because the curator has
-    // resolved it — `proposed` is a SubTopic state, not a Proposal
-    // state. Only sub_topic-kind proposals are deferrable.
-    // Decline-pattern projection (PRD §Adversary testbed: "Decline-
-    // pattern abuse — declining everything outside the adversary's
-    // preferred sub-topic ... Decline-tracking + curator escalation
-    // handle this"). Per-(cause, reviewer) decline counts and rates,
-    // sorted by rate descending. Curator-side surface: PRD commits to
-    // pattern-decline as an abuse signal handled at the curator layer
-    // (PRD §Verification engine, Rate limits and abuse signals — also referenced from
-    // decline_assignment), and the "specific signals are operationally
-    // private" line keeps the threshold and exact projection shape out
-    // of the public API. Caller-passed `min_offers` filters out
-    // small-sample noise; `min_rate` filters out reviewers who decline
-    // occasionally for legitimate reasons. Default min_offers=3 (below
-    // which decline-rate is meaningless) and min_rate=0 (return
-    // everyone above the offer floor; the curator decides what
-    // constitutes a pattern).
-    declinePatterns: (
-      causeId: CauseId,
-      options?: { min_offers?: number; min_rate?: number },
-    ): Array<{
-      identity_id: IdentityId;
-      offers: number;
-      declines: number;
-      decline_rate: number;
-    }> => {
-      const minOffers = options?.min_offers ?? 3;
-      const minRate = options?.min_rate ?? 0;
-      const perReviewer = new Map<IdentityId, { offers: number; declines: number }>();
-      for (const a of this.store.assignments.values()) {
-        // Cause is on the task for propose-kind assignments and on
-        // the targeted proposal's home sub-topic for review-kind
-        // assignments. Skip assignments whose cause can't be resolved
-        // (orphaned by a deleted proposal — defensive only; v0
-        // proposals are not deleted).
-        let aCauseId: CauseId | undefined;
-        if (a.task.kind === 'review') {
-          const p = this.store.proposals.get(a.task.proposal_id);
-          aCauseId = p ? this.locateProposalForReview(p)?.cause_id : undefined;
-        } else {
-          aCauseId = a.task.cause_id;
-        }
-        if (aCauseId !== causeId) continue;
-        let rec = perReviewer.get(a.contributor_id);
-        if (!rec) {
-          rec = { offers: 0, declines: 0 };
-          perReviewer.set(a.contributor_id, rec);
-        }
-        rec.offers += 1;
-        if (a.status === 'declined') rec.declines += 1;
-      }
-      const result: Array<{
-        identity_id: IdentityId;
-        offers: number;
-        declines: number;
-        decline_rate: number;
-      }> = [];
-      for (const [identity_id, { offers, declines }] of perReviewer) {
-        if (offers < minOffers) continue;
-        const decline_rate = declines / offers;
-        if (decline_rate < minRate) continue;
-        result.push({ identity_id, offers, declines, decline_rate });
-      }
-      // Stable sort: rate desc, then identity_id asc as tiebreaker.
-      result.sort((a, b) => {
-        if (b.decline_rate !== a.decline_rate) return b.decline_rate - a.decline_rate;
-        return a.identity_id < b.identity_id ? -1 : a.identity_id > b.identity_id ? 1 : 0;
-      });
-      return result;
-    },
-
     // Cross-cause identity-clustering projection (PRD §Identity
     // bullet 4) — the fourth of the four sybil-resistance layers.
     // Surfaces identity pairs whose behavioral fingerprint *across
-    // causes* suggests coordination, parallel to `declinePatterns`
-    // but on a different signal: per-(reviewer pair) count of
+    // causes* suggests coordination: per-(reviewer pair) count of
     // distinct causes where both reviewers cast votes on the same
     // proposal. Honest reviewers typically work in one cause
     // (per-cause reputation; PRD §Reputation), so a pair appearing
@@ -3720,15 +3620,8 @@ export class Server {
     // is the rolling window over vote `created_at`, undefined or
     // Infinity means all-time. Specific signals and thresholds
     // remain operationally private at the production instance per
-    // PRD §Identity bullet 4 ("operationally private"), the same
-    // posture as `declinePatterns`'s small-sample floor: methodology
+    // PRD §Identity bullet 4 ("operationally private"): methodology
     // is public, tuning is not.
-    //
-    // Currently surveys vote co-occurrence; declines are first-class
-    // encounters in the cluster-stratification primitive
-    // (PRD §Reviewer assignment, `stratum_include_declines`) and
-    // adding them here is a follow-up refinement that broadens the
-    // co-engagement notion without changing the surface shape.
     identityClusters: (options?: {
       window_seconds?: number;
       min_signal?: number;
@@ -3877,60 +3770,16 @@ export class Server {
       return archived;
     },
 
-    // Stale-assignment expiry sweep — the reclaim path for the
-    // residual wedged-client case PRD §Capacity and assignment names:
-    // a contributor who pulled an assignment (`offered`) or accepted
-    // it (`accepted`) and then went silent without ever submitting or
-    // declining strands the target. The anchor stays out of the orphan
-    // frontier (`deriveFrontier` treats an in-flight excerpt assignment
-    // as work-covered), a review slot stays held — and
-    // `decline_assignment` is the bail-out a *responsive* client uses,
-    // not one a wedged client ever reaches. This sweep transitions any
-    // `offered` or `accepted` assignment whose last activity
-    // (`updated_at`) is older than `window_seconds` to `expired`, which
-    // `request_assignment` and `deriveFrontier` already treat as "slot
-    // released": the target is re-offerable — to other contributors
-    // and, since a recovered client is a legitimate worker, to the
-    // original contributor too (`expired` does not block re-offer the
-    // way `declined` does) — and an anchor with no remaining in-flight
-    // excerpt assignment re-enters the orphan frontier.
-    //
-    // Expiry is *not* a decline: the assignment carries no reason and
-    // does not count toward the `assignment_max_decline_rate` gate or
-    // the `declinePatterns` projection (both key on `status ===
-    // 'declined'`). A chronically-wedged client is a real signal, but
-    // it is the curator's to read off expiry volume directly, not one
-    // this sweep folds into the decline channel — conflating "couldn't
-    // deliver, said so" with "went silent" would mislead the decline-
-    // pattern surface, which exists to flag deliberate cherry-picking.
-    //
-    // Curator-triggered, same posture as `archiveStaleProposals`:
-    // production likely runs it on a scheduler, but the trigger is
-    // operationally private and testbed-tunable. Returns the expired
-    // assignment ids so callers can audit. cause_id is an optional
-    // per-cause filter (an assignment whose cause cannot be located —
-    // a review task pointing at a vanished proposal — is skipped when
-    // the filter is set, included when it isn't).
-    expireStaleAssignments: (options: {
-      window_seconds: number;
-      cause_id?: CauseId;
-    }): AssignmentId[] => {
-      if (options.window_seconds <= 0) return [];
-      const now = this.clock.now();
-      const cutoffMs = Date.parse(now) - options.window_seconds * 1000;
-      const expired: AssignmentId[] = [];
-      for (const a of this.store.assignments.values()) {
-        if (a.status !== 'offered' && a.status !== 'accepted') continue;
-        if (Date.parse(a.updated_at) > cutoffMs) continue; // recent activity
-        if (options.cause_id !== undefined && this.causeOfTask(a.task) !== options.cause_id) {
-          continue;
-        }
-        this.store.assignments.set(a.id, { ...a, status: 'expired', updated_at: now });
-        expired.push(a.id);
-      }
-      return expired;
-    },
-
+    // PRD §Sub-topic creation: "Curator accepts as `active`, defers as
+    // `proposed`, or rejects." This is the deferral path — the curator
+    // has decided to record the sub-topic but hold off on activation
+    // pending more evidence (corpus density, articulable scope
+    // envelope, real audience). The SubTopic is materialized with
+    // status `proposed`; a future curator action flips it to `active`
+    // without going through the proposal system again. The proposal
+    // itself is marked accepted because the curator has resolved it —
+    // `proposed` is a SubTopic state, not a Proposal state. Only
+    // sub_topic-kind proposals are deferrable.
     deferSubTopic: (proposalId: ProposalId): { sub_topic_id: SubTopicId } => {
       const proposal = this.store.proposals.get(proposalId);
       if (!proposal) {
@@ -4487,12 +4336,10 @@ export class Server {
   // production move once pool sizes warrant it.
   private computeReviewerStrata(causeId: CauseId, subTopicId: SubTopicId): Map<IdentityId, string> {
     // Per-reviewer encounter history scoped to (cause, sub-topic):
-    // proposal_id -> 'accept' | 'reject' | 'decline'. Built from review
-    // votes (and, when stratum_include_declines is on, from declined
-    // review-kind assignments). Use the same locateProposalForReview
-    // routing the rest of the server uses so membership-cause-routing
-    // stays consistent.
-    type EncounterDecision = 'accept' | 'reject' | 'decline';
+    // proposal_id -> 'accept' | 'reject'. Built from review votes. Use
+    // the same locateProposalForReview routing the rest of the server
+    // uses so membership-cause-routing stays consistent.
+    type EncounterDecision = 'accept' | 'reject';
     const reviewerEncounters = new Map<IdentityId, Map<ProposalId, EncounterDecision>>();
     for (const v of this.store.reviewVotes.values()) {
       const proposal = this.store.proposals.get(v.proposal_id);
@@ -4517,50 +4364,13 @@ export class Server {
       perReviewer.set(v.proposal_id, v.decision);
     }
 
-    // Decline encounters when the knob is on. PRD §Reviewer assignment
-    // commits paired-decline coalitions as a vote-only-cluster-evading
-    // pattern; widening the encounter domain to include declines reads
-    // (vote, decline) and (decline, vote) as pair-disagreement under
-    // the existing anti-correlation primitive, closing the seam by
-    // construction. A real vote takes priority over a decline on the
-    // same (reviewer, proposal) — `perReviewer.has(...)` guards the
-    // overwrite. Both halves of the gate (cause, sub-topic routing,
-    // and revise-style filtering) already happened above for the
-    // vote-side; the same routing applies here via the assignment's
-    // task and the resolved proposal.
-    if (this.review.stratum_include_declines) {
-      for (const a of this.store.assignments.values()) {
-        if (a.status !== 'declined') continue;
-        if (a.task.kind !== 'review') continue;
-        const proposal = this.store.proposals.get(a.task.proposal_id);
-        if (!proposal) continue;
-        const route = this.locateProposalForReview(proposal);
-        if (!route) continue;
-        if (route.cause_id !== causeId) continue;
-        if (route.sub_topic_id !== subTopicId) continue;
-        let perReviewer = reviewerEncounters.get(a.contributor_id);
-        if (!perReviewer) {
-          perReviewer = new Map();
-          reviewerEncounters.set(a.contributor_id, perReviewer);
-        }
-        if (perReviewer.has(a.task.proposal_id)) continue;
-        perReviewer.set(a.task.proposal_id, 'decline');
-      }
-    }
-
     // Per-proposal vote tallies, used to compute contention weights
-    // when stratum_contention_weighted is on. We tally over (cause,
-    // sub-topic)-scoped accept/reject encounters only — declines do
-    // not enter the contention denominator because the underweighting
-    // they'd cause is precisely the issue the decline-involved-full-
-    // weight rule below works around. Same iteration domain as the
-    // pair loop's vote-vote half; computed once outside the O(N²) pair
-    // loop.
+    // when stratum_contention_weighted is on. Same iteration domain as
+    // the pair loop; computed once outside the O(N²) pair loop.
     const proposalTally = new Map<ProposalId, { accepts: number; rejects: number }>();
     if (this.review.stratum_contention_weighted) {
       for (const perReviewer of reviewerEncounters.values()) {
         for (const [pid, decision] of perReviewer) {
-          if (decision === 'decline') continue;
           let t = proposalTally.get(pid);
           if (!t) {
             t = { accepts: 0, rejects: 0 };
@@ -4588,29 +4398,6 @@ export class Server {
         if (!b) continue;
         const vb = reviewerEncounters.get(b);
         if (!vb) continue;
-        // Pre-pass: count decline-involved shared encounters between
-        // the pair so the contention-weighting branch can apply the
-        // paired-decline floor. Without the floor, a single asymmetric
-        // decline-involved encounter contributes weight 1 to a pair
-        // whose vote-vote agreements all sit at contention 0, and the
-        // pair's weighted-disagreement ratio collapses to 1.0 against
-        // an honest pair that shared no coalition signal. Counted in a
-        // small first pass rather than threaded through the main
-        // weighting loop because the decision is per-pair, not per-
-        // encounter, and the encounter loop already does enough work.
-        // Only computed when both knobs are on; under raw or vote-only
-        // weighting the floor has no effect.
-        let pairDeclineInvolved = 0;
-        if (this.review.stratum_contention_weighted && this.review.stratum_include_declines) {
-          for (const [pid, decisionA] of va) {
-            const decisionB = vb.get(pid);
-            if (!decisionB) continue;
-            if (decisionA === 'decline' || decisionB === 'decline') {
-              pairDeclineInvolved += 1;
-            }
-          }
-        }
-        const declineFloorMet = pairDeclineInvolved >= this.review.stratum_decline_min_paired;
         let shared = 0;
         let agreed = 0;
         let weightedShared = 0;
@@ -4622,39 +4409,19 @@ export class Server {
           const agree = decisionA === decisionB;
           if (agree) agreed += 1;
           if (this.review.stratum_contention_weighted) {
-            const involvesDecline = decisionA === 'decline' || decisionB === 'decline';
-            if (involvesDecline) {
-              // Decline-involved encounters are inherently contentious
-              // — opting out is informative independent of the rest of
-              // the pool's split on the proposal. Counting them at full
-              // weight (=1) keeps the paired-decline closure load-bearing
-              // even when contention-weighting is on; the alternative
-              // (using the vote-only tally) would silently zero out the
-              // signal on targets that have only a single lone vote.
-              // The paired-decline floor (stratum_decline_min_paired)
-              // gates the full-weight rule on the pair having enough
-              // decline-involved encounters to look like coordinated
-              // routing rather than a single asymmetric decline; below
-              // the floor the encounter contributes 0 weight, and the
-              // pair stays decline-blind for cluster purposes.
-              if (!declineFloorMet) continue;
-              weightedShared += 1;
-              if (agree) weightedAgreed += 1;
-            } else {
-              const tally = proposalTally.get(pid);
-              if (tally) {
-                const total = tally.accepts + tally.rejects;
-                if (total > 0) {
-                  const minor = Math.min(tally.accepts, tally.rejects);
-                  // Contention in [0,1]: 0 when unanimous, 1 at perfect
-                  // split. Captures how informative this shared vote is
-                  // about coalition signal — agreement on uncontentious
-                  // proposals carries no weight, agreement on split-pool
-                  // proposals carries the most.
-                  const contention = (2 * minor) / total;
-                  weightedShared += contention;
-                  if (agree) weightedAgreed += contention;
-                }
+            const tally = proposalTally.get(pid);
+            if (tally) {
+              const total = tally.accepts + tally.rejects;
+              if (total > 0) {
+                const minor = Math.min(tally.accepts, tally.rejects);
+                // Contention in [0,1]: 0 when unanimous, 1 at perfect
+                // split. Captures how informative this shared vote is
+                // about coalition signal — agreement on uncontentious
+                // proposals carries no weight, agreement on split-pool
+                // proposals carries the most.
+                const contention = (2 * minor) / total;
+                weightedShared += contention;
+                if (agree) weightedAgreed += contention;
               }
             }
           }
@@ -4725,32 +4492,36 @@ export class Server {
     return strata.get(identityId) ?? `singleton:${identityId}`;
   }
 
-  // Eligible-pool snapshot for a proposal: every identity that has
-  // declared cause-level capacity covering review work, minus the
-  // proposer (PRD §Reviewer assignment conflict-of-interest invariant
-  // mirrored from cast_review_vote). Used by the stratification-
-  // degraded check to count reachable strata.
+  // Eligible-pool snapshot for a proposal: every identity holding a
+  // reputation entry in the proposal's cause, minus the proposer (PRD
+  // §Reviewer assignment conflict-of-interest invariant mirrored from
+  // cast_review_vote). With no capacity declarations (PRD §Write-path
+  // tools, "Assignment") and no expertise routing, cause-level
+  // participation is exactly "has accrued any reputation here" — the
+  // population from which the system draws review work. Used by the
+  // stratification-degraded check to count reachable strata.
   //
   // Doesn't filter on rep tier — the rep gates
   // (`assignment_min_recent`, `assignment_min_demonstrated`) consume
   // rep at `request_assignment`, not here. Stratification-degraded
-  // measures pool *diversity* across the cause-level review-capacity
-  // declarations: whether the pool could have been diverse, not who
-  // currently clears the rep gate. A contributor who would fail the
-  // rep gate today but later bootstraps past it still counts toward
-  // diversity. Doesn't filter out identities who already voted,
-  // either — their vote already counted, and the diversity question
-  // is about whether the *pool* could have been diverse, not about
-  // who is still pullable right now.
+  // measures pool *diversity*: whether the pool could have been
+  // diverse, not who currently clears the rep gate. A contributor who
+  // would fail the rep gate today but later bootstraps past it still
+  // counts toward diversity. Doesn't filter out identities who already
+  // voted, either — their vote already counted, and the diversity
+  // question is about whether the *pool* could have been diverse, not
+  // about who is still pullable right now.
   private eligibleReviewerPool(proposal: Proposal): IdentityId[] {
     const route = this.locateProposalForReview(proposal);
     if (!route) return [];
+    const seen = new Set<IdentityId>();
     const pool: IdentityId[] = [];
-    for (const cap of this.store.capacities.values()) {
-      if (cap.cause_id !== route.cause_id) continue;
-      if (!cap.kinds.includes('review')) continue;
-      if (cap.identity_id === proposal.proposer_id) continue;
-      pool.push(cap.identity_id);
+    for (const r of this.store.reputations.values()) {
+      if (r.cause_id !== route.cause_id) continue;
+      if (r.identity_id === proposal.proposer_id) continue;
+      if (seen.has(r.identity_id)) continue;
+      seen.add(r.identity_id);
+      pool.push(r.identity_id);
     }
     return pool;
   }

@@ -77,9 +77,9 @@ async function wireMcpClient(server: Server, identityId: string): Promise<Client
   return client;
 }
 
-// A tiny scripted "model": set_capacity → request_assignment → done.
-// Three turns, three Messages-API round-trips — enough that turn 2's
-// tool result (a server-minted assignment) flows back into turn 3's
+// A tiny scripted "model": request_assignment → query_frontier → done.
+// Three turns, three Messages-API round-trips — enough that turn 1's
+// tool result (a server-minted assignment) flows back into turn 2's
 // request body, so the round-trip exercises id-threading, not just
 // stateless calls.
 function scriptedFetch(causeId: string): FetchLike {
@@ -102,8 +102,8 @@ function scriptedFetch(causeId: string): FetchLike {
           {
             type: 'tool_use',
             id: 'tu_1',
-            name: 'set_capacity',
-            input: { cause_id: causeId, rate: 5, kinds: ['excerpt'] },
+            name: 'request_assignment',
+            input: { cause_id: causeId },
           },
         ],
         'tool_use',
@@ -115,7 +115,7 @@ function scriptedFetch(causeId: string): FetchLike {
           {
             type: 'tool_use',
             id: 'tu_2',
-            name: 'request_assignment',
+            name: 'query_frontier',
             input: { cause_id: causeId },
           },
         ],
@@ -131,7 +131,7 @@ function runConfig(causeId: string, fetch: FetchLike) {
     apiKey: 'cassette-test-no-key',
     model: 'fake-model',
     system: 'You are an Anchorage contributor.',
-    task: `You are connected to the Anchorage MCP server. Cause id: ${causeId}. Set excerpt capacity, pull a task, then stop.`,
+    task: `You are connected to the Anchorage MCP server. Cause id: ${causeId}. Pull a task, check the frontier, then stop.`,
     max_turns: 8,
     fetch,
   };
@@ -157,7 +157,7 @@ describe('cassette record/replay through runLlmAgent', () => {
     expect(entries.length).toBe(3);
     expect(recResult.stop_reason).toBe('end_turn');
     const recShape = transcriptShape(recResult.turns);
-    expect(recShape).toEqual(['set_capacity:ok', 'request_assignment:ok']);
+    expect(recShape).toEqual(['request_assignment:ok', 'query_frontier:ok']);
 
     // Replay pass: fresh server, *same seed* → same ids → byte-identical
     // requests → every request hits the cassette. The transport here
@@ -181,9 +181,6 @@ describe('cassette record/replay through runLlmAgent', () => {
     // Server state reached the same place.
     expect([...rep.server.store.assignments.values()].length).toBe(
       [...rec.server.store.assignments.values()].length,
-    );
-    expect([...rep.server.store.capacities.values()].length).toBe(
-      [...rec.server.store.capacities.values()].length,
     );
   });
 
@@ -246,10 +243,10 @@ describe('cassette record/replay through runLlmAgent', () => {
     }
 
     // Record pass: a one-round sequential population. The shared scripted
-    // model is the same set_capacity → request_assignment → stop walk
+    // model is the same request_assignment → query_frontier → stop walk
     // the single-agent test uses; with one orphan anchor and two agents,
     // agent-1 (running first) gets the assignment, agent-2's request
-    // comes back not_found — so the two agents' turn-3 request bodies
+    // comes back not_found — so the two agents' turn-2 request bodies
     // differ, which is exactly the per-agent divergence the cassette has
     // to key on.
     const rec = await seededPopulation('pop-cassette', 2);
@@ -273,8 +270,8 @@ describe('cassette record/replay through runLlmAgent', () => {
       },
     });
     expect(recResult.rounds_run).toBe(1);
-    expect(recTranscripts['agent-1']).toEqual(['set_capacity:ok', 'request_assignment:ok']);
-    expect(recTranscripts['agent-2']).toEqual(['set_capacity:ok', 'request_assignment:err']);
+    expect(recTranscripts['agent-1']).toEqual(['request_assignment:ok', 'query_frontier:ok']);
+    expect(recTranscripts['agent-2']).toEqual(['request_assignment:err', 'query_frontier:ok']);
 
     // Replay pass: fresh population, *same seed* → the same ids minted in
     // the same order → byte-identical request bodies → every request
@@ -304,11 +301,7 @@ describe('cassette record/replay through runLlmAgent', () => {
     expect(transportCalled).toBe(false);
     expect(repResult.rounds_run).toBe(recResult.rounds_run);
     expect(repTranscripts).toEqual(recTranscripts);
-    // Server state reached the same place: both agents declared capacity,
-    // one assignment was handed out.
-    expect([...rep.server.store.capacities.values()].length).toBe(
-      [...rec.server.store.capacities.values()].length,
-    );
+    // Server state reached the same place: one assignment was handed out.
     expect([...rep.server.store.assignments.values()].length).toBe(
       [...rec.server.store.assignments.values()].length,
     );

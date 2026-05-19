@@ -75,8 +75,8 @@ export interface AnchorageReader {
 // path and the curator-console path use different identities even
 // though both run in-process: a curator-role caller backs this
 // reader, and the underlying `server.resources.*` curator-side
-// methods (`getCuratorQueue`, `getCuratorDeclinePatterns`,
-// `getCuratorIdentityClusters`) re-assert the role on every call
+// methods (`getCuratorQueue`, `getCuratorIdentityClusters`,
+// `getCuratorUnresolvableAnchors`) re-assert the role on every call
 // via `requireCurator`. Refuses with the typed `permission_denied`
 // code if a non-curator caller is wired in by configuration error,
 // which the web handler surfaces as 403; the run-prod boot path
@@ -93,19 +93,6 @@ export interface AnchorageCuratorReader {
   // `server.resources.getCuratorQueue` — the moderation queue: every
   // staged proposal, optionally filtered by cause.
   getCuratorQueue(options?: { cause_id?: CauseId }): Promise<{ proposals: Proposal[] }>;
-  // `server.resources.getCuratorDeclinePatterns` — per-reviewer
-  // offer/decline/rate within a cause, small-sample-filtered.
-  getCuratorDeclinePatterns(
-    causeId: CauseId,
-    options?: { min_offers?: number; min_rate?: number },
-  ): Promise<{
-    entries: Array<{
-      identity_id: IdentityId;
-      offers: number;
-      declines: number;
-      decline_rate: number;
-    }>;
-  }>;
   // `server.resources.getCuratorIdentityClusters` — cross-cause
   // identity-clustering projection.
   getCuratorIdentityClusters(options?: { window_seconds?: number; min_signal?: number }): Promise<{

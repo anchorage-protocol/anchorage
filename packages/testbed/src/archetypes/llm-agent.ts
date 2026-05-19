@@ -128,8 +128,8 @@ export interface LlmAgentConfig {
   // here.
   system: string;
   // The opening user-turn message — the concrete task framing ("you
-  // are connected to the Anchorage MCP server; your capacity is set
-  // for cause X; work the frontier").
+  // are connected to the Anchorage MCP server; request an assignment
+  // for cause X; work the frontier one slot at a time").
   task: string;
   // Hard cap on model turns. Each turn is an API round-trip, so this
   // is also the cost ceiling. When hit, the loop stops with

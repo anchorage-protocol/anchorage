@@ -1,10 +1,8 @@
 import type { ExternalRef, QuotedSpan } from '@anchorage/contracts';
 import {
-  AcceptAssignmentOutput,
   type AssignmentId,
   CastReviewVoteOutput,
   type CauseId,
-  DeclineAssignmentOutput,
   FetchCalibrationBatchOutput,
   type NodeId,
   ProposeAnchorOutput,
@@ -20,7 +18,6 @@ import {
   RequestAssignmentOutput,
   type ReviewDecision,
   type ServerErrorCode,
-  SetCapacityOutput,
   type SubTopicId,
   type ToolName,
   type WorkKind,
@@ -92,30 +89,11 @@ function parseErrorPayload(content: unknown): { code?: unknown; message?: unknow
 export class AnchorageClient {
   constructor(private readonly client: Client) {}
 
-  async setCapacity(input: {
-    cause_id: CauseId;
-    rate: number;
-    kinds: WorkKind[];
-  }): Promise<SetCapacityOutput> {
-    return this.call('set_capacity', input, SetCapacityOutput);
-  }
-
   async requestAssignment(input: {
     cause_id: CauseId;
     kind?: WorkKind;
   }): Promise<RequestAssignmentOutput> {
     return this.call('request_assignment', input, RequestAssignmentOutput);
-  }
-
-  async acceptAssignment(input: { assignment_id: AssignmentId }): Promise<AcceptAssignmentOutput> {
-    return this.call('accept_assignment', input, AcceptAssignmentOutput);
-  }
-
-  async declineAssignment(input: {
-    assignment_id: AssignmentId;
-    reason: string;
-  }): Promise<DeclineAssignmentOutput> {
-    return this.call('decline_assignment', input, DeclineAssignmentOutput);
   }
 
   async proposeAnchor(input: {

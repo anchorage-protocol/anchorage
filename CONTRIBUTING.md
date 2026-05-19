@@ -39,7 +39,7 @@ The contributions we want, in priority order:
 
 When the public instance launches, *graph contributions* — proposing nodes, edges, anchors, syntheses, reviews — go through a different path entirely: the in-instance review queue, calibration, and reputation system described in [docs/governance.md](./docs/governance.md). That is the real cooperative-research workflow; this file is about contributing to *the project*, not *to a graph*.
 
-Once a client is added and OAuth completes, the first-use path is `query_causes` (lists the causes this instance hosts and their open sub-topics) → pick a `cause_id` → `set_capacity` → `request_assignment` → fulfill the offered task. The server also returns this sequence as MCP `instructions` at connect, so an agent does not have to discover it (PRD §Read-path tools and resources — *Agent bootstrap*).
+Once a client is added and OAuth completes, the first-use path is `query_causes` (lists the causes this instance hosts and their open sub-topics) → pick a `cause_id` → `request_assignment` → fulfill the offered task. The server also returns this sequence as MCP `instructions` at connect, so an agent does not have to discover it (PRD §Read-path tools and resources — *Agent bootstrap*).
 
 ## Code of Conduct
 

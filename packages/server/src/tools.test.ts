@@ -50,75 +50,6 @@ function fixture(
   };
 }
 
-describe('tools.setCapacity', () => {
-  it('records a capacity declaration under (identity, cause)', async () => {
-    const f = fixture();
-    await f.server.tools.setCapacity(f.caller, {
-      cause_id: f.cause_id,
-      rate: 5,
-      kinds: ['anchor', 'review'],
-    });
-    const cap = f.server.store.capacities.get(`${f.caller.identity_id}|${f.cause_id}`);
-    expect(cap?.rate).toBe(5);
-    expect(cap?.kinds).toEqual(['anchor', 'review']);
-    expect(cap?.identity_id).toBe(f.caller.identity_id);
-  });
-
-  it('replaces a prior declaration on re-call (upsert)', async () => {
-    const f = fixture();
-    await f.server.tools.setCapacity(f.caller, {
-      cause_id: f.cause_id,
-      rate: 5,
-      kinds: ['anchor'],
-    });
-    await f.server.tools.setCapacity(f.caller, {
-      cause_id: f.cause_id,
-      rate: 2,
-      kinds: ['review'],
-    });
-    const cap = f.server.store.capacities.get(`${f.caller.identity_id}|${f.cause_id}`);
-    expect(cap?.rate).toBe(2);
-    expect(cap?.kinds).toEqual(['review']);
-    expect(f.server.store.capacities.size).toBe(1);
-  });
-
-  it('de-duplicates kinds at the boundary', async () => {
-    const f = fixture();
-    await f.server.tools.setCapacity(f.caller, {
-      cause_id: f.cause_id,
-      rate: 1,
-      kinds: ['review', 'review', 'anchor'],
-    });
-    const cap = f.server.store.capacities.get(`${f.caller.identity_id}|${f.cause_id}`);
-    expect(cap?.kinds).toEqual(['review', 'anchor']);
-  });
-
-  it('rejects when the cause is archived', async () => {
-    const f = fixture();
-    const cause = f.server.store.causes.get(f.cause_id);
-    if (!cause) throw new Error('cause missing');
-    f.server.store.causes.set(f.cause_id, { ...cause, status: 'archived' });
-    await expect(
-      f.server.tools.setCapacity(f.caller, {
-        cause_id: f.cause_id,
-        rate: 1,
-        kinds: ['anchor'],
-      }),
-    ).rejects.toMatchObject({ code: 'invalid_state' });
-  });
-
-  it('rejects an unauthorized caller', async () => {
-    const f = fixture();
-    await expect(
-      f.server.tools.setCapacity(
-        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
-        { identity_id: 'idn_bogus' as any },
-        { cause_id: f.cause_id, rate: 1, kinds: ['anchor'] },
-      ),
-    ).rejects.toMatchObject({ code: 'unauthorized' });
-  });
-});
-
 describe('tools.proposeAnchor', () => {
   it('stages an anchor proposal when verification passes', async () => {
     const f = fixture();
@@ -805,30 +736,16 @@ describe('tools.queryFrontier', () => {
     f.server.curator.acceptProposal(a.proposal_id);
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['excerpt'],
-    });
     const { assignment_id } = await f.server.tools.requestAssignment(bobCaller, {
       cause_id: f.cause_id,
     });
-    // Merely *offered* (not yet accepted) is enough — the anchor is
-    // no longer orphan, so a concurrent contributor can't pull it too.
+    // A held slot (request_assignment returns it `accepted` — there is
+    // no separate accept step) takes the anchor off the frontier, so a
+    // concurrent contributor can't pull it too.
+    expect(assignment_id).toBeDefined();
     {
       const { items } = await f.server.tools.queryFrontier(f.caller, {});
       expect(items.find((i) => i.kind === 'orphan_anchor')).toBeUndefined();
-    }
-    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
-    {
-      const { items } = await f.server.tools.queryFrontier(f.caller, {});
-      expect(items.find((i) => i.kind === 'orphan_anchor')).toBeUndefined();
-    }
-    // Bob bails — the anchor is orphan again, available to the pool.
-    await f.server.tools.declineAssignment(bobCaller, { assignment_id, reason: 'no time' });
-    {
-      const { items } = await f.server.tools.queryFrontier(f.caller, {});
-      expect(items.filter((i) => i.kind === 'orphan_anchor')).toHaveLength(1);
     }
   });
 
@@ -945,11 +862,11 @@ describe('tools.queryFrontier', () => {
 });
 
 describe('tools.requestAssignment', () => {
-  it('rejects when no capacity is declared for the cause', async () => {
+  it('rejects with not_found when no frontier work exists', async () => {
     const f = fixture();
     await expect(
       f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id }),
-    ).rejects.toMatchObject({ code: 'invalid_state' });
+    ).rejects.toMatchObject({ code: 'not_found' });
   });
 
   it('offers an excerpt task for an orphan anchor under a different proposer', async () => {
@@ -964,14 +881,9 @@ describe('tools.requestAssignment', () => {
     const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
     if (!aId) throw new Error('expected anchor');
 
-    // Bob declares capacity for excerpts and pulls.
+    // Bob pulls — single slot, no capacity declaration.
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['excerpt'],
-    });
     const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
       cause_id: f.cause_id,
     });
@@ -981,7 +893,7 @@ describe('tools.requestAssignment', () => {
 
     const stored = f.server.store.assignments.get(assignment_id);
     expect(stored?.contributor_id).toBe(bob.id);
-    expect(stored?.status).toBe('offered');
+    expect(stored?.status).toBe('accepted');
   });
 
   it("doesn't offer a review of one's own proposal", async () => {
@@ -992,17 +904,12 @@ describe('tools.requestAssignment', () => {
       content: 'self',
       external_ref: { kind: 'pmid', value: '1' },
     });
-    await f.server.tools.setCapacity(f.caller, {
-      cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['review'],
-    });
     await expect(
       f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id }),
     ).rejects.toMatchObject({ code: 'not_found' });
   });
 
-  it('offers a review task to a non-proposer with review capacity', async () => {
+  it('offers a review task to a non-proposer', async () => {
     const f = fixture();
     const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
@@ -1012,11 +919,6 @@ describe('tools.requestAssignment', () => {
     });
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['review'],
-    });
     const { task } = await f.server.tools.requestAssignment(bobCaller, {
       cause_id: f.cause_id,
     });
@@ -1024,9 +926,10 @@ describe('tools.requestAssignment', () => {
     expect(task.proposal_id).toBe(proposal_id);
   });
 
-  it('respects the rate cap', async () => {
+  it('enforces the single slot — a second pull while one is unresolved is refused', async () => {
     const f = fixture();
-    // Two orphan anchors so two distinct excerpt tasks exist.
+    // Two orphan anchors so a second excerpt task genuinely exists:
+    // the refusal is the single-slot gate, not frontier exhaustion.
     const a = await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
       home_sub_topic_id: f.sub_topic_id,
@@ -1044,18 +947,13 @@ describe('tools.requestAssignment', () => {
 
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 1,
-      kinds: ['excerpt'],
-    });
     await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
     await expect(
       f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
     ).rejects.toMatchObject({ code: 'invalid_state' });
   });
 
-  it("doesn't double-offer the same target to the same contributor", async () => {
+  it("doesn't re-offer a target the contributor already delivered", async () => {
     const f = fixture();
     const a = await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
@@ -1063,40 +961,60 @@ describe('tools.requestAssignment', () => {
       content: 'a',
       external_ref: { kind: 'pmid', value: '1' },
     });
-    f.server.curator.acceptProposal(a.proposal_id);
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
 
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 5,
-      kinds: ['excerpt'],
-    });
     const first = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
     expect(first.task.kind).toBe('excerpt');
+    // Bob fulfills the slot, freeing it for a fresh pull.
+    await f.server.tools.proposeExcerpt(bobCaller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_anchor_id: aId,
+      content: 'span content',
+      quoted_span: { text: 'span', offset: 0 },
+      assignment_id: first.assignment_id,
+    });
+    // The only target now carries a staged excerpt — the frontier no
+    // longer exposes it, so a fresh pull finds nothing.
     await expect(
       f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
     ).rejects.toMatchObject({ code: 'not_found' });
   });
 
-  it('rejects a kind preference outside declared capacity', async () => {
+  it('a strict kind filter with no matching frontier item returns not_found', async () => {
     const f = fixture();
-    await f.server.tools.setCapacity(f.caller, {
+    // Only a staged anchor exists — that is review work, not excerpt
+    // work. The `kind` argument is a strict filter, not a soft
+    // preference: asking for a kind the frontier can't supply is a
+    // plain miss, not a capacity violation.
+    await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
-      rate: 1,
-      kinds: ['review'],
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
     });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
     await expect(
-      f.server.tools.requestAssignment(f.caller, {
+      f.server.tools.requestAssignment(bobCaller, {
         cause_id: f.cause_id,
         kind: 'excerpt',
       }),
-    ).rejects.toMatchObject({ code: 'invalid_input' });
+    ).rejects.toMatchObject({ code: 'not_found' });
   });
 });
 
-describe('tools.acceptAssignment / declineAssignment', () => {
-  async function withOfferedExcerptAssignment() {
+describe('single-slot resolution: precondition-lapse and TTL-shadow', () => {
+  // No `decline_assignment` and no `accept_assignment`: a slot the
+  // contributor cannot complete resolves through precondition-lapse
+  // or TTL-shadow, never a contributor-steered refusal, and is held
+  // (`accepted`) from `request_assignment` with no accept step
+  // (PRD §Assignment).
+
+  it('lapses an open slot whose sub-topic was archived, freeing it on the next request', async () => {
     const f = fixture();
     const a = await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
@@ -1107,102 +1025,90 @@ describe('tools.acceptAssignment / declineAssignment', () => {
     f.server.curator.acceptProposal(a.proposal_id);
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['excerpt'],
-    });
     const { assignment_id } = await f.server.tools.requestAssignment(bobCaller, {
       cause_id: f.cause_id,
     });
-    return { f, bobCaller, bob, assignment_id };
-  }
-
-  it('moves an offered assignment to accepted', async () => {
-    const { f, bobCaller, assignment_id } = await withOfferedExcerptAssignment();
-    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
-    expect(f.server.store.assignments.get(assignment_id)?.status).toBe('accepted');
+    // The sub-topic is archived out from under the held slot (the
+    // cause stays active so request_assignment still reaches the
+    // single-slot walk — the surviving lazy-lapse trigger now that
+    // there is no accept step).
+    const st = f.server.store.subTopics.get(f.sub_topic_id);
+    if (!st) throw new Error('sub-topic missing');
+    f.server.store.subTopics.set(f.sub_topic_id, { ...st, status: 'archived' });
+    // The next request lazily lapses the dead slot (no credit, no
+    // penalty, no contributor action) instead of refusing with
+    // single-slot `invalid_state`: the contributor is freed, not
+    // stuck. The original slot ends `lapsed`.
+    const next = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    expect(next.assignment_id).not.toBe(assignment_id);
+    expect(f.server.store.assignments.get(assignment_id)?.status).toBe('lapsed');
   });
 
-  it('rejects accepting an assignment that does not belong to the caller', async () => {
-    const { f, assignment_id } = await withOfferedExcerptAssignment();
-    const mallory = f.server.bootstrap.mintIdentity({ display_name: 'mallory' });
-    await expect(
-      f.server.tools.acceptAssignment({ identity_id: mallory.id }, { assignment_id }),
-    ).rejects.toMatchObject({ code: 'unauthorized' });
-  });
-
-  it('rejects accepting twice', async () => {
-    const { f, bobCaller, assignment_id } = await withOfferedExcerptAssignment();
-    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
-    await expect(
-      f.server.tools.acceptAssignment(bobCaller, { assignment_id }),
-    ).rejects.toMatchObject({ code: 'invalid_state' });
-  });
-
-  it('moves an offered assignment to declined and persists the reason', async () => {
-    const { f, bobCaller, assignment_id } = await withOfferedExcerptAssignment();
-    await f.server.tools.declineAssignment(bobCaller, {
-      assignment_id,
-      reason: 'outside my wheelhouse',
-    });
-    const stored = f.server.store.assignments.get(assignment_id);
-    expect(stored?.status).toBe('declined');
-    expect(stored?.decline_reason).toBe('outside my wheelhouse');
-  });
-
-  it('rejects declining an unknown assignment', async () => {
-    const { f, bobCaller } = await withOfferedExcerptAssignment();
-    await expect(
-      f.server.tools.declineAssignment(bobCaller, {
-        // biome-ignore lint/suspicious/noExplicitAny: fabricated bad id
-        assignment_id: 'asn_missing' as any,
-        reason: 'x',
-      }),
-    ).rejects.toMatchObject({ code: 'not_found' });
-  });
-
-  it('frees the rate budget when an assignment is declined', async () => {
-    const { f, bobCaller, assignment_id } = await withOfferedExcerptAssignment();
-    // Add a second orphan so a second assignment is available.
+  it('lapses an excerpt slot whose parent anchor went unresolvable', async () => {
+    const f = fixture();
     const a = await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
       home_sub_topic_id: f.sub_topic_id,
-      content: 'second',
-      external_ref: { kind: 'pmid', value: '2' },
+      content: 'parent',
+      external_ref: { kind: 'pmid', value: '1' },
     });
-    f.server.curator.acceptProposal(a.proposal_id);
-    // Bob's rate is 3 in the helper; confirm decline doesn't block
-    // a second pull. (The helper uses 3 deliberately; the rate-cap
-    // test in requestAssignment uses 1 to exercise the cap path.)
-    await f.server.tools.declineAssignment(bobCaller, { assignment_id, reason: 'no time' });
-    const next = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
-    expect(next.assignment_id).not.toBe(assignment_id);
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    if (task.kind !== 'excerpt') throw new Error('expected excerpt task');
+    // The parent anchor's source stops resolving.
+    const parent = f.server.store.nodes.get(aId);
+    if (!parent) throw new Error('parent missing');
+    f.server.store.nodes.set(aId, { ...parent, status: 'unresolvable' });
+    // The slot is freed lazily on the next single-slot walk, with no
+    // contributor action — Bob can pull again.
+    await expect(
+      f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+    expect(f.server.store.assignments.get(assignment_id)?.status).toBe('lapsed');
   });
 
-  it('declines an accepted assignment, freeing the target for another contributor', async () => {
-    const { f, bobCaller, assignment_id } = await withOfferedExcerptAssignment();
-    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
-    // Bob accepted, then can't deliver — declining an `accepted`
-    // assignment is allowed and is the bail-out path.
-    await f.server.tools.declineAssignment(bobCaller, {
-      assignment_id,
-      reason: 'client wedged mid-fulfillment',
+  it('past ttl_at the target re-enters the frontier as a shadow re-offer; first fulfillment resolves both', async () => {
+    const f = fixture({ review: { assignment_ttl_seconds: 100 } });
+    const a = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'parent',
+      external_ref: { kind: 'pmid', value: '1' },
     });
-    const stored = f.server.store.assignments.get(assignment_id);
-    expect(stored?.status).toBe('declined');
-    expect(stored?.decline_reason).toBe('client wedged mid-fulfillment');
-    // The single seeded orphan anchor is now offerable to a fresh
-    // contributor (decline blocks re-offer only to the decliner).
+    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!aId) throw new Error('expected anchor');
+
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    const slow = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+
+    // Time passes the slot's ttl_at. The covering slot stops covering
+    // the orphan anchor, so the frontier re-exposes it.
+    (f.server.clock as FakeClock).advance(200_000);
     const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
     const carolCaller: Caller = { identity_id: carol.id };
-    await f.server.tools.setCapacity(carolCaller, {
+    const backup = await f.server.tools.requestAssignment(carolCaller, { cause_id: f.cause_id });
+    if (backup.task.kind !== 'excerpt') throw new Error('expected excerpt task');
+    const backupAsn = f.server.store.assignments.get(backup.assignment_id);
+    expect(backupAsn?.shadow_of).toBe(slow.assignment_id);
+
+    // Carol delivers first. The slot resolves; Bob's original slot is
+    // released regardless of author (the resolution invariant).
+    await f.server.tools.proposeExcerpt(carolCaller, {
       cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['excerpt'],
+      home_sub_topic_id: f.sub_topic_id,
+      parent_anchor_id: aId,
+      content: 'span content',
+      quoted_span: { text: 'span', offset: 0 },
+      assignment_id: backup.assignment_id,
     });
-    const next = await f.server.tools.requestAssignment(carolCaller, { cause_id: f.cause_id });
-    expect(next.task.kind).toBe('excerpt');
+    expect(f.server.store.assignments.get(backup.assignment_id)?.status).toBe('submitted');
+    expect(f.server.store.assignments.get(slow.assignment_id)?.status).toBe('lapsed');
   });
 });
 
@@ -1221,13 +1127,7 @@ describe('propose_* assignment fulfillment (the `assignment_id` argument)', () =
     if (!aId) throw new Error('expected anchor');
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['excerpt'],
-    });
     const offered = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
-    await f.server.tools.acceptAssignment(bobCaller, { assignment_id: offered.assignment_id });
     return { f, bobCaller, anchor_id: aId, assignment_id: offered.assignment_id };
   }
 
@@ -1251,9 +1151,34 @@ describe('propose_* assignment fulfillment (the `assignment_id` argument)', () =
     expect(updatedAssignment?.fulfilled_by).toBe(proposal_id);
   });
 
-  it('leaves the proposal unattributed when no assignment_id is given (contributor-initiated)', async () => {
+  it('refuses a contributor-initiated proposal while a slot is held in the cause (single-slot off-slot guard)', async () => {
     const { f, bobCaller, anchor_id } = await withAcceptedExcerptAssignment();
-    const { proposal_id } = await f.server.tools.proposeExcerpt(bobCaller, {
+    // Bob holds an unresolved excerpt slot. A contributor-initiated
+    // propose (no assignment_id) is off-slot work and refused with
+    // invalid_state — without this, single-slot would have an unbounded
+    // side channel and an assigned contributor that omitted
+    // assignment_id could strand its sole slot (PRD §Assignment,
+    // "Contributor-initiated work is off-slot").
+    await expect(
+      f.server.tools.proposeExcerpt(bobCaller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        parent_anchor_id: anchor_id,
+        content: 'span content',
+        quoted_span: { text: 'span', offset: 0 },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
+  it('leaves the proposal unattributed when contributor-initiated and no slot is held', async () => {
+    const { f, anchor_id } = await withAcceptedExcerptAssignment();
+    // A different contributor who never pulled a slot: the genuine
+    // contributor-initiated path (e.g. bootstrap) still works and is
+    // unattributed. The off-slot guard is cause-scoped to held slots,
+    // so a contributor holding none is unaffected.
+    const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const carolCaller: Caller = { identity_id: carol.id };
+    const { proposal_id } = await f.server.tools.proposeExcerpt(carolCaller, {
       cause_id: f.cause_id,
       home_sub_topic_id: f.sub_topic_id,
       parent_anchor_id: anchor_id,
@@ -1261,37 +1186,6 @@ describe('propose_* assignment fulfillment (the `assignment_id` argument)', () =
       quoted_span: { text: 'span', offset: 0 },
     });
     expect(f.server.store.proposals.get(proposal_id)?.assignment_id).toBeUndefined();
-  });
-
-  it('rejects when the assignment is not yet accepted', async () => {
-    const f = fixture();
-    const a = await f.server.tools.proposeAnchor(f.caller, {
-      cause_id: f.cause_id,
-      home_sub_topic_id: f.sub_topic_id,
-      content: 'p',
-      external_ref: { kind: 'pmid', value: '1' },
-    });
-    const aId = f.server.curator.acceptProposal(a.proposal_id).node_id;
-    if (!aId) throw new Error('expected anchor');
-    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
-    const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 1,
-      kinds: ['excerpt'],
-    });
-    const offered = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
-    // No accept call.
-    await expect(
-      f.server.tools.proposeExcerpt(bobCaller, {
-        cause_id: f.cause_id,
-        home_sub_topic_id: f.sub_topic_id,
-        parent_anchor_id: aId,
-        content: 'x',
-        quoted_span: { text: 'x', offset: 0 },
-        assignment_id: offered.assignment_id,
-      }),
-    ).rejects.toMatchObject({ code: 'invalid_state' });
   });
 
   it('rejects when the proposal kind does not match the task kind', async () => {
@@ -1342,13 +1236,7 @@ describe('propose_* assignment fulfillment (the `assignment_id` argument)', () =
     });
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 1,
-      kinds: ['review'],
-    });
     const offered = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
-    await f.server.tools.acceptAssignment(bobCaller, { assignment_id: offered.assignment_id });
     if (offered.task.kind !== 'review') throw new Error('expected review task');
     await expect(
       f.server.tools.proposeAnchor(bobCaller, {
@@ -2008,18 +1896,10 @@ describe('tools.castReviewVote', () => {
 
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['excerpt'],
-    });
     const offered = await f.server.tools.requestAssignment(bobCaller, {
       cause_id: f.cause_id,
     });
     if (offered.task.kind !== 'excerpt') throw new Error('expected excerpt');
-    await f.server.tools.acceptAssignment(bobCaller, {
-      assignment_id: offered.assignment_id,
-    });
     const submitted = await f.server.tools.proposeExcerpt(bobCaller, {
       cause_id: f.cause_id,
       home_sub_topic_id: f.sub_topic_id,
@@ -2244,6 +2124,111 @@ describe('tools.castReviewVote', () => {
   });
 });
 
+describe('single-slot off-slot guard (testbed-caught review wedge)', () => {
+  // PRD §Assignment, "Contributor-initiated work is off-slot": a
+  // contributor-initiated cast_review_vote (no assignment_id) while a
+  // slot is held in the proposal's cause is refused. The model-backed
+  // testbed caught the unrecoverable form: an honest reviewer cast a
+  // correct vote without echoing assignment_id, and — review tasks
+  // neither lapse on target resolution nor take TTL-shadow — was wedged
+  // out of all further work with no recovery.
+
+  async function bobHoldsReviewSlot(f: Fixture) {
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    // Rep entry = the eligibleReviewerPool basis (no capacity, no
+    // expertise: cause participation == has-accrued-rep).
+    f.server.store.reputations.set(`${bob.id}|${f.cause_id}|${f.sub_topic_id}` as never, {
+      identity_id: bob.id as never,
+      cause_id: f.cause_id,
+      sub_topic_id: f.sub_topic_id,
+      demonstrated: 0,
+      recent: 0,
+      updated_at: f.server.clock.now(),
+    });
+    const asn = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+      kind: 'review',
+    });
+    if (asn.task.kind !== 'review') throw new Error('expected review task');
+    expect(f.server.store.assignments.get(asn.assignment_id)?.status).toBe('accepted');
+    return { bob, bobCaller, proposal_id, assignment_id: asn.assignment_id };
+  }
+
+  it('refuses a contributor-initiated vote (no assignment_id) while the review slot is held', async () => {
+    const f = fixture();
+    const { bobCaller, proposal_id } = await bobHoldsReviewSlot(f);
+    await expect(
+      f.server.tools.castReviewVote(bobCaller, {
+        proposal_id,
+        decision: 'reject',
+        rationale: 'span overstates the source',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+    // Refused before persistence: nothing recorded, so the corrected
+    // re-call is not tripped by one-vote-per-(reviewer, proposal).
+    expect(
+      [...f.server.store.reviewVotes.values()].some((v) => v.proposal_id === proposal_id),
+    ).toBe(false);
+  });
+
+  it('the same vote with assignment_id fulfills the slot and frees it', async () => {
+    const f = fixture();
+    const { bobCaller, proposal_id, assignment_id } = await bobHoldsReviewSlot(f);
+    const { vote_id } = await f.server.tools.castReviewVote(bobCaller, {
+      proposal_id,
+      decision: 'reject',
+      rationale: 'span overstates the source',
+      assignment_id,
+    });
+    expect(f.server.store.reviewVotes.get(vote_id)?.assignment_id).toBe(assignment_id);
+    const asn = f.server.store.assignments.get(assignment_id);
+    expect(asn?.status).toBe('submitted');
+    expect(asn?.fulfilled_by).toBe(proposal_id);
+    // Slot freed: a re-request is no longer refused with the
+    // single-slot invalid_state (it may be not_found if no more review
+    // work exists, which is not the wedge).
+    await f.server.tools
+      .requestAssignment(bobCaller, { cause_id: f.cause_id })
+      .catch((e: { code?: string }) => {
+        expect(e.code).not.toBe('invalid_state');
+      });
+  });
+
+  it('does not block a contributor-initiated vote in a different cause (cause-scoped)', async () => {
+    const f = fixture();
+    const { bobCaller } = await bobHoldsReviewSlot(f);
+    // A second cause; alice stages there, bob holds no slot there.
+    const cause2 = f.server.bootstrap.createCause({ name: 'AMR', description: 'antibiotics' });
+    const st2 = f.server.bootstrap.seedSubTopic({
+      cause_id: cause2.id,
+      name: 'efflux',
+      description: 'efflux pumps',
+      scope_query: 'efflux',
+    });
+    const { proposal_id: p2 } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: cause2.id,
+      home_sub_topic_id: st2.id,
+      content: 'y',
+      external_ref: { kind: 'pmid', value: '2' },
+    });
+    // Bob's held slot is in f.cause_id; a contributor-initiated vote in
+    // cause2 is unaffected by it.
+    const { vote_id } = await f.server.tools.castReviewVote(bobCaller, {
+      proposal_id: p2,
+      decision: 'accept',
+      rationale: 'well-anchored',
+    });
+    expect(f.server.store.reviewVotes.get(vote_id)?.proposal_id).toBe(p2);
+  });
+});
+
 describe('calibration loop', () => {
   // PRD §Calibration batches: reviewer batches mix real proposals with
   // calibration items drawn from validated history; calibration arrives
@@ -2267,11 +2252,6 @@ describe('calibration loop', () => {
     f.server.curator.acceptProposal(a.proposal_id);
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['review'],
-    });
     return { bobCaller, accepted_proposal_id: a.proposal_id };
   }
 
@@ -2298,7 +2278,6 @@ describe('calibration loop', () => {
       cause_id: f.cause_id,
     });
     if (task.kind !== 'review') throw new Error('expected review task');
-    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
     await f.server.tools.castReviewVote(bobCaller, {
       proposal_id: task.proposal_id,
       decision: 'accept',
@@ -2320,7 +2299,6 @@ describe('calibration loop', () => {
       cause_id: f.cause_id,
     });
     if (task.kind !== 'review') throw new Error('expected review task');
-    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
     await f.server.tools.castReviewVote(bobCaller, {
       proposal_id: task.proposal_id,
       decision: 'reject',
@@ -2340,7 +2318,6 @@ describe('calibration loop', () => {
       cause_id: f.cause_id,
     });
     if (task.kind !== 'review') throw new Error('expected review task');
-    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
     await f.server.tools.castReviewVote(bobCaller, {
       proposal_id: task.proposal_id,
       decision: 'revise',
@@ -2360,7 +2337,6 @@ describe('calibration loop', () => {
       cause_id: f.cause_id,
     });
     if (task.kind !== 'review') throw new Error('expected review task');
-    await f.server.tools.acceptAssignment(bobCaller, { assignment_id });
     await f.server.tools.castReviewVote(bobCaller, {
       proposal_id: task.proposal_id,
       decision: 'reject',
@@ -2422,11 +2398,6 @@ describe('calibration loop', () => {
     });
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await f.server.tools.setCapacity(bobCaller, {
-      cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['review'],
-    });
     const { task } = await f.server.tools.requestAssignment(bobCaller, {
       cause_id: f.cause_id,
     });
@@ -2439,10 +2410,12 @@ describe('calibration loop', () => {
 
   it('a calibration draw skips the caller’s own validated proposals', async () => {
     const f = fixture({ review: { calibration_inject_every_n: 1 } });
-    // Alice has an accepted proposal (validated history). Alice declares
-    // review capacity. The calibration draw must skip her own proposal
-    // (conflict of interest invariant), so the request falls back to
-    // the frontier — which is empty for her, producing not_found.
+    // Alice has an accepted proposal (validated history). She asks for
+    // review-kind work only (strict `kind` filter). The calibration
+    // draw must skip her own proposal (conflict of interest invariant),
+    // and no other review work exists, so the request is not_found —
+    // the excerpt work her own orphan anchor implies is excluded by
+    // the kind filter, isolating the COI behavior under test.
     const a = await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
       home_sub_topic_id: f.sub_topic_id,
@@ -2450,13 +2423,8 @@ describe('calibration loop', () => {
       external_ref: { kind: 'pmid', value: '1' },
     });
     f.server.curator.acceptProposal(a.proposal_id);
-    await f.server.tools.setCapacity(f.caller, {
-      cause_id: f.cause_id,
-      rate: 3,
-      kinds: ['review'],
-    });
     await expect(
-      f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id }),
+      f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id, kind: 'review' }),
     ).rejects.toMatchObject({ code: 'not_found' });
   });
 });
@@ -2678,11 +2646,6 @@ describe('recent-activity assignment gate', () => {
       description: 'mrd',
       scope_query: 'mrd',
     });
-    await server.tools.setCapacity(aliceCaller, {
-      cause_id: cause.id,
-      rate: 1,
-      kinds: ['review'],
-    });
     // No frontier task available — request fails with not_found, but
     // for the right reason (frontier empty), not the gate.
     await expect(
@@ -2740,11 +2703,6 @@ describe('recent-activity assignment gate', () => {
     );
     // Alice has no rep entries in this cause — gate bypasses, she
     // gets assigned the staged excerpt for review.
-    await server.tools.setCapacity(aliceCaller, {
-      cause_id: cause.id,
-      rate: 1,
-      kinds: ['review'],
-    });
     const result = await server.tools.requestAssignment(aliceCaller, {
       cause_id: cause.id,
     });
@@ -2845,11 +2803,6 @@ describe('recent-activity assignment gate', () => {
     // 0.6 threshold. Demonstrated stays at 1.
     clock.advance(60_000);
 
-    await server.tools.setCapacity(aliceCaller, {
-      cause_id: cause.id,
-      rate: 1,
-      kinds: ['review'],
-    });
     await expect(
       server.tools.requestAssignment(aliceCaller, { cause_id: cause.id }),
     ).rejects.toMatchObject({ code: 'not_found' });
@@ -2927,6 +2880,26 @@ describe('stratified-by-history reviewer assignment', () => {
     return excerptIds;
   }
 
+  // The eligible reviewer pool is identities with a reputation entry
+  // in the cause (PRD §Reviewer assignment — no capacity, no expertise
+  // routing). A fresh reviewer accrues rep only when a proposal they
+  // voted on resolves, which is circular for these clustering setups,
+  // so register each reviewer as a cause participant with a neutral
+  // (0,0) entry. This is pool membership only; `computeReviewerStrata`
+  // still derives clusters from the vote history, untouched.
+  function seedReviewerRep(f: Fixture, ...ids: { id: string }[]): void {
+    for (const { id } of ids) {
+      f.server.store.reputations.set(`${id}|${f.cause_id}|${f.sub_topic_id}` as never, {
+        identity_id: id as never,
+        cause_id: f.cause_id,
+        sub_topic_id: f.sub_topic_id,
+        demonstrated: 0,
+        recent: 0,
+        updated_at: f.server.clock.now(),
+      });
+    }
+  }
+
   it('clusters reviewers who co-vote on shared proposals into one stratum', async () => {
     // Two reviewers (carol, dave) co-vote accept on three primer
     // excerpts; clustering should put them in the same stratum. erin
@@ -2948,16 +2921,7 @@ describe('stratified-by-history reviewer assignment', () => {
     const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
     const carolCaller: Caller = { identity_id: carol.id };
     const daveCaller: Caller = { identity_id: dave.id };
-    await f.server.tools.setCapacity(carolCaller, {
-      cause_id: f.cause_id,
-      rate: 5,
-      kinds: ['review'],
-    });
-    await f.server.tools.setCapacity(daveCaller, {
-      cause_id: f.cause_id,
-      rate: 5,
-      kinds: ['review'],
-    });
+    seedReviewerRep(f, carol, dave);
 
     // Three priming excerpts plus the target. Carol and Dave vote
     // accept on the priming three (shared history); the target stays
@@ -3006,16 +2970,7 @@ describe('stratified-by-history reviewer assignment', () => {
     const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
     const carolCaller: Caller = { identity_id: carol.id };
     const daveCaller: Caller = { identity_id: dave.id };
-    await f.server.tools.setCapacity(carolCaller, {
-      cause_id: f.cause_id,
-      rate: 5,
-      kinds: ['review'],
-    });
-    await f.server.tools.setCapacity(daveCaller, {
-      cause_id: f.cause_id,
-      rate: 5,
-      kinds: ['review'],
-    });
+    seedReviewerRep(f, carol, dave);
 
     const [p0, p1, p2, targetId] = await seedExcerpts(f, 4);
     if (!p0 || !p1 || !p2 || !targetId) throw new Error('seed mismatch');
@@ -3091,13 +3046,7 @@ describe('stratified-by-history reviewer assignment', () => {
     const carolCaller: Caller = { identity_id: carol.id };
     const daveCaller: Caller = { identity_id: dave.id };
     const erinCaller: Caller = { identity_id: erin.id };
-    for (const c of [carolCaller, daveCaller, erinCaller]) {
-      await f.server.tools.setCapacity(c, {
-        cause_id: f.cause_id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    seedReviewerRep(f, carol, dave, erin);
 
     const [p0, p1, p2, targetId] = await seedExcerpts(f, 4);
     if (!p0 || !p1 || !p2 || !targetId) throw new Error('seed mismatch');
@@ -3161,13 +3110,7 @@ describe('stratified-by-history reviewer assignment', () => {
     const dave = f.server.bootstrap.mintIdentity({ display_name: 'dave' });
     const carolCaller: Caller = { identity_id: carol.id };
     const daveCaller: Caller = { identity_id: dave.id };
-    for (const c of [carolCaller, daveCaller]) {
-      await f.server.tools.setCapacity(c, {
-        cause_id: f.cause_id,
-        rate: 5,
-        kinds: ['review'],
-      });
-    }
+    seedReviewerRep(f, carol, dave);
 
     // Priming: three co-rejects build the cluster signal. Each
     // priming proposal lands at status=rejected after the second

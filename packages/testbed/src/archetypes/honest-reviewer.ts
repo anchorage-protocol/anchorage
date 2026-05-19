@@ -5,17 +5,17 @@ import { type AnchorageClient, AnchorageClientError } from '../client.js';
 // votes on them. The decision is delegated to a `decide` callback so
 // the archetype can host different reviewer behaviors over the same
 // loop machinery. The wired deciders below cover the lazy /
-// strategic-coalition / decline-pattern axes of the adversary
-// taxonomy: `acceptAllDecider` is the always-accept lazy reviewer
-// that calibration injection traps when a calibration item lands
+// strategic-coalition axes of the adversary taxonomy:
+// `acceptAllDecider` is the always-accept lazy reviewer that
+// calibration injection traps when a calibration item lands
 // reject-worthy in context (calibration items are accepted-from-
 // validated-history proposals, scored against ground truth on
 // `cast_review_vote`); `payloadBiasedDecider` is the strategic-
 // adversary primitive (configurable hidden objective + biased
-// rationale strings); `payloadDecliningDecider` is the decline-
-// pattern primitive (declines outside the adversary's preferred
-// shape, surfacing on the curator-side `declinePatterns` projection
-// and the assignment-time decline-rate gate).
+// rationale strings). The decline-pattern axis is gone: the
+// single-slot model (PRD §Assignment) removes decline entirely, so
+// decline-shopping and decline-ring abuse cannot occur and need no
+// archetype.
 //
 // The rationale string is part of the contract — PRD §Write-path
 // tools (cast_review_vote) requires a rationale on every vote. The `decide` callback supplies
@@ -29,22 +29,21 @@ export interface ReviewDecisionWithRationale {
 export interface ReviewDecider {
   // Given the proposal payload (the fields a reviewer can see — the
   // ReviewBatchItem contract strips status/proposer/created_at),
-  // produce a decision and a rationale. Return `null` to decline the
-  // assignment instead of voting (e.g. "outside my expertise").
-  decide(payload: ProposalPayload): ReviewDecisionWithRationale | null;
+  // produce a decision and a rationale. There is no "decline this
+  // one" return: the single-slot model (PRD §Assignment) has no
+  // decline, and competence-based opt-out is incoherent under it
+  // (all review work is corpus judgement any contributor can pull).
+  decide(payload: ProposalPayload): ReviewDecisionWithRationale;
 }
 
 export interface HonestReviewerConfig {
   cause_id: CauseId;
-  rate: number;
   decide: ReviewDecider;
 }
 
 export type HonestReviewerAction =
-  | { kind: 'set_capacity' }
   | { kind: 'requested'; assignment_id: string; proposal_id: string }
   | { kind: 'voted'; assignment_id: string; decision: ReviewDecision; vote_id: string }
-  | { kind: 'declined'; assignment_id: string; reason: string }
   | { kind: 'idle'; reason: string };
 
 export interface HonestReviewerResult {
@@ -105,8 +104,8 @@ export const reviseAllDecider: ReviewDecider = {
 // strategic archetype (votes with ground truth on calibration items
 // but biased on real proposals) is the bypass that the calibration-
 // aware-coalition standalone scenario pins, with stratification + the
-// cluster-signal refinements (contention-weighted, anti-correlation,
-// decline-aware) as the next layers the testbed exercises.
+// cluster-signal refinements (contention-weighted, anti-correlation)
+// as the next layers the testbed exercises.
 export interface PayloadBiasedDeciderConfig {
   acceptIf: (payload: ProposalPayload) => boolean;
   rationaleAccept?: string;
@@ -124,45 +123,20 @@ export function payloadBiasedDecider(config: PayloadBiasedDeciderConfig): Review
   };
 }
 
-// Payload-conditional decline: returns null (decline the
-// assignment) when `declineIf(payload)` is true, falling through to
-// `fallback` otherwise. The "decline-pattern abuse" archetype (PRD
-// §Adversary testbed: declining everything outside the adversary's
-// preferred sub-topic) is a one-line composition built on this:
-// declineIf returns true for proposals outside the adversary's
-// preferred shape, fallback is whatever vote they cast on the
-// shape they accept. The decline path is non-punitive on its own
-// (PRD §Capacity and assignment) — it is the *pattern* that the
-// curator-side decline-pattern projection picks up.
-export interface PayloadDecliningDeciderConfig {
-  declineIf: (payload: ProposalPayload) => boolean;
-  fallback: ReviewDecider;
-}
-
-export function payloadDecliningDecider(config: PayloadDecliningDeciderConfig): ReviewDecider {
-  return {
-    decide: (payload) => (config.declineIf(payload) ? null : config.fallback.decide(payload)),
-  };
-}
-
 export async function runHonestReviewer(
   client: AnchorageClient,
   config: HonestReviewerConfig,
 ): Promise<HonestReviewerResult> {
   const actions: HonestReviewerAction[] = [];
 
-  await client.setCapacity({
-    cause_id: config.cause_id,
-    rate: config.rate,
-    kinds: ['review'],
-  });
-  actions.push({ kind: 'set_capacity' });
-
   const MAX_ITERATIONS = 1000;
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     let offered: Awaited<ReturnType<AnchorageClient['requestAssignment']>>;
     try {
-      offered = await client.requestAssignment({ cause_id: config.cause_id });
+      offered = await client.requestAssignment({
+        cause_id: config.cause_id,
+        kind: 'review',
+      });
     } catch (err) {
       if (err instanceof AnchorageClientError) {
         actions.push({ kind: 'idle', reason: err.code });
@@ -172,17 +146,10 @@ export async function runHonestReviewer(
     }
 
     if (offered.task.kind !== 'review') {
-      // Reviewer archetype only handles review tasks. Honest decline.
-      await client.declineAssignment({
-        assignment_id: offered.assignment_id,
-        reason: `honest-reviewer doesn't handle ${offered.task.kind} tasks`,
-      });
-      actions.push({
-        kind: 'declined',
-        assignment_id: offered.assignment_id,
-        reason: 'unhandled task kind',
-      });
-      continue;
+      // Unreachable given the `kind: 'review'` filter; a non-review
+      // offer is a server bug. No decline channel (PRD §Assignment).
+      actions.push({ kind: 'idle', reason: 'unexpected_task_kind' });
+      return { actions };
     }
 
     // Pin the review-task fields locally so async callbacks below
@@ -211,36 +178,17 @@ export async function runHonestReviewer(
     const { proposals } = await client.queryProposals({ assigned_to_me: true });
     const target = proposals.find((p) => p.id === reviewProposalId);
     if (!target) {
-      // Race: the proposal vanished between our offer and our
-      // lookup (a curator-side action — proposals don't otherwise
-      // disappear). Decline rather than guess.
-      await client.declineAssignment({
-        assignment_id: offered.assignment_id,
-        reason: 'proposal not visible',
-      });
-      actions.push({
-        kind: 'declined',
-        assignment_id: offered.assignment_id,
-        reason: 'proposal not visible',
-      });
-      continue;
+      // Race: the proposal vanished between our offer and our lookup
+      // (a curator-side action — proposals don't otherwise disappear).
+      // With no decline channel (PRD §Assignment) the held slot
+      // stalls until the precondition-lapse / TTL shadow path
+      // recovers it, so the archetype stops rather than guess.
+      actions.push({ kind: 'idle', reason: 'proposal_not_visible' });
+      return { actions };
     }
 
     const decision = config.decide.decide(target.payload);
-    if (!decision) {
-      await client.declineAssignment({
-        assignment_id: offered.assignment_id,
-        reason: 'outside expertise',
-      });
-      actions.push({
-        kind: 'declined',
-        assignment_id: offered.assignment_id,
-        reason: 'outside expertise',
-      });
-      continue;
-    }
 
-    await client.acceptAssignment({ assignment_id: offered.assignment_id });
     const { vote_id } = await client.castReviewVote({
       proposal_id: reviewProposalId,
       decision: decision.decision,

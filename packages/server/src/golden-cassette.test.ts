@@ -45,6 +45,11 @@ function loadGoldenCassette(): CassetteEntry[] {
   return parsed.entries;
 }
 
+// Re-recorded 2026-05-19 against the final single-slot surface (PRD
+// §Assignment): no set_capacity and no accept_assignment —
+// request_assignment returns the slot already held. The cassette
+// captures the request → propose_excerpt cycle (no accept turn); the
+// agent drains the three-anchor frontier and stops on not_found.
 describe('golden cassette: a recorded honest-strong live run replays deterministically', () => {
   it('reproduces the checked-in real-model run from the cassette alone, untouched transport', async () => {
     const entries = loadGoldenCassette();
@@ -69,11 +74,10 @@ describe('golden cassette: a recorded honest-strong live run replays determinist
     expect(transportCalled).toBe(false);
     expect(result.stop_reason).toBe('end_turn');
 
-    // The recorded run had the agent declare excerpt capacity and land
-    // a staged excerpt on each of the three seeded anchors (see
+    // The recorded run had the agent pull single-slot assignments and
+    // land a staged excerpt on each of the three seeded anchors (see
     // live-scenario.ts). Replaying the cassette must reproduce that
     // server-state effect exactly.
-    expect([...server.store.capacities.values()].length).toBe(1);
     const excerpts = [...server.store.proposals.values()].filter(
       (p) => p.payload.kind === 'excerpt',
     );

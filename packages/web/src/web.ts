@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { CauseId, IdentityId, NodeId, ServerError, SubTopicId } from '@anchorage/contracts';
 import { renderContributorPage } from './pages/contributor.js';
-import { renderCuratorDeclinePatternsPage } from './pages/curator-decline-patterns.js';
 import { renderCuratorIdentityClustersPage } from './pages/curator-identity-clusters.js';
 import { renderCuratorIndexPage } from './pages/curator-index.js';
 import { renderCuratorQueuePage } from './pages/curator-queue.js';
@@ -29,7 +28,6 @@ import { baselineStylesheet } from './styles.js';
 //   GET /manuscript/:id                          → manuscript projection (slice 6b)
 //   GET /curator                                 → curator console index (slice 7b, gated)
 //   GET /curator/queue?cause_id=...              → moderation queue (slice 7b, gated)
-//   GET /curator/decline-patterns/:cause_id      → decline-patterns view (slice 7b, gated)
 //   GET /curator/identity-clusters               → identity-clusters view (slice 7b, gated)
 //   GET /curator/unresolvable?cause_id=...       → unresolvable-anchor view (slice 7c, gated)
 //   GET /healthz                                 → liveness probe (JSON `{ ok: true }`)
@@ -208,40 +206,6 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
           );
           return;
         }
-        const declineCauseIdRaw = matchCuratorDeclinePatternsRoute(pathname);
-        if (declineCauseIdRaw !== undefined) {
-          const parsed = CauseId.safeParse(declineCauseIdRaw);
-          if (!parsed.success) {
-            sendHtmlNotFound(res, 'Unknown cause', `No cause at ${pathname}.`, method);
-            return;
-          }
-          const directory = await reader.getCauseDirectory();
-          const causeEntry = directory.causes.find((c) => c.cause.id === parsed.data);
-          if (!causeEntry) {
-            sendHtmlNotFound(
-              res,
-              'Unknown cause',
-              `No active cause with id ${parsed.data}.`,
-              method,
-            );
-            return;
-          }
-          const declines = await curatorReader.getCuratorDeclinePatterns(parsed.data);
-          log('web.page.curator.decline_patterns', {
-            cause_id: parsed.data,
-            entry_count: declines.entries.length,
-          });
-          sendHtml(
-            res,
-            200,
-            renderCuratorDeclinePatternsPage({
-              cause: causeEntry.cause,
-              entries: declines.entries,
-            }),
-            method,
-          );
-          return;
-        }
         if (pathname === '/curator/identity-clusters') {
           const clusters = await curatorReader.getCuratorIdentityClusters();
           log('web.page.curator.identity_clusters', { pair_count: clusters.pairs.length });
@@ -341,16 +305,6 @@ export function matchContributorRoute(pathname: string): string | undefined {
 
 export function matchManuscriptRoute(pathname: string): string | undefined {
   return matchSingleSegmentRoute(pathname, '/manuscript/');
-}
-
-// Slice 7b — curator decline-patterns route. The cause_id is a
-// single segment under `/curator/decline-patterns/`. Identity and
-// node routes use the same shape against their respective prefixes;
-// kept as a parallel helper so the curator-route matcher tests can
-// pin the path surface in isolation from the reader, the way the
-// existing matchers do.
-export function matchCuratorDeclinePatternsRoute(pathname: string): string | undefined {
-  return matchSingleSegmentRoute(pathname, '/curator/decline-patterns/');
 }
 
 function matchSingleSegmentRoute(pathname: string, prefix: string): string | undefined {

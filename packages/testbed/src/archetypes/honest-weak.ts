@@ -1,4 +1,4 @@
-import type { CauseId, WorkKind } from '@anchorage/contracts';
+import type { CauseId } from '@anchorage/contracts';
 import { type AnchorageClient, AnchorageClientError } from '../client.js';
 import type { ContentProvider } from './honest-strong.js';
 
@@ -29,11 +29,15 @@ import type { ContentProvider } from './honest-strong.js';
 // verifier, that's a bug. Honest-weak's contract is the opposite:
 // the content provider may return wrong spans, and that's expected.
 //
-// Like the hallucinator, a verifier rejection burns the rate slot
-// (the assignment stays `accepted`; decline_assignment requires
-// `offered`). Friction is paid in two ways: the proposal never
-// reaches `staged`, and the rate budget shrinks. Both are
-// measurable via the action log.
+// Like the hallucinator, a verifier rejection leaves the assignment
+// `accepted` (the status flip to `submitted` only happens after the
+// propose_* layer returns). Under the single-slot model (PRD
+// §Assignment) that wedges the contributor's one slot: the next
+// request_assignment answers not_found until the slot is recovered
+// by TTL shadow-reassignment, so a weak contributor that fails
+// verification is parked rather than free to keep churning. Friction
+// is paid as: the proposal never reaches `staged`, and the slot is
+// held until shadow recovery. Both are measurable via the action log.
 //
 // Decision intentionally pushed to the ContentProvider: this
 // archetype takes the same ContentProvider interface as honest-
@@ -46,16 +50,11 @@ import type { ContentProvider } from './honest-strong.js';
 
 export interface HonestWeakConfig {
   cause_id: CauseId;
-  rate: number;
-  kinds: WorkKind[];
   content: ContentProvider;
 }
 
 export type HonestWeakAction =
-  | { kind: 'set_capacity' }
   | { kind: 'requested'; assignment_id: string; task_kind: string }
-  | { kind: 'accepted'; assignment_id: string }
-  | { kind: 'declined'; assignment_id: string; reason: string }
   | { kind: 'submitted'; assignment_id: string; proposal_id: string }
   | { kind: 'submit_rejected'; assignment_id: string; code: string }
   | { kind: 'idle'; reason: string };
@@ -70,19 +69,15 @@ export async function runHonestWeak(
 ): Promise<HonestWeakResult> {
   const actions: HonestWeakAction[] = [];
 
-  await client.setCapacity({
-    cause_id: config.cause_id,
-    rate: config.rate,
-    kinds: config.kinds,
-  });
-  actions.push({ kind: 'set_capacity' });
-
   const MAX_ITERATIONS = 1000;
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     let offered: Awaited<ReturnType<AnchorageClient['requestAssignment']>>;
     try {
-      offered = await client.requestAssignment({ cause_id: config.cause_id });
+      offered = await client.requestAssignment({
+        cause_id: config.cause_id,
+        kind: 'excerpt',
+      });
     } catch (err) {
       if (err instanceof AnchorageClientError) {
         actions.push({ kind: 'idle', reason: err.code });
@@ -97,34 +92,21 @@ export async function runHonestWeak(
     });
 
     if (offered.task.kind !== 'excerpt') {
-      await client.declineAssignment({
-        assignment_id: offered.assignment_id,
-        reason: `honest-weak v0 doesn't handle ${offered.task.kind} tasks`,
-      });
-      actions.push({
-        kind: 'declined',
-        assignment_id: offered.assignment_id,
-        reason: 'unhandled task kind',
-      });
-      continue;
+      // Unreachable given the `kind: 'excerpt'` filter; a non-excerpt
+      // offer is a server bug. No decline channel (PRD §Assignment) —
+      // record a defect signal and stop.
+      actions.push({ kind: 'idle', reason: 'unexpected_task_kind' });
+      return { actions };
     }
 
     const excerpt = config.content.forAnchor(offered.task.parent_anchor_id);
     if (!excerpt) {
-      await client.declineAssignment({
-        assignment_id: offered.assignment_id,
-        reason: 'no content available for this anchor',
-      });
-      actions.push({
-        kind: 'declined',
-        assignment_id: offered.assignment_id,
-        reason: 'no content',
-      });
-      continue;
+      // Weakness is modeled as wrong spans, not absent ones; a null
+      // is a fixture defect. With no decline the held slot stalls
+      // until TTL shadow-reassignment, so the archetype stops.
+      actions.push({ kind: 'idle', reason: 'no_content' });
+      return { actions };
     }
-
-    await client.acceptAssignment({ assignment_id: offered.assignment_id });
-    actions.push({ kind: 'accepted', assignment_id: offered.assignment_id });
 
     try {
       const submitted = await client.proposeExcerpt({

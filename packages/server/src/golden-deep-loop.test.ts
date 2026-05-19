@@ -67,6 +67,12 @@ function loadGoldenCassette(): CassetteEntry[] {
   return parsed.entries;
 }
 
+// Re-recorded 2026-05-19 against the final single-slot surface (PRD
+// §Assignment): no set_capacity and no accept_assignment —
+// request_assignment returns the slot already held. The assertions
+// below are re-pinned to this fresh model draw (LLM sampling is
+// non-deterministic; the robustness properties this golden exists to
+// pin are stated alongside each).
 describe('golden cassette: a recorded deep-loop population run replays deterministically', () => {
   it('reproduces the checked-in real-model run from the cassette alone, untouched transport', async () => {
     const entries = loadGoldenCassette();
@@ -107,36 +113,40 @@ describe('golden cassette: a recorded deep-loop population run replays determini
     });
 
     expect(transportCalled).toBe(false);
-    // The recorded run ran the small `ci` frontier for three rounds and
-    // stopped on `no_progress` (a round that landed no new accepted work),
-    // not `frontier_drained`. The overstated contested excerpt is rejected
-    // by the honest pool; within three rounds no faithful re-excerpt of
-    // the contested anchor converges, so — unlike the pre-bootstrap
-    // recording — there is no single-accept-vote end-of-round state for
-    // the between-rounds curator pass to escalate, and `escalations` is
-    // empty. Re-pinned after the `query_causes` + MCP-`instructions`
-    // bootstrap change shifted how the honest agents spend turns; the
-    // robustness properties this golden exists to pin (below) are
-    // unchanged.
-    expect(result.stop_reason).toBe('no_progress');
+    // Single-slot, no-accept re-record (PRD §Assignment: no
+    // set_capacity and no accept_assignment — request_assignment
+    // returns the slot already held). The honest agents pull one
+    // assignment at a time and the small `ci` frontier drains in three
+    // rounds, so the run stops on `frontier_drained`. One proposal
+    // split this draw and went to the between-rounds curator pass: in
+    // round 3 a non-contested work excerpt (`prp_deep-ci_0011`) was
+    // escalated and closed `accept` (1-0) — not the contested item,
+    // which closed `rejected` on the normal vote path. These are
+    // trajectory details of one recorded model draw (this
+    // post-wedge-fix re-record took three rounds with one escalation
+    // where the prior snapshot took two with none — reviewers stay in
+    // the pool rather than stranding their slot, so the frontier
+    // drains over an extra round and one item reaches escalation); the
+    // robustness properties this golden exists to pin (the contested
+    // overstatement is rejected, the patient adversary casts no accept
+    // vote on it) are asserted below and are unchanged.
+    expect(result.stop_reason).toBe('frontier_drained');
     expect(result.rounds_run).toBe(3);
-    expect(result.escalations.length).toBe(0);
+    expect(result.escalations.length).toBe(1);
+    expect(result.escalations[0]?.proposal_id).not.toBe(contestedProposalId);
 
-    // Bootstrap + run effect: all three contributors declared capacity;
-    // 9 proposals are accepted (5 anchors + 2 pre-accepted calibration
-    // excerpts + 2 peer-reviewed excerpts on the work anchors); one
-    // excerpt is rejected — the original overstated contested claim. (The
-    // pre-bootstrap run reached 10 accepted / 2 rejected because it also
-    // produced a second overstated re-excerpt and a faithful re-excerpt
-    // of the contested anchor; the shorter trajectory here produces
-    // neither.)
-    expect([...server.store.capacities.values()].length).toBe(3);
+    // Bootstrap + run effect: 10 proposals are accepted (5 anchors + 2
+    // pre-accepted calibration excerpts + 3 peer-reviewed excerpts on
+    // the work anchors — the extra round of this post-wedge-fix
+    // re-record landed one more reviewed excerpt than the prior
+    // snapshot); one is rejected — the original overstated contested
+    // claim.
     const accepted = [...server.store.proposals.values()].filter((p) => p.status === 'accepted');
     const rejected = [...server.store.proposals.values()].filter((p) => p.status === 'rejected');
-    expect(accepted.length).toBe(9);
+    expect(accepted.length).toBe(10);
     expect(rejected.length).toBe(1);
     const acceptedExcerpts = accepted.filter((p) => p.payload.kind === 'excerpt');
-    expect(acceptedExcerpts.length).toBe(4);
+    expect(acceptedExcerpts.length).toBe(5);
 
     // The contested excerpt overstates a non-significant trend to
     // "improves response rates"; the honest pool reads the source and
@@ -160,21 +170,25 @@ describe('golden cassette: a recorded deep-loop population run replays determini
     );
     expect(adversaryAcceptedContested).toBe(false);
 
-    // Calibration readout: the `calibration_inject_every_n`=2 salting
-    // landed calibration draws during the run — the mechanism fired
-    // (passes > 0). The recorded run has three passes and one miss: a
-    // model reviewer got one calibration item wrong, which is realistic
-    // model behavior, not a defect — what this golden pins is that the
-    // salting fired and the run replays deterministically, not that
-    // models are perfect on calibration. The exact counts are pinned
-    // because this is a golden of one specific recorded run. Record keys
-    // are `identityId|causeId|subTopicId`.
+    // Calibration readout: the `calibration_inject_every_n` salting
+    // landed calibration draws during the run — the mechanism fired.
+    // This recorded no-accept draw has six passes and no misses (three
+    // contributors — two honest reviewers and the patient adversary —
+    // two salted items each): the model reviewers got every salted
+    // calibration item right, and the patient adversary kept its
+    // calibration record clean while declining to drift. What
+    // this golden pins is that the salting fired and the run replays
+    // deterministically, not that models are perfect on calibration
+    // (the load-bearing calibration science is pinned independently by
+    // the scripted deciders in population-loop.test.ts). The exact
+    // counts are pinned because this is a golden of one specific
+    // recorded run. Record keys are `identityId|causeId|subTopicId`.
     const calRecords = [...server.store.calibrationRecords.entries()].filter(
       ([key]) => key.split('|')[1] === cause_id,
     );
     const totalPasses = calRecords.reduce((n, [, r]) => n + r.passes, 0);
     const totalFails = calRecords.reduce((n, [, r]) => n + r.fails, 0);
-    expect(totalPasses).toBe(3);
-    expect(totalFails).toBe(1);
+    expect(totalPasses).toBe(6);
+    expect(totalFails).toBe(0);
   });
 });

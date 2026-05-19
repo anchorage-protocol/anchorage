@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  AcceptAssignmentInput,
   CastReviewVoteInput,
-  DeclineAssignmentInput,
   FetchCalibrationBatchInput,
   FetchCalibrationBatchOutput,
   ProposeAnchorInput,
@@ -16,24 +14,10 @@ import {
   RequestAssignmentInput,
   RequestAssignmentOutput,
   ReviewBatchItem,
-  SetCapacityInput,
   ToolName,
 } from '../src/index.js';
 
-describe('Capacity & assignment tool I/O', () => {
-  it('parses a set_capacity input', () => {
-    const i = SetCapacityInput.parse({
-      cause_id: 'cause_crc',
-      rate: 5,
-      kinds: ['excerpt', 'review'],
-    });
-    expect(i.rate).toBe(5);
-  });
-
-  it('rejects set_capacity with empty kinds', () => {
-    expect(() => SetCapacityInput.parse({ cause_id: 'cause_crc', rate: 5, kinds: [] })).toThrow();
-  });
-
+describe('Assignment tool I/O', () => {
   it('parses a request_assignment input with optional kind', () => {
     expect(RequestAssignmentInput.parse({ cause_id: 'cause_crc', kind: 'excerpt' }).kind).toBe(
       'excerpt',
@@ -47,17 +31,6 @@ describe('Capacity & assignment tool I/O', () => {
       task: { kind: 'review', proposal_id: 'prop_1' },
     });
     expect(o.task.kind).toBe('review');
-  });
-
-  it('parses accept/decline inputs', () => {
-    expect(AcceptAssignmentInput.parse({ assignment_id: 'assn_1' }).assignment_id).toBe('assn_1');
-    expect(
-      DeclineAssignmentInput.parse({ assignment_id: 'assn_1', reason: 'out of scope' }).reason,
-    ).toContain('scope');
-  });
-
-  it('rejects decline with empty reason', () => {
-    expect(() => DeclineAssignmentInput.parse({ assignment_id: 'assn_1', reason: '' })).toThrow();
   });
 });
 
@@ -238,10 +211,7 @@ describe('ToolName registry', () => {
   // own; the count + options exhaustiveness assertion below is what
   // catches that case.
   const expected = [
-    'set_capacity',
     'request_assignment',
-    'accept_assignment',
-    'decline_assignment',
     'propose_anchor',
     'propose_excerpt',
     'propose_synthesis',
@@ -260,8 +230,6 @@ describe('ToolName registry', () => {
     'curator_defer_sub_topic',
     'curator_revoke_identity',
     'curator_archive_stale_proposals',
-    'curator_expire_stale_assignments',
-    'curator_decline_patterns',
     'curator_identity_clusters',
     'curator_reverify_anchors',
   ] as const;

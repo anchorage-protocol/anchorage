@@ -66,8 +66,8 @@ function findToolResult(
 }
 
 // A scripted "model": a `fetch`-shaped function that walks an honest
-// contributor through set_capacity → request_assignment → accept →
-// submit → request_assignment (drained) → stop. It threads IDs by
+// contributor through request_assignment → accept → submit →
+// request_assignment (drained) → stop. It threads IDs by
 // reading the messages array exactly as a real model would read its
 // own context.
 function scriptedHonestContributorFetch(cause_id: string): FetchLike {
@@ -90,17 +90,13 @@ function scriptedHonestContributorFetch(cause_id: string): FetchLike {
     }
 
     if (turn === 1) {
-      return toolUse('set_capacity', { cause_id, rate: 5, kinds: ['excerpt'] });
-    }
-    if (turn === 2) {
       return toolUse('request_assignment', { cause_id });
     }
-    if (turn === 3) {
-      const offered = findToolResult(body.messages, 'assignment_id');
-      if (!offered) throw new Error('scripted model expected an assignment offer');
-      return toolUse('accept_assignment', { assignment_id: offered['assignment_id'] });
-    }
-    if (turn === 4) {
+    if (turn === 2) {
+      // Single-slot: the assignment is held the moment
+      // request_assignment returns it — no accept step. The model
+      // fulfills it directly off the request result (assignment_id +
+      // task).
       const offered = findToolResult(body.messages, 'task');
       if (!offered) throw new Error('scripted model expected the assignment task');
       const task = offered['task'] as {
@@ -117,10 +113,10 @@ function scriptedHonestContributorFetch(cause_id: string): FetchLike {
         assignment_id: offered['assignment_id'],
       });
     }
-    if (turn === 5) {
+    if (turn === 3) {
       return toolUse('request_assignment', { cause_id });
     }
-    // turn 6+: the last request_assignment came back with a not_found
+    // turn 4+: the last request_assignment came back with a not_found
     // error (frontier drained); the model wraps up.
     return reply([{ type: 'text', text: 'Frontier is empty — nothing left to do.' }], 'end_turn');
   };
@@ -160,7 +156,7 @@ describe('testbed: llm-agent archetype against the wired surface', () => {
       apiKey: 'test-key-not-used',
       model: 'fake-model',
       system: 'You are an honest Anchorage contributor. Work the excerpt frontier.',
-      task: `You are connected to the Anchorage MCP server. Cause id: ${cause.id}. Set your capacity for excerpt work, then drain the frontier.`,
+      task: `You are connected to the Anchorage MCP server. Cause id: ${cause.id}. Pull excerpt work and drain the frontier.`,
       max_turns: 10,
       fetch: scriptedHonestContributorFetch(cause.id),
     });
@@ -169,17 +165,16 @@ describe('testbed: llm-agent archetype against the wired surface', () => {
     // turn budget.
     expect(result.stop_reason).toBe('end_turn');
 
-    // The transcript shows the four write-path calls in order, all
-    // non-error, plus the final drained request_assignment.
+    // The transcript shows the write-path calls in order (single-slot:
+    // request then fulfill, no accept step), all non-error, plus the
+    // final drained request_assignment.
     const calls = result.turns.flatMap((t) => t.tool_calls);
     expect(calls.map((c) => c.name)).toEqual([
-      'set_capacity',
       'request_assignment',
-      'accept_assignment',
       'propose_excerpt',
       'request_assignment',
     ]);
-    expect(calls.slice(0, 4).every((c) => !c.is_error)).toBe(true);
+    expect(calls.slice(0, 2).every((c) => !c.is_error)).toBe(true);
     // The drained request_assignment came back as a typed server error
     // (the model saw it and wrapped up).
     const drained = calls.at(-1);
@@ -243,7 +238,7 @@ describe('testbed: llm-agent archetype against the wired surface', () => {
       apiKey: process.env['ANTHROPIC_API_KEY'] as string,
       model: process.env['ANCHORAGE_TESTBED_MODEL'] ?? 'claude-haiku-4-5-20251001',
       system:
-        'You are an honest contributor to Anchorage, an open-research graph. You are connected to its MCP server. Use the tools to declare excerpt capacity for the given cause, pull a frontier task, accept it, and submit a reasonable excerpt proposal anchored to the assigned anchor. Stop when the frontier is empty.',
+        'You are an honest contributor to Anchorage, an open-research graph. You are connected to its MCP server. Use the tools to pull a frontier task for the given cause, accept it, and submit a reasonable excerpt proposal anchored to the assigned anchor. Stop when the frontier is empty.',
       task: `Cause id: ${cause.id}. Begin.`,
       max_turns: 12,
     });
@@ -342,13 +337,11 @@ describe('testbed: llm-agent role configs against the wired surface', () => {
     expect(result.stop_reason).toBe('end_turn');
     const calls = result.turns.flatMap((t) => t.tool_calls);
     expect(calls.map((c) => c.name)).toEqual([
-      'set_capacity',
       'request_assignment',
-      'accept_assignment',
       'propose_excerpt',
       'request_assignment',
     ]);
-    expect(calls.slice(0, 4).every((c) => !c.is_error)).toBe(true);
+    expect(calls.slice(0, 2).every((c) => !c.is_error)).toBe(true);
     expect(calls.at(-1)?.is_error).toBe(true);
 
     const excerptProposals = [...server.store.proposals.values()].filter(
@@ -361,7 +354,7 @@ describe('testbed: llm-agent role configs against the wired surface', () => {
   // All three roles are the same surface, different prompt — the only
   // thing that should differ is the system text (plus, for the patient
   // adversary, that the task tells it it's early). If a future edit
-  // accidentally diverges the *task framing* (capacity → frontier
+  // accidentally diverges the *task framing* (assignment → frontier
   // loop), the scripted test above breaks for one role but not the
   // others; this pins the shared-shape expectation directly, and that
   // each adversary role carries its hidden objective into the prompt.
@@ -381,7 +374,7 @@ describe('testbed: llm-agent role configs against the wired surface', () => {
     for (const role of [honestStrongRole, patient, strategic]) {
       const task = role.buildTask('cause_demo' as never);
       expect(task).toContain('cause_demo');
-      expect(task).toContain('capacity');
+      expect(task).toContain('assignment');
       expect(task).toContain('frontier');
     }
   });

@@ -3,7 +3,7 @@ import { CauseId, NodeId, ProposalId, SubTopicId } from './ids.js';
 
 // Frontier items are *candidates* for the assignment loop to draw from;
 // they are not themselves assignments. The kinds map to the gap types
-// PRD §Capacity and assignment names: orphan anchors needing excerpts,
+// PRD §Assignment names: orphan anchors needing excerpts,
 // syntheses needing parents, contested claims needing review, plus
 // unresolvable anchors that surface for re-anchoring (PRD §Verification
 // engine).

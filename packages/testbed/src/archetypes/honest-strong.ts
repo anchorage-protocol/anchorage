@@ -1,4 +1,4 @@
-import type { CauseId, WorkKind } from '@anchorage/contracts';
+import type { CauseId } from '@anchorage/contracts';
 import { type AnchorageClient, AnchorageClientError } from '../client.js';
 
 // honest-strong: a competent, well-intentioned contributor (PRD
@@ -11,8 +11,8 @@ import { type AnchorageClient, AnchorageClientError } from '../client.js';
 //
 // The archetype is *deterministic* given its inputs. Randomness in
 // the simulation belongs at a higher layer (population mixing, task
-// arrival order, decline-pattern injection); the archetype itself
-// behaves the same way on the same inputs so failures replay.
+// arrival order); the archetype itself behaves the same way on the
+// same inputs so failures replay.
 //
 // Archetype contract:
 //
@@ -27,9 +27,8 @@ import { type AnchorageClient, AnchorageClientError } from '../client.js';
 // for the friction-rate axis), hallucinator (fabricated spans the
 // verifier rejects), and the reviewer archetypes (`runHonestReviewer`
 // with `acceptAllDecider` for the lazy pattern, `payloadBiasedDecider`
-// for the strategic-coalition pattern, `payloadDecliningDecider` for
-// the decline-pattern abuse pattern). All wired in the testbed today;
-// the contract above is the shared shape.
+// for the strategic-coalition pattern). All wired in the testbed
+// today; the contract above is the shared shape.
 
 export interface ContentForExcerpt {
   content: string;
@@ -40,28 +39,20 @@ export interface ContentProvider {
   // Given a parent anchor's id, produce a verbatim span + a
   // paraphrased atomic claim. v0 looks the value up in a fixture map;
   // a full implementation would call out to a model. Returning
-  // `null` means "I can't produce work for this anchor" — the
-  // archetype declines the assignment with that reason.
+  // `null` means "I can't produce work for this anchor" — under the
+  // single-slot model (PRD §Assignment) there is no decline, so the
+  // archetype stalls on the held slot and stops; the slot is later
+  // recovered by TTL shadow-reassignment, not by contributor action.
   forAnchor(anchorId: string): ContentForExcerpt | null;
 }
 
 export interface HonestStrongConfig {
   cause_id: CauseId;
-  rate: number;
-  // The archetype declares capacity for these kinds. honest-strong
-  // implements excerpt fulfillment only (PRD's frontier-mapping covers
-  // orphan_anchor → excerpt and needs_review → review); review-kind
-  // work lives in the sibling honest-reviewer archetype, not in an
-  // extension of this one.
-  kinds: WorkKind[];
   content: ContentProvider;
 }
 
 export type HonestStrongAction =
-  | { kind: 'set_capacity' }
   | { kind: 'requested'; assignment_id: string; task_kind: string }
-  | { kind: 'accepted'; assignment_id: string }
-  | { kind: 'declined'; assignment_id: string; reason: string }
   | { kind: 'submitted'; assignment_id: string; proposal_id: string }
   | { kind: 'idle'; reason: string };
 
@@ -78,13 +69,6 @@ export async function runHonestStrong(
 ): Promise<HonestStrongResult> {
   const actions: HonestStrongAction[] = [];
 
-  await client.setCapacity({
-    cause_id: config.cause_id,
-    rate: config.rate,
-    kinds: config.kinds,
-  });
-  actions.push({ kind: 'set_capacity' });
-
   // Bound the loop to avoid runaway iteration if a future bug ever
   // makes request_assignment return work the archetype can't drain.
   // The bound is chosen high enough that real workloads land well
@@ -95,11 +79,18 @@ export async function runHonestStrong(
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     let offered: Awaited<ReturnType<AnchorageClient['requestAssignment']>>;
     try {
-      offered = await client.requestAssignment({ cause_id: config.cause_id });
+      // Single-slot (PRD §Assignment): one assignment in hand at a
+      // time. A fresh request only lands work once the prior slot
+      // resolves; while a slot is held (or the frontier is empty)
+      // the server answers not_found, structurally indistinguishable.
+      offered = await client.requestAssignment({
+        cause_id: config.cause_id,
+        kind: 'excerpt',
+      });
     } catch (err) {
-      // Empty frontier or rate-cap reached → archetype stops. Both
-      // are normal terminal states; the harness distinguishes them
-      // via the recorded reason if it cares.
+      // Empty frontier or held slot → archetype stops. Both are
+      // normal terminal states; the harness distinguishes them via
+      // the recorded reason if it cares.
       if (err instanceof AnchorageClientError) {
         actions.push({ kind: 'idle', reason: err.code });
         return { actions };
@@ -113,37 +104,24 @@ export async function runHonestStrong(
     });
 
     if (offered.task.kind !== 'excerpt') {
-      // v0 only handles excerpt tasks. Decline cleanly so the
-      // assignment doesn't sit forever (PRD §Capacity and assignment:
-      // declining outside-wheelhouse is non-punitive).
-      await client.declineAssignment({
-        assignment_id: offered.assignment_id,
-        reason: `honest-strong v0 doesn't handle ${offered.task.kind} tasks`,
-      });
-      actions.push({
-        kind: 'declined',
-        assignment_id: offered.assignment_id,
-        reason: 'unhandled task kind',
-      });
-      continue;
+      // The `kind: 'excerpt'` filter means the server never offers a
+      // non-excerpt task here; reaching this is a server bug, not a
+      // routine outcome. There is no decline to fall back on (PRD
+      // §Assignment) — record it as a defect signal and stop.
+      actions.push({ kind: 'idle', reason: 'unexpected_task_kind' });
+      return { actions };
     }
 
     const excerpt = config.content.forAnchor(offered.task.parent_anchor_id);
     if (!excerpt) {
-      await client.declineAssignment({
-        assignment_id: offered.assignment_id,
-        reason: 'no content available for this anchor',
-      });
-      actions.push({
-        kind: 'declined',
-        assignment_id: offered.assignment_id,
-        reason: 'no content',
-      });
-      continue;
+      // honest-strong's content provider returns a span for every
+      // anchor it is assigned by contract; a null here is a fixture
+      // defect. With no decline channel the held slot stalls (TTL
+      // shadow-reassignment recovers it, not the contributor), so
+      // the archetype stops rather than spin.
+      actions.push({ kind: 'idle', reason: 'no_content' });
+      return { actions };
     }
-
-    await client.acceptAssignment({ assignment_id: offered.assignment_id });
-    actions.push({ kind: 'accepted', assignment_id: offered.assignment_id });
 
     const submitted = await client.proposeExcerpt({
       cause_id: offered.task.cause_id,

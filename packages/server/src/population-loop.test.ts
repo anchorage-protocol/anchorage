@@ -123,8 +123,7 @@ async function wireClient(server: Server, identity_id: string): Promise<Anchorag
 }
 
 // A population contributor: a display name, an MCP-wired client, and a
-// fixed role. The archetypes set their own capacity each round, so a
-// contributor keeps the same role across rounds.
+// fixed role; a contributor keeps the same role across rounds.
 type ContributorRole =
   | { kind: 'excerpt'; content: ContentProvider }
   | { kind: 'review'; decide: ReviewDecider };
@@ -163,14 +162,11 @@ function runContributorFor(cause_id: string) {
     if (c.role.kind === 'excerpt') {
       await runHonestStrong(c.client, {
         cause_id: cause_id as never,
-        rate: 10,
-        kinds: ['excerpt'],
         content: c.role.content,
       });
     } else {
       await runHonestReviewer(c.client, {
         cause_id: cause_id as never,
-        rate: 10,
         decide: c.role.decide,
       });
     }

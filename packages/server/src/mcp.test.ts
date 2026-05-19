@@ -53,10 +53,7 @@ describe('mcp transport', () => {
   // that hid query_reputation from the contracts-side ToolName test
   // before the exhaustiveness pin landed there.
   const REGISTERED_TOOL_NAMES = [
-    'set_capacity',
     'request_assignment',
-    'accept_assignment',
-    'decline_assignment',
     'propose_anchor',
     'propose_excerpt',
     'propose_synthesis',
@@ -75,8 +72,6 @@ describe('mcp transport', () => {
     'curator_defer_sub_topic',
     'curator_revoke_identity',
     'curator_archive_stale_proposals',
-    'curator_expire_stale_assignments',
-    'curator_decline_patterns',
     'curator_identity_clusters',
     'curator_reverify_anchors',
   ] as const;
@@ -186,10 +181,6 @@ describe('mcp transport', () => {
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await Promise.all([bobMcp.connect(st), bob_client.connect(ct)]);
 
-    await bob_client.callTool({
-      name: 'set_capacity',
-      arguments: { cause_id: cause.id, rate: 3, kinds: ['excerpt'] },
-    });
     const offered = await bob_client.callTool({
       name: 'request_assignment',
       arguments: { cause_id: cause.id },
@@ -200,10 +191,6 @@ describe('mcp transport', () => {
     };
     expect(offerData.task.kind).toBe('excerpt');
 
-    await bob_client.callTool({
-      name: 'accept_assignment',
-      arguments: { assignment_id: offerData.assignment_id },
-    });
     const submitted = await bob_client.callTool({
       name: 'propose_excerpt',
       arguments: {
@@ -300,25 +287,43 @@ describe('authenticator seam', () => {
       label: 'desktop',
     });
     const cause = server.bootstrap.createCause({ name: 'CRC', description: 'colon cancer' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'ctDNA-MRD',
+      description: 'mrd',
+      scope_query: 'ctDNA',
+    });
+    // Seed an accepted orphan anchor so the frontier has an excerpt
+    // task for the delegated caller to pull.
+    const seed = await server.tools.proposeAnchor(
+      { identity_id: identity.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'orphan',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    server.curator.acceptProposal(seed.proposal_id);
 
     const mcp = buildMcpServer(server, { token: secret });
     const client = new Client({ name: 'delegated-client', version: '0.0.0' });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await Promise.all([mcp.connect(st), client.connect(ct)]);
 
-    // `set_capacity` is a write tool — exercising it confirms the
+    // `request_assignment` is a write tool — exercising it confirms the
     // resolved caller flowed through and the downstream gates did not
     // refuse on its account. The Caller posture is opaque from the
-    // wire's perspective; we cross-check the identity's capacity
-    // record landed under alice's id and the credential survived as
-    // the side-channel reference (credential id is the audit handle).
+    // wire's perspective; we cross-check the assignment landed under
+    // alice's id and the credential survived as the side-channel
+    // reference (credential id is the audit handle).
     const result = await client.callTool({
-      name: 'set_capacity',
-      arguments: { cause_id: cause.id, rate: 1, kinds: ['excerpt'] },
+      name: 'request_assignment',
+      arguments: { cause_id: cause.id },
     });
     expect(result.isError).toBeFalsy();
-    const cap = server.store.capacities.get(`${identity.id}|${cause.id}`);
-    expect(cap?.rate).toBe(1);
+    const assignmentId = (result.structuredContent as { assignment_id: string }).assignment_id;
+    expect(server.store.assignments.get(assignmentId as never)?.contributor_id).toBe(identity.id);
     expect(server.store.agentCredentials.get(credential.id)?.status).toBe('active');
   });
 
@@ -416,15 +421,13 @@ describe('curator tool surface', () => {
     const curatorTools = (await curatorClient.listTools()).tools.map((t) => t.name);
     // Contributor session: zero curator_* names.
     expect(contribTools.filter((n) => n.startsWith('curator_'))).toEqual([]);
-    // Curator session: exactly the nine curator tools committed in
+    // Curator session: exactly the seven curator tools committed in
     // PRD §MCP tool surface (Curator-only tools).
     expect(curatorTools.filter((n) => n.startsWith('curator_')).sort()).toEqual(
       [
         'curator_accept_proposal',
         'curator_archive_stale_proposals',
-        'curator_decline_patterns',
         'curator_defer_sub_topic',
-        'curator_expire_stale_assignments',
         'curator_identity_clusters',
         'curator_reject_proposal',
         'curator_reverify_anchors',
@@ -505,15 +508,8 @@ describe('curator tool surface', () => {
     });
   });
 
-  it('curator_decline_patterns and curator_identity_clusters return empty result on a fresh cause', async () => {
-    const { curatorClient, cause } = await curatorFixture();
-    const declines = await curatorClient.callTool({
-      name: 'curator_decline_patterns',
-      arguments: { cause_id: cause.id },
-    });
-    expect(declines.isError).toBeFalsy();
-    expect(declines.structuredContent).toEqual({ entries: [] });
-
+  it('curator_identity_clusters returns empty result on a fresh cause', async () => {
+    const { curatorClient } = await curatorFixture();
     const clusters = await curatorClient.callTool({
       name: 'curator_identity_clusters',
       arguments: {},
@@ -531,11 +527,11 @@ describe('curator tool surface', () => {
     // call refuses with `permission_denied` — distinct from the
     // `unauthorized` seam refusal that fires when the identity is
     // revoked outright.
-    const { server, curator, curatorClient, cause } = await curatorFixture();
+    const { server, curator, curatorClient } = await curatorFixture();
     server.store.identities.set(curator.id, { ...curator, role: 'contributor' });
     const result = await curatorClient.callTool({
-      name: 'curator_decline_patterns',
-      arguments: { cause_id: cause.id },
+      name: 'curator_identity_clusters',
+      arguments: {},
     });
     expect(result.isError).toBe(true);
     expect(errorPayload(result).code).toBe('permission_denied');
@@ -546,11 +542,11 @@ describe('curator tool surface', () => {
     // `resolveCaller` refuses at the Authenticator seam with
     // `unauthorized` (status !== 'active'); the role check never
     // runs because the call refuses one step earlier.
-    const { server, curator, curatorClient, cause } = await curatorFixture();
+    const { server, curator, curatorClient } = await curatorFixture();
     server.store.identities.set(curator.id, { ...curator, status: 'revoked' });
     const result = await curatorClient.callTool({
-      name: 'curator_decline_patterns',
-      arguments: { cause_id: cause.id },
+      name: 'curator_identity_clusters',
+      arguments: {},
     });
     expect(result.isError).toBe(true);
     expect(errorPayload(result).code).toBe('unauthorized');

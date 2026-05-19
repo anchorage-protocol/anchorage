@@ -122,7 +122,7 @@ export const Proposal = z
     id: ProposalId,
     proposer_id: IdentityId,
     // present when the proposal was submitted via an assignment
-    // (PRD §Capacity and assignment); contributor-initiated proposals
+    // (PRD §Assignment); contributor-initiated proposals
     // omit it and are weighted lower for reputation.
     assignment_id: AssignmentId.optional(),
     status: ProposalStatus,

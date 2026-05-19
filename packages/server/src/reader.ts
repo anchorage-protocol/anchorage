@@ -106,20 +106,6 @@ export class InProcessCuratorReader implements AnchorageCuratorReader {
     return this.server.resources.getCuratorQueue(this.caller, options);
   }
 
-  async getCuratorDeclinePatterns(
-    causeId: CauseId,
-    options?: { min_offers?: number; min_rate?: number },
-  ): Promise<{
-    entries: Array<{
-      identity_id: IdentityId;
-      offers: number;
-      declines: number;
-      decline_rate: number;
-    }>;
-  }> {
-    return this.server.resources.getCuratorDeclinePatterns(this.caller, causeId, options);
-  }
-
   async getCuratorIdentityClusters(options?: {
     window_seconds?: number;
     min_signal?: number;

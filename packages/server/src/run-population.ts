@@ -130,9 +130,9 @@ function populationTask(cause_id: string): string {
   return [
     `Cause id: ${cause_id}.`,
     'You are one of several contributors working this cause concurrently.',
-    'Begin by declaring your capacity for both excerpt and review work in this cause',
-    '(set_capacity with kinds ["excerpt","review"]).',
-    'Then work the frontier: pull a task, fulfill it or decline it, repeat.',
+    'Work the frontier one slot at a time: request an assignment (request_assignment —',
+    'omit kind to take excerpt or review work), fulfill it, request the next once it',
+    'resolves, repeat. You hold a single slot and there is no decline.',
     'For an excerpt task, read the parent anchor (it is among the accepted proposals — query_proposals)',
     'and quote a verbatim span from its content. For a review task, read the staged proposal and the',
     'anchor it sits under, then vote on the evidence.',

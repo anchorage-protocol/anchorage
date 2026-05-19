@@ -2,10 +2,13 @@ import { z } from 'zod';
 import { AssignmentId, CauseId, IdentityId, NodeId, ProposalId, SubTopicId } from './ids.js';
 import { Timestamp } from './timestamps.js';
 
-// The kinds of work a contributor can declare capacity for and the
-// system can pull from the frontier. Excludes `change_of_home` (curator
-// action per PRD §Change of home) and `sub_topic` (curator-gated per
-// PRD §Sub-topic creation) — those are not assignment-driven in v0.
+// The kinds of work the system can pull from the frontier, and the
+// optional `kind` filter on `request_assignment`. Excludes
+// `change_of_home` (curator action per PRD §Change of home) and
+// `sub_topic` (curator-gated per PRD §Sub-topic creation) — those are
+// not assignment-driven in v0. There is no capacity declaration: a
+// contributor holds a single FIFO slot per (identity, cause) and the
+// only knob is this strict per-kind filter (PRD §Assignment).
 export const WorkKind = z.enum([
   'anchor',
   'excerpt',
@@ -17,26 +20,10 @@ export const WorkKind = z.enum([
 ]);
 export type WorkKind = z.infer<typeof WorkKind>;
 
-// Capacity is declared at the cause level — sub-topic granularity would
-// reopen the rep-laundering vector by letting contributors cherry-pick
-// easy sub-topics (PRD §Capacity and assignment).
-export const Capacity = z
-  .object({
-    identity_id: IdentityId,
-    cause_id: CauseId,
-    // a cap, not a schedule: maximum assignments granted per window.
-    rate: z.number().int().positive(),
-    kinds: z.array(WorkKind).min(1),
-    updated_at: Timestamp,
-  })
-  .strict();
-export type Capacity = z.infer<typeof Capacity>;
-
-// Tasks are concrete (PRD §Capacity and assignment, `request_assignment`
-// bullet: "a specific node-shape to propose, or a specific proposal to
-// review, in a specific sub-topic"). Each variant carries the context
-// needed to produce the work without the contributor consulting the
-// tool layer.
+// Tasks are concrete (PRD §Assignment, `request_assignment` bullet: "a
+// specific node-shape to propose, or a specific proposal to review, in
+// a specific sub-topic"). Each variant carries the context needed to
+// produce the work without the contributor consulting the tool layer.
 const proposeTaskBase = {
   cause_id: CauseId,
   sub_topic_id: SubTopicId,
@@ -65,14 +52,32 @@ export const AssignmentTask = z.discriminatedUnion('kind', [
 ]);
 export type AssignmentTask = z.infer<typeof AssignmentTask>;
 
-// Lifecycle: offered (system pushed via request_assignment) →
-// accepted → submitted; or offered → declined; or offered → expired.
-// Decline is non-punitive on its own (PRD §Capacity and assignment);
-// pattern-decline is an abuse signal handled by both a curator-side
-// projection (`declinePatterns`) and an assignment-time gate
-// (`assignment_max_decline_rate`) — same per-(cause, reviewer)
-// cumulative rate consumed at two surfaces.
-export const AssignmentStatus = z.enum(['offered', 'accepted', 'submitted', 'declined', 'expired']);
+// Lifecycle (PRD §Assignment): accepted (held the moment
+// request_assignment returns it) → submitted (fulfilled); or
+// accepted → lapsed. There is no `offered`, no `declined`, and no
+// `expired`. Single-slot has no decision at offer time — the only
+// outcomes are fulfill the held slot or let it go — so there is no
+// separate accept step and no `offered` waiting state: a pulled
+// assignment is `accepted` (held) from creation.
+//
+//   - `lapsed` is terminal and means the slot resolved without a
+//     fulfillment and without credit or penalty — the precondition no
+//     longer holds (parent went `unresolvable`, sub-topic or cause
+//     closed) or the slot was already resolved by the holder or a TTL
+//     shadow. The slot frees; the contributor takes no reputation hit,
+//     symmetric with not having delivered it.
+//   - The lapse-is-a-finding path (an anchor whose `external_ref` will
+//     not resolve) is NOT `lapsed`: it materializes a real fulfillment
+//     carrying the honest negative result and goes `submitted` through
+//     the same `unresolvable` machinery a re-verification flip uses.
+//   - TTL is shadow-reassignment, never holder-expiry: a slot idle past
+//     `ttl_at` is *additionally* offered to a backup as a separate
+//     assignment carrying `shadow_of`; the slot resolves on the first
+//     fulfillment by anyone and the original holder is released
+//     regardless of author. A duplicate fulfillment of an
+//     already-resolved slot is dropped (the loser transitions
+//     `lapsed`).
+export const AssignmentStatus = z.enum(['accepted', 'submitted', 'lapsed']);
 export type AssignmentStatus = z.infer<typeof AssignmentStatus>;
 
 export const Assignment = z
@@ -85,17 +90,18 @@ export const Assignment = z
     // propose-kind tasks) or that the review vote attached to (for
     // review-kind tasks). Set on transition to `submitted`.
     fulfilled_by: ProposalId.optional(),
-    // reason given on decline (PRD §Capacity and assignment).
-    // Set on transition to `declined`. Persisted because pattern-
-    // declines surface to the curator-side `declinePatterns`
-    // projection where the reason is what the curator inspects
-    // when patterns surface — the assignment-time
-    // `assignment_max_decline_rate` gate reads only the cumulative
-    // rate, so the reason stays curator-facing by construction.
-    decline_reason: z.string().min(1).optional(),
+    // present iff this assignment is a TTL shadow re-offer of another
+    // contributor's still-unresolved task (PRD §Assignment, "TTL is
+    // shadow-reassignment"). Points at the original assignment whose
+    // slot this shadow can resolve; resolving either resolves the slot
+    // and releases the original holder regardless of author.
+    shadow_of: AssignmentId.optional(),
     created_at: Timestamp,
     updated_at: Timestamp,
-    expires_at: Timestamp.optional(),
+    // the TTL after which an unresolved slot is *additionally*
+    // shadow-offered to a backup — not a holder-expiry. Absent means no
+    // shadow has been scheduled yet.
+    ttl_at: Timestamp.optional(),
   })
   .strict();
 export type Assignment = z.infer<typeof Assignment>;

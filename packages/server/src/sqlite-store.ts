@@ -4,7 +4,6 @@ import type {
   AgentCredentialId,
   Assignment,
   AssignmentId,
-  Capacity,
   Cause,
   CauseId,
   Edge,
@@ -138,7 +137,6 @@ export class SqliteStore implements Store {
   readonly edges: MapLike<EdgeId, Edge>;
   readonly reviewVotes: MapLike<ReviewVoteId, ReviewVote>;
   readonly assignments: MapLike<AssignmentId, Assignment>;
-  readonly capacities: MapLike<`${IdentityId}|${CauseId}`, Capacity>;
   readonly reputations: MapLike<`${IdentityId}|${CauseId}|${SubTopicId}`, Reputation>;
   readonly calibrationRecords: MapLike<
     `${IdentityId}|${CauseId}|${SubTopicId}`,
@@ -168,7 +166,6 @@ export class SqliteStore implements Store {
     this.edges = new JsonTable(this.db, 'edges');
     this.reviewVotes = new JsonTable(this.db, 'review_votes');
     this.assignments = new JsonTable(this.db, 'assignments');
-    this.capacities = new JsonTable(this.db, 'capacities');
     this.reputations = new JsonTable(this.db, 'reputations');
     this.calibrationRecords = new JsonTable(this.db, 'calibration_records');
     this.verifiedRefs = new JsonTable(this.db, 'verified_refs');

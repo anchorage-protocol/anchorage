@@ -524,8 +524,8 @@ describe('unknown routes', () => {
 
 // Slice 7b — curator console end-to-end. The web tier mounts the
 // `/curator/*` namespace only when a curator-side reader is wired.
-// Without it the routes 404 by absence; with it, the four pages
-// (index, queue, decline-patterns, identity-clusters) render
+// Without it the routes 404 by absence; with it, the pages
+// (index, queue, identity-clusters, unresolvable) render
 // against a curator-role caller, and the underlying server methods
 // re-assert curator role on every call (so revocation or role-
 // demotion mid-flight surfaces as `permission_denied` → 403 on the
@@ -561,7 +561,7 @@ async function curatorFixture(): Promise<CuratorFixture> {
     role: 'curator',
   });
   // Contributor whose proposals + assignments + votes drive the
-  // queue / decline-patterns / identity-clusters projections.
+  // queue / identity-clusters projections.
   const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
 
   const cause = server.bootstrap.createCause({
@@ -628,12 +628,10 @@ describe('curator console (slice 7b)', () => {
     const body = await res.text();
     expect(body).toContain('Curator console');
     expect(body).toContain('Moderation queue');
-    expect(body).toContain('Decline patterns');
     expect(body).toContain('Identity clusters');
-    // Per-cause filter links into the queue and the decline-patterns
-    // view: the index reads the public cause directory for these.
+    // Per-cause filter links into the queue: the index reads the
+    // public cause directory for these.
     expect(body).toContain(`/curator/queue?cause_id=${f.causeId}`);
-    expect(body).toContain(`/curator/decline-patterns/${f.causeId}`);
     expect(body).toContain('/curator/identity-clusters');
   });
 
@@ -674,24 +672,6 @@ describe('curator console (slice 7b)', () => {
     expect(body).toContain('No staged proposals');
   });
 
-  it('GET /curator/decline-patterns/:cause_id renders the empty-state for a fresh cause', async () => {
-    const f = await curatorFixture();
-    webServer = f.webServer;
-    const res = await fetch(`${f.webUrl}/curator/decline-patterns/${f.causeId}`);
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain('Decline patterns');
-    // No reviewers have hit the offers floor yet.
-    expect(body).toContain('No entries above the small-sample floor');
-  });
-
-  it('GET /curator/decline-patterns/:cause_id 404s on an unknown cause', async () => {
-    const f = await curatorFixture();
-    webServer = f.webServer;
-    const res = await fetch(`${f.webUrl}/curator/decline-patterns/cau_unknown`);
-    expect(res.status).toBe(404);
-  });
-
   it('GET /curator/identity-clusters renders the empty-state on a fresh graph', async () => {
     const f = await curatorFixture();
     webServer = f.webServer;
@@ -727,7 +707,6 @@ describe('curator console (slice 7b)', () => {
     for (const path of [
       '/curator',
       '/curator/queue',
-      '/curator/decline-patterns/cau_x',
       '/curator/identity-clusters',
       '/curator/unresolvable',
     ]) {

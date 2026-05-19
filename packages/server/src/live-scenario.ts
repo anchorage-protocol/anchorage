@@ -68,8 +68,9 @@ export const LIVE_ANCHORS: { pmid: string; content: string }[] = [
 export function buildLiveTask(cause_id: string): string {
   return [
     `Cause id: ${cause_id}.`,
-    'Begin by declaring excerpt capacity in this cause (set_capacity, kinds ["excerpt"]).',
-    'Then work the frontier: request an excerpt task, accept it, read the parent anchor',
+    'Work the frontier one slot at a time: request an excerpt task (request_assignment,',
+    'kind "excerpt") — it is yours to work the moment it is returned, there is no accept',
+    'step — then read the parent anchor',
     '(it is among the accepted proposals — query_proposals), and quote a verbatim span from',
     "the anchor's content as the excerpt — for this instance the anchor content is the",
     'source text and span verification matches against it directly, so no external fetch is',

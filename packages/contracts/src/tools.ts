@@ -24,23 +24,22 @@ import { ReviewDecision } from './reviews.js';
 const ok = z.object({ ok: z.literal(true) }).strict();
 const proposalIdResult = z.object({ proposal_id: ProposalId }).strict();
 
-// ──── Capacity & assignment ────
-
-export const SetCapacityInput = z
-  .object({
-    cause_id: CauseId,
-    rate: z.number().int().positive(),
-    kinds: z.array(WorkKind).min(1),
-  })
-  .strict();
-export type SetCapacityInput = z.infer<typeof SetCapacityInput>;
-export const SetCapacityOutput = ok;
-export type SetCapacityOutput = z.infer<typeof SetCapacityOutput>;
+// ──── Assignment ────
+//
+// There is no capacity declaration, no decline, and no accept step
+// (PRD §Assignment). A contributor holds a single FIFO slot per
+// (identity, cause): `request_assignment` returns it already held
+// (`accepted`) — single-slot has no decision at offer time, so there
+// is nothing to accept or decline — then fulfill it via the matching
+// `propose_*` / `cast_review_vote`. The slot also resolves without
+// contributor action when its precondition lapses, and is
+// shadow-reassigned (never expired) past its TTL.
 
 export const RequestAssignmentInput = z
   .object({
     cause_id: CauseId,
-    // Optional preference; the system is not bound by it.
+    // Strict per-kind filter, not a soft preference and not an
+    // expertise signal (PRD §Assignment, `request_assignment`).
     kind: WorkKind.optional(),
   })
   .strict();
@@ -49,18 +48,6 @@ export const RequestAssignmentOutput = z
   .object({ assignment_id: AssignmentId, task: AssignmentTask })
   .strict();
 export type RequestAssignmentOutput = z.infer<typeof RequestAssignmentOutput>;
-
-export const AcceptAssignmentInput = z.object({ assignment_id: AssignmentId }).strict();
-export type AcceptAssignmentInput = z.infer<typeof AcceptAssignmentInput>;
-export const AcceptAssignmentOutput = ok;
-export type AcceptAssignmentOutput = z.infer<typeof AcceptAssignmentOutput>;
-
-export const DeclineAssignmentInput = z
-  .object({ assignment_id: AssignmentId, reason: z.string().min(1) })
-  .strict();
-export type DeclineAssignmentInput = z.infer<typeof DeclineAssignmentInput>;
-export const DeclineAssignmentOutput = ok;
-export type DeclineAssignmentOutput = z.infer<typeof DeclineAssignmentOutput>;
 
 // ──── Proposals (assignment-fulfilling or contributor-initiated) ────
 //
@@ -185,8 +172,8 @@ export type CastReviewVoteOutput = z.infer<typeof CastReviewVoteOutput>;
 // twin of the `cause://` resource, returning the identical
 // `CauseDirectory` shape. It exists because the tool surface must be
 // self-sufficient for the *first* contribution. `request_assignment`
-// (and `set_capacity`) require a `cause_id`, but the only other way to
-// obtain one is the passive `cause://` resource — and an MCP client is
+// requires a `cause_id`, but the only other way to obtain one is the
+// passive `cause://` resource — and an MCP client is
 // not guaranteed to surface resources to the model driving it (many
 // expose only tools, or gate resources behind explicit user attach).
 // Without a tool, a freshly-connected agent that just authenticated has
@@ -328,45 +315,6 @@ export const CuratorArchiveStaleProposalsOutput = z
   .strict();
 export type CuratorArchiveStaleProposalsOutput = z.infer<typeof CuratorArchiveStaleProposalsOutput>;
 
-export const CuratorExpireStaleAssignmentsInput = z
-  .object({ window_seconds: z.number().positive(), cause_id: CauseId.optional() })
-  .strict();
-export type CuratorExpireStaleAssignmentsInput = z.infer<typeof CuratorExpireStaleAssignmentsInput>;
-export const CuratorExpireStaleAssignmentsOutput = z
-  .object({ assignment_ids: z.array(AssignmentId) })
-  .strict();
-export type CuratorExpireStaleAssignmentsOutput = z.infer<
-  typeof CuratorExpireStaleAssignmentsOutput
->;
-
-// `declinePatterns` projection (PRD §Reviewer assignment, Rate-limit
-// accounting): per-reviewer offer / decline / rate within a cause,
-// already small-sample-filtered through `min_offers` (curator picks
-// a stricter floor if they want; the v0 default is 3 — below which
-// decline rate is meaningless noise). Specific thresholds remain
-// operationally private; the projection shape is public.
-export const DeclinePatternEntry = z
-  .object({
-    identity_id: IdentityId,
-    offers: z.number().int().nonnegative(),
-    declines: z.number().int().nonnegative(),
-    decline_rate: z.number().min(0).max(1),
-  })
-  .strict();
-export type DeclinePatternEntry = z.infer<typeof DeclinePatternEntry>;
-export const CuratorDeclinePatternsInput = z
-  .object({
-    cause_id: CauseId,
-    min_offers: z.number().int().nonnegative().optional(),
-    min_rate: z.number().min(0).max(1).optional(),
-  })
-  .strict();
-export type CuratorDeclinePatternsInput = z.infer<typeof CuratorDeclinePatternsInput>;
-export const CuratorDeclinePatternsOutput = z
-  .object({ entries: z.array(DeclinePatternEntry) })
-  .strict();
-export type CuratorDeclinePatternsOutput = z.infer<typeof CuratorDeclinePatternsOutput>;
-
 // `identityClusters` projection (PRD §Identity bullet 4, cross-cause
 // identity clustering): identity pairs whose behavioral fingerprint
 // across causes suggests coordination. Two metrics ride along
@@ -434,17 +382,14 @@ export type CuratorReverifyAnchorsOutput = z.infer<typeof CuratorReverifyAnchors
 // which need to know what tool a name resolves to without crawling the
 // schema list.
 //
-// Names cluster by surface: capacity / assignment, propose_*,
-// cast_review_vote, the read-path `query_*` and `fetch_*`, and the
-// curator-only `curator_*` block (slice 7a). The `curator_` prefix
-// names the role gate at the wire — a contributor calling any name
-// in that block refuses with `permission_denied`, same posture as
-// `unauthorized` at the Authenticator seam.
+// Names cluster by surface: assignment, propose_*, cast_review_vote,
+// the read-path `query_*` and `fetch_*`, and the curator-only
+// `curator_*` block (slice 7a). The `curator_` prefix names the role
+// gate at the wire — a contributor calling any name in that block
+// refuses with `permission_denied`, same posture as `unauthorized` at
+// the Authenticator seam.
 export const ToolName = z.enum([
-  'set_capacity',
   'request_assignment',
-  'accept_assignment',
-  'decline_assignment',
   'propose_anchor',
   'propose_excerpt',
   'propose_synthesis',
@@ -463,8 +408,6 @@ export const ToolName = z.enum([
   'curator_defer_sub_topic',
   'curator_revoke_identity',
   'curator_archive_stale_proposals',
-  'curator_expire_stale_assignments',
-  'curator_decline_patterns',
   'curator_identity_clusters',
   'curator_reverify_anchors',
 ]);

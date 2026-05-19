@@ -1,36 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Assignment, AssignmentTask, Capacity } from '../src/index.js';
-
-describe('Capacity', () => {
-  const valid = {
-    identity_id: 'id_abc123',
-    cause_id: 'cause_crc',
-    rate: 10,
-    kinds: ['excerpt', 'review'] as const,
-    updated_at: '2026-05-06T12:00:00.000Z',
-  };
-
-  it('parses a valid capacity', () => {
-    expect(Capacity.parse(valid).rate).toBe(10);
-  });
-
-  it('rejects empty kinds', () => {
-    expect(() => Capacity.parse({ ...valid, kinds: [] })).toThrow();
-  });
-
-  it('rejects an unknown kind', () => {
-    expect(() => Capacity.parse({ ...valid, kinds: ['proofread'] })).toThrow();
-  });
-
-  it('rejects rate <= 0', () => {
-    expect(() => Capacity.parse({ ...valid, rate: 0 })).toThrow();
-  });
-
-  it('excludes change_of_home and sub_topic from assignable kinds', () => {
-    expect(() => Capacity.parse({ ...valid, kinds: ['change_of_home'] })).toThrow();
-    expect(() => Capacity.parse({ ...valid, kinds: ['sub_topic'] })).toThrow();
-  });
-});
+import { Assignment, AssignmentTask } from '../src/index.js';
 
 describe('AssignmentTask', () => {
   it('parses an anchor task', () => {
@@ -99,33 +68,41 @@ describe('Assignment record', () => {
       kind: 'review' as const,
       proposal_id: 'prop_1',
     },
-    status: 'offered' as const,
+    status: 'accepted' as const,
     created_at: '2026-05-06T12:00:00.000Z',
     updated_at: '2026-05-06T12:00:00.000Z',
   };
 
   it('parses a valid assignment', () => {
-    expect(Assignment.parse(valid).status).toBe('offered');
+    expect(Assignment.parse(valid).status).toBe('accepted');
   });
 
   it('walks the lifecycle states', () => {
-    for (const status of ['accepted', 'submitted', 'declined', 'expired'] as const) {
+    for (const status of ['accepted', 'submitted', 'lapsed'] as const) {
       expect(Assignment.parse({ ...valid, status }).status).toBe(status);
     }
+  });
+
+  it('rejects retired statuses (offered, declined, expired)', () => {
+    expect(() => Assignment.parse({ ...valid, status: 'offered' })).toThrow();
+    expect(() => Assignment.parse({ ...valid, status: 'declined' })).toThrow();
+    expect(() => Assignment.parse({ ...valid, status: 'expired' })).toThrow();
   });
 
   it('rejects an unknown status', () => {
     expect(() => Assignment.parse({ ...valid, status: 'completed' })).toThrow();
   });
 
-  it('accepts optional fulfilled_by and expires_at', () => {
+  it('accepts optional fulfilled_by, shadow_of, and ttl_at', () => {
     const a = Assignment.parse({
       ...valid,
       status: 'submitted',
       fulfilled_by: 'prop_1',
-      expires_at: '2026-05-07T12:00:00.000Z',
+      shadow_of: 'assn_orig',
+      ttl_at: '2026-05-07T12:00:00.000Z',
     });
     expect(a.fulfilled_by).toBe('prop_1');
-    expect(a.expires_at).toContain('2026-05-07');
+    expect(a.shadow_of).toBe('assn_orig');
+    expect(a.ttl_at).toContain('2026-05-07');
   });
 });

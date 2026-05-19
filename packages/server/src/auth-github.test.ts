@@ -138,6 +138,24 @@ describe('GithubOAuthAuthenticator — device-code flow', () => {
     // authenticator and round-trip a write tool.
     server.setAuthenticator(auth);
     const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
+    const subTopic = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'ctDNA-MRD',
+      description: 'mrd',
+      scope_query: 'ctDNA',
+    });
+    // Seed an accepted orphan anchor so the frontier has an excerpt
+    // task for the GitHub-authenticated caller to pull.
+    const seed = await server.tools.proposeAnchor(
+      { identity_id: result.identity_id as never },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: subTopic.id,
+        content: 'orphan',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    server.curator.acceptProposal(seed.proposal_id);
     const mcp = buildMcpServer(server, {
       token: result.secret as string,
     });
@@ -145,11 +163,14 @@ describe('GithubOAuthAuthenticator — device-code flow', () => {
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await Promise.all([mcp.connect(st), client.connect(ct)]);
     const toolResult = await client.callTool({
-      name: 'set_capacity',
-      arguments: { cause_id: cause.id, rate: 1, kinds: ['excerpt'] },
+      name: 'request_assignment',
+      arguments: { cause_id: cause.id },
     });
     expect(toolResult.isError).toBeFalsy();
-    expect(server.store.capacities.get(`${result.identity_id}|${cause.id}` as never)).toBeTruthy();
+    const assignmentId = (toolResult.structuredContent as { assignment_id: string }).assignment_id;
+    expect(server.store.assignments.get(assignmentId as never)?.contributor_id).toBe(
+      result.identity_id,
+    );
   });
 
   it('returns pending while GitHub has not yet authorized', async () => {

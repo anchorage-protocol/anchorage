@@ -19,8 +19,8 @@ export type IdentityProvider = z.infer<typeof IdentityProvider>;
 // privileged role per PRD §The contribution flow (Resolve step) and
 // PRD §Reviewer assignment (step 4: curator escalation): the
 // human-or-humans who can fire `server.curator.*` (`acceptProposal`,
-// `rejectProposal`, `deferSubTopic`, `expireStaleAssignments`,
-// `revokeIdentity`). Slice 4b committed the data-model side (the role
+// `rejectProposal`, `deferSubTopic`, `revokeIdentity`). Slice 4b
+// committed the data-model side (the role
 // field + the `anchorage-admin` CLI bootstrap); slice 7a wired the
 // curator-only MCP tool surface that reads the role, and slices 7b/7c
 // wired the read-only console and the re-verification surface that

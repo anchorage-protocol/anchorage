@@ -100,7 +100,6 @@ function snapshot(store: Store): Record<string, [string, unknown][]> {
     edges: collect(store.edges),
     reviewVotes: collect(store.reviewVotes),
     assignments: collect(store.assignments),
-    capacities: collect(store.capacities),
     reputations: collect(store.reputations),
     calibrationRecords: collect(store.calibrationRecords),
     verifiedRefs: collect(store.verifiedRefs),

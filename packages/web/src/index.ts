@@ -7,7 +7,6 @@
 // `@anchorage/web` depends only on `@anchorage/contracts` at
 // runtime; the server composes the two.
 export { renderContributorPage } from './pages/contributor.js';
-export { renderCuratorDeclinePatternsPage } from './pages/curator-decline-patterns.js';
 export { renderCuratorIdentityClustersPage } from './pages/curator-identity-clusters.js';
 export { renderCuratorIndexPage } from './pages/curator-index.js';
 export { renderCuratorQueuePage } from './pages/curator-queue.js';
@@ -22,7 +21,6 @@ export { baselineStylesheet } from './styles.js';
 export {
   buildWebHandler,
   matchContributorRoute,
-  matchCuratorDeclinePatternsRoute,
   matchManuscriptRoute,
   matchNodeRoute,
   matchSubTopicRoute,
