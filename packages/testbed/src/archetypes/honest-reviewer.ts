@@ -145,6 +145,16 @@ export async function runHonestReviewer(
       throw err;
     }
 
+    // Frontier exhaustion is an honest `status: 'idle'` result, not an
+    // error (contracts/src/tools.ts `RequestAssignmentOutput`). For an
+    // honest reviewer the loop-exit semantics are identical to the
+    // previous `not_found` catch — we have no review work to fulfill —
+    // so we surface the same `idle` action with the structured reason.
+    if (offered.status === 'idle') {
+      actions.push({ kind: 'idle', reason: offered.reason });
+      return { actions };
+    }
+
     if (offered.task.kind !== 'review') {
       // Unreachable given the `kind: 'review'` filter; a non-review
       // offer is a server bug. No decline channel (PRD §Assignment).

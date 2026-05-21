@@ -1,4 +1,9 @@
-import type { NodeId, ProposalId } from '@anchorage/contracts';
+import type {
+  NodeId,
+  ProposalId,
+  RequestAssignmentAssigned,
+  RequestAssignmentOutput,
+} from '@anchorage/contracts';
 import {
   AnchorageClient,
   acceptAllDecider,
@@ -20,6 +25,30 @@ import { SeededIdGen } from './id-gen.js';
 import { buildMcpServer } from './mcp.js';
 import { Server } from './server.js';
 import { FakeVerifier } from './verifier.js';
+
+// Narrowing helper: in this file `request_assignment` calls inside
+// scenarios are set up to mint a slot; the honest contract is now a
+// discriminated union (assigned | idle), and these tests narrow to
+// the assigned variant at the call site. Several scenarios already
+// catch the older `ServerError('not_found', ...)` exhaustion shape to
+// flag a "gated" state (cross-stratum gate, sybil drain, decay gate,
+// etc.) — semantically identical to the new `status: 'idle'`. To
+// preserve those catches without rewiring every scenario, this helper
+// re-throws an idle response as the same `not_found` ServerError. The
+// scenarios that *do* care about the structured idle payload (cause-
+// level wiring tests, e.g.) narrow off `status` directly without going
+// through this helper. Reputation-gate refusals continue to land as
+// thrown errors at the call site (those still throw inside the server)
+// and never flow through here.
+function asAssigned(o: RequestAssignmentOutput): RequestAssignmentAssigned {
+  if (o.status !== 'assigned') {
+    throw new ServerError(
+      'not_found',
+      `request_assignment returned status='${o.status}' reason='${o.reason}'`,
+    );
+  }
+  return o;
+}
 
 // Walking-skeleton testbed integration: a Server is wired to an
 // honest-strong archetype over the in-memory MCP transport. The
@@ -2672,9 +2701,11 @@ describe('testbed: synthetic populations against the wired surface', () => {
         quoted_span: { text: 'treatment X works for stage III patients', offset: 0 },
       },
     );
-    const causeAAssignment = await server.tools.requestAssignment(
-      { identity_id: carol.id },
-      { cause_id: causeA.id, kind: 'review' },
+    const causeAAssignment = asAssigned(
+      await server.tools.requestAssignment(
+        { identity_id: carol.id },
+        { cause_id: causeA.id, kind: 'review' },
+      ),
     );
     expect(causeAAssignment.task.kind).toBe('review');
   });
@@ -4717,7 +4748,7 @@ describe('testbed: synthetic populations against the wired surface', () => {
     expect(eveDemonstrated).toBeGreaterThanOrEqual(server.review.assignment_min_demonstrated);
 
     // Gate now opens. Eve graduates and pulls her first assignment.
-    const assignment = await eveClient.requestAssignment({ cause_id: cause.id });
+    const assignment = asAssigned(await eveClient.requestAssignment({ cause_id: cause.id }));
     expect(assignment.assignment_id).toBeDefined();
   });
 
@@ -7695,9 +7726,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // Adversary phase 1: Carol requests assignment, gets routed
     // (no co-stratum reviewer yet routed for contested), casts
     // reject.
-    const carolAssignment = await server.tools.requestAssignment(
-      { identity_id: carol.id },
-      { cause_id: cause.id },
+    const carolAssignment = asAssigned(
+      await server.tools.requestAssignment({ identity_id: carol.id }, { cause_id: cause.id }),
     );
     if (carolAssignment.task.kind !== 'review') {
       throw new Error('expected carol to be routed to a review task');
@@ -7724,9 +7754,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // of the attack.
     let daveGated = false;
     try {
-      const daveAssignment = await server.tools.requestAssignment(
-        { identity_id: dave.id },
-        { cause_id: cause.id },
+      const daveAssignment = asAssigned(
+        await server.tools.requestAssignment({ identity_id: dave.id }, { cause_id: cause.id }),
       );
       if (
         daveAssignment.task.kind === 'review' &&
@@ -7784,9 +7813,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
         attestation_level: params.attestation_threshold,
       });
       evesMinted += 1;
-      const eveAssignment = await server.tools.requestAssignment(
-        { identity_id: eve.id },
-        { cause_id: cause.id },
+      const eveAssignment = asAssigned(
+        await server.tools.requestAssignment({ identity_id: eve.id }, { cause_id: cause.id }),
       );
       if (eveAssignment.task.kind !== 'review') {
         throw new Error('expected eve routed to a review task');
@@ -7817,9 +7845,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
       const post = server.store.proposals.get(contestedId);
       if (post?.status !== 'staged') break;
       try {
-        const honestAssignment = await server.tools.requestAssignment(
-          { identity_id: honest.id },
-          { cause_id: cause.id },
+        const honestAssignment = asAssigned(
+          await server.tools.requestAssignment({ identity_id: honest.id }, { cause_id: cause.id }),
         );
         if (
           honestAssignment.task.kind !== 'review' ||
@@ -8659,9 +8686,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     // ADVERSARY PHASE. Carol requests assignment first, gets routed
     // (no co-stratum reviewer yet routed for contested), votes reject.
-    const carolAssignment = await server.tools.requestAssignment(
-      { identity_id: carol.id },
-      { cause_id: cause.id },
+    const carolAssignment = asAssigned(
+      await server.tools.requestAssignment({ identity_id: carol.id }, { cause_id: cause.id }),
     );
     if (carolAssignment.task.kind !== 'review') {
       throw new Error('expected carol to be routed to a review task');
@@ -8689,9 +8715,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // before the honest pool can vote.
     let daveVoted = false;
     try {
-      const daveAssignment = await server.tools.requestAssignment(
-        { identity_id: dave.id },
-        { cause_id: cause.id },
+      const daveAssignment = asAssigned(
+        await server.tools.requestAssignment({ identity_id: dave.id }, { cause_id: cause.id }),
       );
       if (
         daveAssignment.task.kind === 'review' &&
@@ -8729,9 +8754,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
       const post = server.store.proposals.get(contestedId);
       if (post?.status !== 'staged') break;
       try {
-        const honestAssignment = await server.tools.requestAssignment(
-          { identity_id: honest.id },
-          { cause_id: cause.id },
+        const honestAssignment = asAssigned(
+          await server.tools.requestAssignment({ identity_id: honest.id }, { cause_id: cause.id }),
         );
         if (
           honestAssignment.task.kind !== 'review' ||
@@ -9178,9 +9202,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     for (const adv of [carol, dave]) {
       const post = server.store.proposals.get(contestedId);
       if (post?.status !== 'staged') break;
-      const assignment = await server.tools.requestAssignment(
-        { identity_id: adv.id },
-        { cause_id: cause.id },
+      const assignment = asAssigned(
+        await server.tools.requestAssignment({ identity_id: adv.id }, { cause_id: cause.id }),
       );
       if (assignment.task.kind !== 'review') {
         throw new Error('expected adversary routed to review task');
@@ -9208,9 +9231,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
       const post = server.store.proposals.get(contestedId);
       if (post?.status !== 'staged') break;
       try {
-        const assignment = await server.tools.requestAssignment(
-          { identity_id: honest.id },
-          { cause_id: cause.id },
+        const assignment = asAssigned(
+          await server.tools.requestAssignment({ identity_id: honest.id }, { cause_id: cause.id }),
         );
         if (assignment.task.kind !== 'review' || assignment.task.proposal_id !== contestedId) {
           continue;
@@ -10639,9 +10661,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     // ADVERSARY PHASE. Carol requests assignment first, gets routed,
     // votes reject. Dave requests next: gated at strat=on, routed and
     // votes reject at strat=off.
-    const carolAssignment = await server.tools.requestAssignment(
-      { identity_id: carol.id },
-      { cause_id: cause.id },
+    const carolAssignment = asAssigned(
+      await server.tools.requestAssignment({ identity_id: carol.id }, { cause_id: cause.id }),
     );
     if (carolAssignment.task.kind !== 'review') {
       throw new Error('expected carol routed to review task');
@@ -10665,9 +10686,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     const postCarol = server.store.proposals.get(contestedId);
     if (postCarol?.status === 'staged') {
       try {
-        const daveAssignment = await server.tools.requestAssignment(
-          { identity_id: dave.id },
-          { cause_id: cause.id },
+        const daveAssignment = asAssigned(
+          await server.tools.requestAssignment({ identity_id: dave.id }, { cause_id: cause.id }),
         );
         if (
           daveAssignment.task.kind === 'review' &&
@@ -10700,9 +10720,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
       const post = server.store.proposals.get(contestedId);
       if (post?.status !== 'staged') break;
       try {
-        const honestAssignment = await server.tools.requestAssignment(
-          { identity_id: honest.id },
-          { cause_id: cause.id },
+        const honestAssignment = asAssigned(
+          await server.tools.requestAssignment({ identity_id: honest.id }, { cause_id: cause.id }),
         );
         if (
           honestAssignment.task.kind !== 'review' ||
@@ -11709,9 +11728,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     });
     const contested1Id = contested1.proposal_id;
 
-    const carolAssignment1 = await server.tools.requestAssignment(
-      { identity_id: carol.id },
-      { cause_id: cause.id },
+    const carolAssignment1 = asAssigned(
+      await server.tools.requestAssignment({ identity_id: carol.id }, { cause_id: cause.id }),
     );
     if (carolAssignment1.task.kind !== 'review') {
       throw new Error('round 1: expected carol routed to a review task');
@@ -11733,9 +11751,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     let daveVoted1 = false;
     try {
-      const daveAssignment1 = await server.tools.requestAssignment(
-        { identity_id: dave.id },
-        { cause_id: cause.id },
+      const daveAssignment1 = asAssigned(
+        await server.tools.requestAssignment({ identity_id: dave.id }, { cause_id: cause.id }),
       );
       if (
         daveAssignment1.task.kind === 'review' &&
@@ -11829,9 +11846,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
     });
     const contested2Id = contested2.proposal_id;
 
-    const carolAssignment2 = await server.tools.requestAssignment(
-      { identity_id: carol.id },
-      { cause_id: cause.id },
+    const carolAssignment2 = asAssigned(
+      await server.tools.requestAssignment({ identity_id: carol.id }, { cause_id: cause.id }),
     );
     if (carolAssignment2.task.kind !== 'review') {
       throw new Error('round 2: expected carol routed to a review task');
@@ -11853,9 +11869,8 @@ describe('testbed: synthetic populations against the wired surface', () => {
 
     let daveVoted2 = false;
     try {
-      const daveAssignment2 = await server.tools.requestAssignment(
-        { identity_id: dave.id },
-        { cause_id: cause.id },
+      const daveAssignment2 = asAssigned(
+        await server.tools.requestAssignment({ identity_id: dave.id }, { cause_id: cause.id }),
       );
       if (
         daveAssignment2.task.kind === 'review' &&

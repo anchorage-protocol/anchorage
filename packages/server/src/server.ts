@@ -1924,7 +1924,7 @@ export class Server {
               ...this.ttlStamp(now),
             };
             this.store.assignments.set(assignment.id, assignment);
-            return { assignment_id: assignment.id, task: calTask };
+            return { status: 'assigned', assignment_id: assignment.id, task: calTask };
           }
         }
       }
@@ -2027,13 +2027,45 @@ export class Server {
           ...this.ttlStamp(now),
         };
         this.store.assignments.set(assignment.id, assignment);
-        return { assignment_id: assignment.id, task };
+        return { status: 'assigned', assignment_id: assignment.id, task };
       }
 
-      throw new ServerError(
-        'not_found',
-        `no eligible frontier item for ${identity.id} in cause ${parsed.cause_id}`,
-      );
+      // Frontier exhaustion is an honest result, not an error (PRD
+      // §Write-path tools, "Assignment"). The graph-derivable frontier
+      // — review tasks for others' staged proposals, gap-closing tasks
+      // for accepted nodes — has nothing eligible for this caller
+      // right now (own-proposal skip, already-voted skip, single-slot
+      // gate already cleared, no stratification-unique slot, etc.).
+      // The cause is still open: the propose_* tools are callable
+      // off-slot (the contributor-initiated path, see "Contributor-
+      // initiated work is off-slot" — this caller holds no slot in the
+      // cause, having just been refused one, so the guard does not
+      // fire), and that path produces the inventory the *next*
+      // contributor's frontier will draw from. The response carries
+      // the cause's active sub-topics so the agent has each
+      // `scope_query` in hand without a follow-up tool call.
+      const subTopics = [...this.store.subTopics.values()]
+        .filter((st) => st.cause_id === parsed.cause_id && st.status === 'active')
+        .sort((a, b) => {
+          if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
+          return a.id.localeCompare(b.id);
+        });
+      return {
+        status: 'idle',
+        cause_id: parsed.cause_id,
+        reason: 'no_eligible_frontier_item',
+        sub_topics: subTopics,
+        guidance:
+          'No scheduled work is currently eligible for you in this cause — the ' +
+          "graph-derivable frontier (others' proposals to review, gap-closing tasks " +
+          'over accepted nodes) is exhausted for you right now. The cause is still ' +
+          'open: the propose_* tools remain callable off-slot. Use each sub-topic ' +
+          '`scope_query` to identify in-scope literature not yet anchored and submit ' +
+          'it with propose_anchor; browse the accepted graph via the subgraph:// ' +
+          'resource to connect nodes with propose_synthesis or supersede stale ' +
+          'anchors with propose_supersedes. Your spontaneous contribution becomes ' +
+          "the frontier the next contributor's request_assignment will draw from.",
+      };
     },
 
     // PRD §Write-path tools: propose_anchor stages an anchor proposal.

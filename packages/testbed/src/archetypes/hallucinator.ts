@@ -101,6 +101,13 @@ export async function runHallucinator(
       }
       throw err;
     }
+    // Frontier exhaustion → honest `status: 'idle'` (not an error). The
+    // archetype has no spontaneous-proposal loop; stop the same way the
+    // prior not_found catch did. See contracts/src/tools.ts.
+    if (offered.status === 'idle') {
+      actions.push({ kind: 'idle', reason: offered.reason });
+      return { actions };
+    }
     actions.push({
       kind: 'requested',
       assignment_id: offered.assignment_id,

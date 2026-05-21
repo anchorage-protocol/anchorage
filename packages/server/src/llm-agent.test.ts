@@ -116,9 +116,14 @@ function scriptedHonestContributorFetch(cause_id: string): FetchLike {
     if (turn === 3) {
       return toolUse('request_assignment', { cause_id });
     }
-    // turn 4+: the last request_assignment came back with a not_found
-    // error (frontier drained); the model wraps up.
-    return reply([{ type: 'text', text: 'Frontier is empty — nothing left to do.' }], 'end_turn');
+    // turn 4+: the last request_assignment came back with a structured
+    // idle response (frontier drained — the honest assigned/idle
+    // contract; PRD §Write-path tools, "Assignment"). The scripted
+    // contributor wraps up rather than driving the spontaneous-proposal
+    // loop, which is what an unfamiliar agent might do — the cassette-
+    // backed model-driven tests are where the spontaneous-proposal
+    // behavior gets exercised end to end.
+    return reply([{ type: 'text', text: 'No scheduled work — wrapping up.' }], 'end_turn');
   };
 }
 
@@ -174,12 +179,18 @@ describe('testbed: llm-agent archetype against the wired surface', () => {
       'propose_excerpt',
       'request_assignment',
     ]);
-    expect(calls.slice(0, 2).every((c) => !c.is_error)).toBe(true);
-    // The drained request_assignment came back as a typed server error
-    // (the model saw it and wrapped up).
+    expect(calls.every((c) => !c.is_error)).toBe(true);
+    // The drained request_assignment came back as a structured idle
+    // response (PRD §Write-path tools, "Assignment"): the cause is
+    // still open, but no graph-derivable work is currently eligible
+    // for this caller. The model sees the structured payload and
+    // wraps up (or, in a later iteration, may switch to spontaneous
+    // proposing — the cold-start UX fix that landed alongside this
+    // honest contract).
     const drained = calls.at(-1);
-    expect(drained?.is_error).toBe(true);
-    expect(drained?.result_text).toContain('not_found');
+    expect(drained?.is_error).toBe(false);
+    expect(drained?.result_text).toContain('"status":"idle"');
+    expect(drained?.result_text).toContain('no_eligible_frontier_item');
 
     // Server state: the agent's excerpt proposal landed, attributed to
     // the agent identity, with an assignment pinned.
@@ -341,8 +352,10 @@ describe('testbed: llm-agent role configs against the wired surface', () => {
       'propose_excerpt',
       'request_assignment',
     ]);
-    expect(calls.slice(0, 2).every((c) => !c.is_error)).toBe(true);
-    expect(calls.at(-1)?.is_error).toBe(true);
+    expect(calls.every((c) => !c.is_error)).toBe(true);
+    // Drain manifests as a structured idle, not an error (the
+    // assigned/idle contract; see PRD §Write-path tools, "Assignment").
+    expect(calls.at(-1)?.result_text).toContain('"status":"idle"');
 
     const excerptProposals = [...server.store.proposals.values()].filter(
       (p) => p.payload.kind === 'excerpt',

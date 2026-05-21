@@ -1,3 +1,4 @@
+import type { RequestAssignmentAssigned, RequestAssignmentOutput } from '@anchorage/contracts';
 import { describe, expect, it } from 'vitest';
 import type { Caller } from './auth.js';
 import { FakeClock } from './clock.js';
@@ -5,6 +6,28 @@ import { ServerError } from './errors.js';
 import { SeededIdGen } from './id-gen.js';
 import { type ReviewConfig, Server } from './server.js';
 import { FakeVerifier } from './verifier.js';
+
+// Narrowing helper: most tests in this file pre-seed work so that
+// `request_assignment` is expected to mint a slot. The honest contract
+// is now a discriminated union (assigned | idle); these tests narrow
+// to the assigned variant at the call site. Several existing
+// assertions (`.rejects.toMatchObject({ code: 'not_found' })`) exercise
+// what used to be the exhaustion path and now flows through `idle` —
+// semantically identical to a "no slot for you" refusal. To preserve
+// those assertions without rewiring every test, this helper re-throws
+// an idle response as the same `ServerError('not_found', ...)` the
+// server used to throw directly. Tests that want to inspect the
+// structured idle payload (sub_topics, guidance) narrow off `status`
+// directly without going through this helper.
+function asAssigned(o: RequestAssignmentOutput): RequestAssignmentAssigned {
+  if (o.status !== 'assigned') {
+    throw new ServerError(
+      'not_found',
+      `request_assignment returned status='${o.status}' reason='${o.reason}'`,
+    );
+  }
+  return o;
+}
 
 interface Fixture {
   server: Server;
@@ -736,9 +759,11 @@ describe('tools.queryFrontier', () => {
     f.server.curator.acceptProposal(a.proposal_id);
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const { assignment_id } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { assignment_id } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     // A held slot (request_assignment returns it `accepted` — there is
     // no separate accept step) takes the anchor off the frontier, so a
     // concurrent contributor can't pull it too.
@@ -862,11 +887,20 @@ describe('tools.queryFrontier', () => {
 });
 
 describe('tools.requestAssignment', () => {
-  it('rejects with not_found when no frontier work exists', async () => {
+  it("returns status='idle' with active sub_topics + guidance when no frontier work exists", async () => {
     const f = fixture();
-    await expect(
-      f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    const result = await f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id });
+    expect(result.status).toBe('idle');
+    if (result.status !== 'idle') throw new Error('narrowing');
+    expect(result.cause_id).toBe(f.cause_id);
+    expect(result.reason).toBe('no_eligible_frontier_item');
+    // Both seeded sub-topics surfaced for spontaneous-proposal scope.
+    expect(result.sub_topics.map((s) => s.id).sort()).toEqual(
+      [f.sub_topic_id, f.other_sub_topic_id].sort(),
+    );
+    // Guidance points at the propose_* off-slot path (the cold-start
+    // UX fix this change ships).
+    expect(result.guidance).toMatch(/propose_anchor/);
   });
 
   it('offers an excerpt task for an orphan anchor under a different proposer', async () => {
@@ -884,9 +918,11 @@ describe('tools.requestAssignment', () => {
     // Bob pulls — single slot, no capacity declaration.
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { assignment_id, task } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (task.kind !== 'excerpt') throw new Error('expected excerpt task');
     expect(task.parent_anchor_id).toBe(aId);
     expect(task.sub_topic_id).toBe(f.sub_topic_id);
@@ -896,7 +932,7 @@ describe('tools.requestAssignment', () => {
     expect(stored?.status).toBe('accepted');
   });
 
-  it("doesn't offer a review of one's own proposal", async () => {
+  it("doesn't offer a review of one's own proposal (resolves to idle, not error)", async () => {
     const f = fixture();
     await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
@@ -904,9 +940,8 @@ describe('tools.requestAssignment', () => {
       content: 'self',
       external_ref: { kind: 'pmid', value: '1' },
     });
-    await expect(
-      f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    const result = await f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id });
+    expect(result.status).toBe('idle');
   });
 
   it('offers a review task to a non-proposer', async () => {
@@ -919,9 +954,11 @@ describe('tools.requestAssignment', () => {
     });
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const { task } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { task } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (task.kind !== 'review') throw new Error('expected review task');
     expect(task.proposal_id).toBe(proposal_id);
   });
@@ -966,7 +1003,9 @@ describe('tools.requestAssignment', () => {
 
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const first = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    const first = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
+    );
     expect(first.task.kind).toBe('excerpt');
     // Bob fulfills the slot, freeing it for a fresh pull.
     await f.server.tools.proposeExcerpt(bobCaller, {
@@ -978,13 +1017,14 @@ describe('tools.requestAssignment', () => {
       assignment_id: first.assignment_id,
     });
     // The only target now carries a staged excerpt — the frontier no
-    // longer exposes it, so a fresh pull finds nothing.
-    await expect(
-      f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    // longer exposes it, so a fresh pull resolves to idle.
+    const exhausted = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+    });
+    expect(exhausted.status).toBe('idle');
   });
 
-  it('a strict kind filter with no matching frontier item returns not_found', async () => {
+  it('a strict kind filter with no matching frontier item resolves to idle', async () => {
     const f = fixture();
     // Only a staged anchor exists — that is review work, not excerpt
     // work. The `kind` argument is a strict filter, not a soft
@@ -998,12 +1038,11 @@ describe('tools.requestAssignment', () => {
     });
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    await expect(
-      f.server.tools.requestAssignment(bobCaller, {
-        cause_id: f.cause_id,
-        kind: 'excerpt',
-      }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    const result = await f.server.tools.requestAssignment(bobCaller, {
+      cause_id: f.cause_id,
+      kind: 'excerpt',
+    });
+    expect(result.status).toBe('idle');
   });
 });
 
@@ -1025,9 +1064,11 @@ describe('single-slot resolution: precondition-lapse and TTL-shadow', () => {
     f.server.curator.acceptProposal(a.proposal_id);
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const { assignment_id } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { assignment_id } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     // The sub-topic is archived out from under the held slot (the
     // cause stays active so request_assignment still reaches the
     // single-slot walk — the surviving lazy-lapse trigger now that
@@ -1039,7 +1080,9 @@ describe('single-slot resolution: precondition-lapse and TTL-shadow', () => {
     // penalty, no contributor action) instead of refusing with
     // single-slot `invalid_state`: the contributor is freed, not
     // stuck. The original slot ends `lapsed`.
-    const next = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    const next = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
+    );
     expect(next.assignment_id).not.toBe(assignment_id);
     expect(f.server.store.assignments.get(assignment_id)?.status).toBe('lapsed');
   });
@@ -1056,19 +1099,22 @@ describe('single-slot resolution: precondition-lapse and TTL-shadow', () => {
     if (!aId) throw new Error('expected anchor');
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { assignment_id, task } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (task.kind !== 'excerpt') throw new Error('expected excerpt task');
     // The parent anchor's source stops resolving.
     const parent = f.server.store.nodes.get(aId);
     if (!parent) throw new Error('parent missing');
     f.server.store.nodes.set(aId, { ...parent, status: 'unresolvable' });
     // The slot is freed lazily on the next single-slot walk, with no
-    // contributor action — Bob can pull again.
-    await expect(
-      f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    // contributor action — Bob's old slot lapses, and with the parent
+    // anchor `unresolvable` the frontier has nothing else to offer, so
+    // the fresh pull resolves to idle (no longer a `not_found` throw).
+    const result = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    expect(result.status).toBe('idle');
     expect(f.server.store.assignments.get(assignment_id)?.status).toBe('lapsed');
   });
 
@@ -1085,14 +1131,18 @@ describe('single-slot resolution: precondition-lapse and TTL-shadow', () => {
 
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const slow = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    const slow = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
+    );
 
     // Time passes the slot's ttl_at. The covering slot stops covering
     // the orphan anchor, so the frontier re-exposes it.
     (f.server.clock as FakeClock).advance(200_000);
     const carol = f.server.bootstrap.mintIdentity({ display_name: 'carol' });
     const carolCaller: Caller = { identity_id: carol.id };
-    const backup = await f.server.tools.requestAssignment(carolCaller, { cause_id: f.cause_id });
+    const backup = asAssigned(
+      await f.server.tools.requestAssignment(carolCaller, { cause_id: f.cause_id }),
+    );
     if (backup.task.kind !== 'excerpt') throw new Error('expected excerpt task');
     const backupAsn = f.server.store.assignments.get(backup.assignment_id);
     expect(backupAsn?.shadow_of).toBe(slow.assignment_id);
@@ -1127,7 +1177,9 @@ describe('propose_* assignment fulfillment (the `assignment_id` argument)', () =
     if (!aId) throw new Error('expected anchor');
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const offered = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    const offered = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
+    );
     return { f, bobCaller, anchor_id: aId, assignment_id: offered.assignment_id };
   }
 
@@ -1236,7 +1288,9 @@ describe('propose_* assignment fulfillment (the `assignment_id` argument)', () =
     });
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const offered = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    const offered = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id }),
+    );
     if (offered.task.kind !== 'review') throw new Error('expected review task');
     await expect(
       f.server.tools.proposeAnchor(bobCaller, {
@@ -1896,9 +1950,11 @@ describe('tools.castReviewVote', () => {
 
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const offered = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const offered = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (offered.task.kind !== 'excerpt') throw new Error('expected excerpt');
     const submitted = await f.server.tools.proposeExcerpt(bobCaller, {
       cause_id: f.cause_id,
@@ -2152,10 +2208,12 @@ describe('single-slot off-slot guard (testbed-caught review wedge)', () => {
       recent: 0,
       updated_at: f.server.clock.now(),
     });
-    const asn = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-      kind: 'review',
-    });
+    const asn = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+        kind: 'review',
+      }),
+    );
     if (asn.task.kind !== 'review') throw new Error('expected review task');
     expect(f.server.store.assignments.get(asn.assignment_id)?.status).toBe('accepted');
     return { bob, bobCaller, proposal_id, assignment_id: asn.assignment_id };
@@ -2258,9 +2316,11 @@ describe('calibration loop', () => {
   it('injects an accepted-from-history proposal as the first review-task offer', async () => {
     const f = fixture({ review: { calibration_inject_every_n: 1 } });
     const { bobCaller, accepted_proposal_id } = await withCalibrationCandidate(f);
-    const { task } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { task } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (task.kind !== 'review') throw new Error('expected review task');
     // Indistinguishable shape from a real review task: just a review
     // task pointing at a proposal_id. The reviewer can't tell from
@@ -2274,9 +2334,11 @@ describe('calibration loop', () => {
       review: { calibration_inject_every_n: 1, calibration_pass_gain: 2 },
     });
     const { bobCaller } = await withCalibrationCandidate(f);
-    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { assignment_id, task } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (task.kind !== 'review') throw new Error('expected review task');
     await f.server.tools.castReviewVote(bobCaller, {
       proposal_id: task.proposal_id,
@@ -2295,9 +2357,11 @@ describe('calibration loop', () => {
       review: { calibration_inject_every_n: 1, calibration_fail_loss: 3 },
     });
     const { bobCaller } = await withCalibrationCandidate(f);
-    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { assignment_id, task } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (task.kind !== 'review') throw new Error('expected review task');
     await f.server.tools.castReviewVote(bobCaller, {
       proposal_id: task.proposal_id,
@@ -2314,9 +2378,11 @@ describe('calibration loop', () => {
   it('revise on a calibration item moves no reputation', async () => {
     const f = fixture({ review: { calibration_inject_every_n: 1 } });
     const { bobCaller } = await withCalibrationCandidate(f);
-    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { assignment_id, task } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (task.kind !== 'review') throw new Error('expected review task');
     await f.server.tools.castReviewVote(bobCaller, {
       proposal_id: task.proposal_id,
@@ -2333,9 +2399,11 @@ describe('calibration loop', () => {
   it('a calibration vote does not re-resolve the already-accepted proposal', async () => {
     const f = fixture({ review: { calibration_inject_every_n: 1 } });
     const { bobCaller, accepted_proposal_id } = await withCalibrationCandidate(f);
-    const { assignment_id, task } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { assignment_id, task } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (task.kind !== 'review') throw new Error('expected review task');
     await f.server.tools.castReviewVote(bobCaller, {
       proposal_id: task.proposal_id,
@@ -2398,9 +2466,11 @@ describe('calibration loop', () => {
     });
     const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const { task } = await f.server.tools.requestAssignment(bobCaller, {
-      cause_id: f.cause_id,
-    });
+    const { task } = asAssigned(
+      await f.server.tools.requestAssignment(bobCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (task.kind !== 'review') throw new Error('expected review task');
     // Calibration draw returned null (no accepted proposals), so the
     // request fell through to the frontier and offered the staged
@@ -2413,8 +2483,8 @@ describe('calibration loop', () => {
     // Alice has an accepted proposal (validated history). She asks for
     // review-kind work only (strict `kind` filter). The calibration
     // draw must skip her own proposal (conflict of interest invariant),
-    // and no other review work exists, so the request is not_found —
-    // the excerpt work her own orphan anchor implies is excluded by
+    // and no other review work exists, so the request resolves to idle
+    // — the excerpt work her own orphan anchor implies is excluded by
     // the kind filter, isolating the COI behavior under test.
     const a = await f.server.tools.proposeAnchor(f.caller, {
       cause_id: f.cause_id,
@@ -2423,9 +2493,11 @@ describe('calibration loop', () => {
       external_ref: { kind: 'pmid', value: '1' },
     });
     f.server.curator.acceptProposal(a.proposal_id);
-    await expect(
-      f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id, kind: 'review' }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    const result = await f.server.tools.requestAssignment(f.caller, {
+      cause_id: f.cause_id,
+      kind: 'review',
+    });
+    expect(result.status).toBe('idle');
   });
 });
 
@@ -2646,11 +2718,11 @@ describe('recent-activity assignment gate', () => {
       description: 'mrd',
       scope_query: 'mrd',
     });
-    // No frontier task available — request fails with not_found, but
-    // for the right reason (frontier empty), not the gate.
-    await expect(
-      server.tools.requestAssignment(aliceCaller, { cause_id: cause.id }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    // No frontier task available — request resolves to idle (the gate
+    // didn't fire; the response shape pins that, since a gate refusal
+    // would still throw).
+    const result = await server.tools.requestAssignment(aliceCaller, { cause_id: cause.id });
+    expect(result.status).toBe('idle');
   });
 
   it('bypasses callers with no rep entries in the cause (fresh-reviewer bootstrap)', async () => {
@@ -2703,9 +2775,11 @@ describe('recent-activity assignment gate', () => {
     );
     // Alice has no rep entries in this cause — gate bypasses, she
     // gets assigned the staged excerpt for review.
-    const result = await server.tools.requestAssignment(aliceCaller, {
-      cause_id: cause.id,
-    });
+    const result = asAssigned(
+      await server.tools.requestAssignment(aliceCaller, {
+        cause_id: cause.id,
+      }),
+    );
     expect(result.task.kind).toBe('review');
   });
 
@@ -2842,9 +2916,11 @@ describe('recent-activity assignment gate', () => {
         quoted_span: { text: 'excerpt-3', offset: 0 },
       },
     );
-    const recovered = await server.tools.requestAssignment(aliceCaller, {
-      cause_id: cause.id,
-    });
+    const recovered = asAssigned(
+      await server.tools.requestAssignment(aliceCaller, {
+        cause_id: cause.id,
+      }),
+    );
     expect(recovered.task.kind).toBe('review');
   });
 });
@@ -3064,9 +3140,11 @@ describe('stratified-by-history reviewer assignment', () => {
     }
 
     // Carol pulls first: gets the target excerpt.
-    const carolAssign = await f.server.tools.requestAssignment(carolCaller, {
-      cause_id: f.cause_id,
-    });
+    const carolAssign = asAssigned(
+      await f.server.tools.requestAssignment(carolCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (carolAssign.task.kind !== 'review') throw new Error('expected review task');
     expect(carolAssign.task.proposal_id).toBe(targetId);
 
@@ -3074,17 +3152,22 @@ describe('stratified-by-history reviewer assignment', () => {
     // remaining frontier review item is the target (the priming three
     // already have votes from both carol and dave, so they are
     // filtered out by the already-voted gate). With the target
-    // skipped, Dave gets not_found — the eligible frontier is empty
-    // for him.
-    await expect(
-      f.server.tools.requestAssignment(daveCaller, { cause_id: f.cause_id }),
-    ).rejects.toMatchObject({ code: 'not_found' });
+    // skipped, Dave's eligible frontier is empty — the request
+    // resolves to idle (the cold-start UX fix that landed alongside
+    // this honest contract turned the old `not_found` throw into a
+    // structured "no work for you" payload).
+    const daveResult = await f.server.tools.requestAssignment(daveCaller, {
+      cause_id: f.cause_id,
+    });
+    expect(daveResult.status).toBe('idle');
 
     // Erin (singleton stratum, distinct from Carol's cluster) still
     // gets the target: cross-stratum check passes.
-    const erinAssign = await f.server.tools.requestAssignment(erinCaller, {
-      cause_id: f.cause_id,
-    });
+    const erinAssign = asAssigned(
+      await f.server.tools.requestAssignment(erinCaller, {
+        cause_id: f.cause_id,
+      }),
+    );
     if (erinAssign.task.kind !== 'review') throw new Error('expected review task');
     expect(erinAssign.task.proposal_id).toBe(targetId);
   });

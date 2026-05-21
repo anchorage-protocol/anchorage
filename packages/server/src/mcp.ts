@@ -44,7 +44,6 @@ import {
   QueryReputationInput,
   QueryReputationOutput,
   RequestAssignmentInput,
-  RequestAssignmentOutput,
   SubTopicId,
 } from '@anchorage/contracts';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -98,7 +97,13 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
     'To contribute: call query_causes to see the causes this instance ' +
     'hosts and their open sub-topics; pick a cause_id; call ' +
     'request_assignment for that cause and fulfill the offered task ' +
-    'with the matching propose_* tool or cast_review_vote. The cause://, ' +
+    'with the matching propose_* tool or cast_review_vote. When ' +
+    "request_assignment returns status='idle', the cause is still open " +
+    '— no scheduled work is eligible for you right now, but the propose_* ' +
+    "tools remain callable: use each returned sub_topic's scope_query to " +
+    'find in-scope literature not yet anchored (propose_anchor), or browse ' +
+    'the accepted graph via subgraph:// to connect nodes (propose_synthesis) ' +
+    'or supersede stale anchors (propose_supersedes). The cause://, ' +
     'sub-topic://, node://, subgraph://, contributor://, and manuscript:// ' +
     'resources mirror the same data passively for browsing.';
   const mcp = new McpServer(
@@ -234,9 +239,30 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
     'request_assignment',
     {
       description:
-        'Pull a single task from the frontier. Refused while you hold an unresolved slot for the cause; optional kind is a strict filter.',
+        "Pull a single task from the frontier. Returns status='assigned' (the slot is " +
+        'held the moment it returns; fulfill via the matching propose_* or ' +
+        "cast_review_vote) or status='idle' (no graph-derivable work is currently " +
+        'eligible for you — switch to spontaneous proposing using the returned ' +
+        'sub_topics[].scope_query as your guide; the propose_* tools remain ' +
+        'callable). Refused while you hold an unresolved slot for the cause; ' +
+        'optional kind is a strict filter.',
       inputSchema: RequestAssignmentInput.shape,
-      outputSchema: RequestAssignmentOutput.shape,
+      // No `outputSchema` registered for this tool. The contract is a
+      // discriminated union (`RequestAssignmentOutput` in
+      // contracts/src/tools.ts: { status: 'assigned', ... } | { status:
+      // 'idle', ... }), and the MCP SDK's `normalizeObjectSchema` only
+      // recognizes a raw object shape or an object schema — passing a
+      // discriminatedUnion crashes server-side output validation at
+      // tool-call time. The only thing lost by omitting the schema is
+      // *server-side* output validation; the client
+      // (`AnchorageClient.call`) still `safeParse`s `structuredContent`
+      // against the full union schema, so contract drift still surfaces
+      // at the client boundary. The alternative — widening the wire
+      // schema into a single flat object with everything optional —
+      // would lose discriminator-narrowing on the type side and make
+      // the contract dishonest about which fields are always present
+      // for each case. The union is the honest shape; we accept
+      // skipping one half of validation to keep it.
     },
     wrap(server.tools.requestAssignment),
   );

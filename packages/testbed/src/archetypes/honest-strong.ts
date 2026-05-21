@@ -81,21 +81,30 @@ export async function runHonestStrong(
     try {
       // Single-slot (PRD §Assignment): one assignment in hand at a
       // time. A fresh request only lands work once the prior slot
-      // resolves; while a slot is held (or the frontier is empty)
-      // the server answers not_found, structurally indistinguishable.
+      // resolves; while a slot is held the server still refuses with
+      // an error (invalid_state). Frontier exhaustion, by contrast,
+      // is the honest `status: 'idle'` result handled just below.
       offered = await client.requestAssignment({
         cause_id: config.cause_id,
         kind: 'excerpt',
       });
     } catch (err) {
-      // Empty frontier or held slot → archetype stops. Both are
-      // normal terminal states; the harness distinguishes them via
-      // the recorded reason if it cares.
+      // Held slot, reputation gate, or other refusal → archetype
+      // stops. The harness distinguishes terminal states via the
+      // recorded reason if it cares.
       if (err instanceof AnchorageClientError) {
         actions.push({ kind: 'idle', reason: err.code });
         return { actions };
       }
       throw err;
+    }
+    // Frontier exhaustion is a structured success, not an error
+    // (contracts/src/tools.ts `RequestAssignmentOutput`). For an
+    // excerpt-filter archetype with no spontaneous-proposal loop we
+    // stop the same way the previous not_found catch did.
+    if (offered.status === 'idle') {
+      actions.push({ kind: 'idle', reason: offered.reason });
+      return { actions };
     }
     actions.push({
       kind: 'requested',

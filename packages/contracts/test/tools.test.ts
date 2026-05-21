@@ -25,12 +25,37 @@ describe('Assignment tool I/O', () => {
     expect(RequestAssignmentInput.parse({ cause_id: 'cause_crc' }).cause_id).toBe('cause_crc');
   });
 
-  it('parses a request_assignment output (id + task)', () => {
+  it('parses a request_assignment assigned output (status + id + task)', () => {
     const o = RequestAssignmentOutput.parse({
+      status: 'assigned',
       assignment_id: 'assn_1',
       task: { kind: 'review', proposal_id: 'prop_1' },
     });
+    if (o.status !== 'assigned') throw new Error('expected assigned');
     expect(o.task.kind).toBe('review');
+  });
+
+  it('parses a request_assignment idle output (frontier exhausted, propose-* still open)', () => {
+    const o = RequestAssignmentOutput.parse({
+      status: 'idle',
+      cause_id: 'cau_crc',
+      reason: 'no_eligible_frontier_item',
+      sub_topics: [
+        {
+          id: 'stp_ctdna',
+          cause_id: 'cau_crc',
+          name: 'ctDNA-guided adjuvant chemo',
+          description: 'sub-topic description',
+          scope_query: '(colon cancer) AND ctDNA',
+          status: 'active',
+          created_at: '2026-05-21T00:00:00.000Z',
+        },
+      ],
+      guidance: 'No scheduled work — switch to spontaneous proposing.',
+    });
+    if (o.status !== 'idle') throw new Error('expected idle');
+    expect(o.reason).toBe('no_eligible_frontier_item');
+    expect(o.sub_topics[0]?.scope_query).toContain('ctDNA');
   });
 });
 

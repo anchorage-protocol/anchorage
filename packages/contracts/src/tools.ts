@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AssignmentTask, WorkKind } from './assignments.js';
+import { SubTopic } from './cause.js';
 import { FrontierItem, FrontierKind } from './frontier.js';
 import { PrincipalStatus } from './identity.js';
 import {
@@ -44,9 +45,61 @@ export const RequestAssignmentInput = z
   })
   .strict();
 export type RequestAssignmentInput = z.infer<typeof RequestAssignmentInput>;
-export const RequestAssignmentOutput = z
-  .object({ assignment_id: AssignmentId, task: AssignmentTask })
+
+// `request_assignment` returns a discriminated union on `status` (PRD
+// §Write-path tools, "Assignment"). Two outcomes are honest results,
+// not errors:
+//
+//   - `assigned`: a slot was minted and is now held by the caller.
+//   - `idle`: no slot was minted because no frontier item is currently
+//     eligible for this caller. The cause is still open — the
+//     propose_* tools remain callable off-slot — so the response
+//     carries the active sub-topics (each with `scope_query`) and a
+//     fixed guidance string the agent uses to switch into spontaneous
+//     proposing rather than terminating. This is what closes the
+//     cold-start UX gap a small-population live deployment surfaced:
+//     "no scheduled work" was previously a `not_found` error, which a
+//     freshly-connected agent reads as "stop," but the design intent
+//     was always "switch modes."
+//
+// The reputation-gate refusals (recent below threshold,
+// no-demonstrated-competence) deliberately stay errors: their remedy
+// is bootstrapping via contributor-initiated voting, not spontaneous
+// proposing, so an idle response with the same guidance would mislead.
+export const RequestAssignmentIdleReason = z.enum(['no_eligible_frontier_item']);
+export type RequestAssignmentIdleReason = z.infer<typeof RequestAssignmentIdleReason>;
+
+export const RequestAssignmentAssigned = z
+  .object({
+    status: z.literal('assigned'),
+    assignment_id: AssignmentId,
+    task: AssignmentTask,
+  })
   .strict();
+export type RequestAssignmentAssigned = z.infer<typeof RequestAssignmentAssigned>;
+
+export const RequestAssignmentIdle = z
+  .object({
+    status: z.literal('idle'),
+    cause_id: CauseId,
+    reason: RequestAssignmentIdleReason,
+    // Active sub-topics in the cause — each carries its `scope_query`,
+    // which is the agent's guide for proposing new in-scope anchors
+    // without a second tool call. Stable-ordered (created_at, id) to
+    // match the `CauseDirectory` projection.
+    sub_topics: z.array(SubTopic),
+    // Fixed human-readable orientation, mirroring the connect-time
+    // `instructions` paragraph but anchored to the exhaustion event so
+    // the agent re-reads its options at the moment they matter.
+    guidance: z.string(),
+  })
+  .strict();
+export type RequestAssignmentIdle = z.infer<typeof RequestAssignmentIdle>;
+
+export const RequestAssignmentOutput = z.discriminatedUnion('status', [
+  RequestAssignmentAssigned,
+  RequestAssignmentIdle,
+]);
 export type RequestAssignmentOutput = z.infer<typeof RequestAssignmentOutput>;
 
 // ──── Proposals (assignment-fulfilling or contributor-initiated) ────
