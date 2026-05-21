@@ -246,9 +246,12 @@ describe('cassette record/replay through runLlmAgent', () => {
     // model is the same request_assignment → query_frontier → stop walk
     // the single-agent test uses; with one orphan anchor and two agents,
     // agent-1 (running first) gets the assignment, agent-2's request
-    // comes back not_found — so the two agents' turn-2 request bodies
-    // differ, which is exactly the per-agent divergence the cassette has
-    // to key on.
+    // comes back as a structured idle (the honest assigned/idle
+    // contract; PRD §Write-path tools, "Assignment" — what used to be a
+    // not_found error). The two agents' turn-2 request bodies still
+    // differ — agent-1 carries an assignment_id, agent-2 carries the
+    // idle payload's sub_topics + guidance — which is exactly the per-
+    // agent divergence the cassette has to key on.
     const rec = await seededPopulation('pop-cassette', 2);
     const entries: CassetteEntry[] = [];
     const recTranscripts: Record<string, string[]> = {};
@@ -271,7 +274,7 @@ describe('cassette record/replay through runLlmAgent', () => {
     });
     expect(recResult.rounds_run).toBe(1);
     expect(recTranscripts['agent-1']).toEqual(['request_assignment:ok', 'query_frontier:ok']);
-    expect(recTranscripts['agent-2']).toEqual(['request_assignment:err', 'query_frontier:ok']);
+    expect(recTranscripts['agent-2']).toEqual(['request_assignment:ok', 'query_frontier:ok']);
 
     // Replay pass: fresh population, *same seed* → the same ids minted in
     // the same order → byte-identical request bodies → every request

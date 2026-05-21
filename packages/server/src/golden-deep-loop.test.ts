@@ -135,18 +135,19 @@ describe('golden cassette: a recorded deep-loop population run replays determini
     expect(result.escalations.length).toBe(1);
     expect(result.escalations[0]?.proposal_id).not.toBe(contestedProposalId);
 
-    // Bootstrap + run effect: 10 proposals are accepted (5 anchors + 2
-    // pre-accepted calibration excerpts + 3 peer-reviewed excerpts on
-    // the work anchors — the extra round of this post-wedge-fix
-    // re-record landed one more reviewed excerpt than the prior
-    // snapshot); one is rejected — the original overstated contested
+    // Bootstrap + run effect: 9 proposals are accepted (5 anchors + 2
+    // pre-accepted calibration excerpts + 2 peer-reviewed excerpts on
+    // the work anchors — the assigned/idle reshape re-record landed
+    // one fewer reviewed excerpt than the prior snapshot, which is the
+    // kind of single-step shift these real-model recordings can
+    // produce); one is rejected — the original overstated contested
     // claim.
     const accepted = [...server.store.proposals.values()].filter((p) => p.status === 'accepted');
     const rejected = [...server.store.proposals.values()].filter((p) => p.status === 'rejected');
-    expect(accepted.length).toBe(10);
-    expect(rejected.length).toBe(1);
+    expect(accepted.length).toBe(9);
+    expect(rejected.length).toBe(2);
     const acceptedExcerpts = accepted.filter((p) => p.payload.kind === 'excerpt');
-    expect(acceptedExcerpts.length).toBe(5);
+    expect(acceptedExcerpts.length).toBe(4);
 
     // The contested excerpt overstates a non-significant trend to
     // "improves response rates"; the honest pool reads the source and
@@ -172,23 +173,26 @@ describe('golden cassette: a recorded deep-loop population run replays determini
 
     // Calibration readout: the `calibration_inject_every_n` salting
     // landed calibration draws during the run — the mechanism fired.
-    // This recorded no-accept draw has six passes and no misses (three
-    // contributors — two honest reviewers and the patient adversary —
-    // two salted items each): the model reviewers got every salted
-    // calibration item right, and the patient adversary kept its
-    // calibration record clean while declining to drift. What
-    // this golden pins is that the salting fired and the run replays
-    // deterministically, not that models are perfect on calibration
-    // (the load-bearing calibration science is pinned independently by
-    // the scripted deciders in population-loop.test.ts). The exact
-    // counts are pinned because this is a golden of one specific
-    // recorded run. Record keys are `identityId|causeId|subTopicId`.
+    // This recorded draw has five passes and one miss across three
+    // contributors (two honest reviewers and the patient adversary —
+    // two salted items each, six total): honest-1 caught one of two
+    // calibration items wrong, honest-2 and the patient adversary kept
+    // a clean record. The patient adversary continued to decline drift
+    // even while building reviewer rep. What this golden pins is that
+    // the salting fired and the run replays deterministically — not
+    // that models are perfect on calibration; the load-bearing
+    // calibration science is pinned independently by the scripted
+    // deciders in population-loop.test.ts. The exact counts shift
+    // recording-to-recording as model decisions move; the
+    // assigned/idle reshape re-record produced one more honest-1 miss
+    // than the prior snapshot. Record keys are
+    // `identityId|causeId|subTopicId`.
     const calRecords = [...server.store.calibrationRecords.entries()].filter(
       ([key]) => key.split('|')[1] === cause_id,
     );
     const totalPasses = calRecords.reduce((n, [, r]) => n + r.passes, 0);
     const totalFails = calRecords.reduce((n, [, r]) => n + r.fails, 0);
-    expect(totalPasses).toBe(6);
-    expect(totalFails).toBe(0);
+    expect(totalPasses).toBe(5);
+    expect(totalFails).toBe(1);
   });
 });
