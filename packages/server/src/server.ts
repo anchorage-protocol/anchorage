@@ -2059,11 +2059,13 @@ export class Server {
           'No scheduled work is currently eligible for you in this cause — the ' +
           "graph-derivable frontier (others' proposals to review, gap-closing tasks " +
           'over accepted nodes) is exhausted for you right now. The cause is still ' +
-          'open: the propose_* tools remain callable off-slot. Use each sub-topic ' +
-          '`scope_query` to identify in-scope literature not yet anchored and submit ' +
-          'it with propose_anchor; browse the accepted graph via the subgraph:// ' +
-          'resource to connect nodes with propose_synthesis or supersede stale ' +
-          'anchors with propose_supersedes. Your spontaneous contribution becomes ' +
+          'open: the propose_* tools remain callable off-slot. The lowest-friction ' +
+          'spontaneous actions use the accepted graph you already saw via review — ' +
+          'browse subgraph:// for the cause and connect existing accepted nodes with ' +
+          'propose_synthesis, or supersede stale anchors with propose_supersedes. If ' +
+          'instead you want to bring new evidence into scope, each sub-topic carries ' +
+          'a `scope_query` you can use to find in-scope literature not yet anchored ' +
+          'and submit it with propose_anchor. Your spontaneous contribution becomes ' +
           "the frontier the next contributor's request_assignment will draw from.",
       };
     },

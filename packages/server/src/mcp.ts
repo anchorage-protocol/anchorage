@@ -100,12 +100,15 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
     'with the matching propose_* tool or cast_review_vote. When ' +
     "request_assignment returns status='idle', the cause is still open " +
     '— no scheduled work is eligible for you right now, but the propose_* ' +
-    "tools remain callable: use each returned sub_topic's scope_query to " +
-    'find in-scope literature not yet anchored (propose_anchor), or browse ' +
-    'the accepted graph via subgraph:// to connect nodes (propose_synthesis) ' +
-    'or supersede stale anchors (propose_supersedes). The cause://, ' +
-    'sub-topic://, node://, subgraph://, contributor://, and manuscript:// ' +
-    'resources mirror the same data passively for browsing.';
+    'tools remain callable. The lowest-friction spontaneous actions reuse ' +
+    'the accepted graph you already saw via review: browse subgraph:// and ' +
+    'connect existing accepted nodes with propose_synthesis, or supersede ' +
+    'stale anchors with propose_supersedes. To bring new evidence into ' +
+    'scope instead, each returned sub_topic carries a scope_query you can ' +
+    'use to find in-scope literature not yet anchored and submit it with ' +
+    'propose_anchor. The cause://, sub-topic://, node://, subgraph://, ' +
+    'contributor://, and manuscript:// resources mirror the same data ' +
+    'passively for browsing.';
   const mcp = new McpServer(
     {
       name: options.serverInfo?.name ?? 'anchorage',
@@ -277,7 +280,10 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
     'propose_anchor',
     {
       description:
-        'Stage an anchor proposal (PMID/DOI/URL must resolve). Pass assignment_id to fulfill an accepted anchor-kind assignment.',
+        'Stage an anchor proposal. external_ref is a JSON object (not a string), ' +
+        'shaped {"kind":"pmid","value":"12345"} or {"kind":"doi","value":"10.1056/NEJMoa..."} ' +
+        'or {"kind":"url","value":"https://..."}; the server fetches the source and ' +
+        'rejects on failure. Pass assignment_id to fulfill an accepted anchor-kind assignment.',
       inputSchema: ProposeAnchorInput.shape,
       outputSchema: ProposeAnchorOutput.shape,
     },

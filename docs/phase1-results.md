@@ -26,7 +26,11 @@ The Phase 1 ROADMAP language called for "third-party replication" of these resul
 
 **Two tiers.**
 - **Scripted (fast loop)** — deterministic deciders drive the same wired surface. Every PR runs the full scripted cube layer in CI (`pnpm test`). Cheap, deterministic, run thousands of times per release. The scripted tier carries the bulk of regression coverage.
-- **Model-backed (deep loop)** — real Claude agents over the Anthropic Messages API. The role is carried entirely in the agent's *system prompt* (the loop is role-blind). Recordings live as *cassettes* at `packages/server/test/fixtures/golden-*.json` (sha256-keyed by request body); replay is byte-deterministic and key-free. CI runs the cassettes; live re-recordings are on-demand by the maintainer. Default model: `claude-haiku-4-5-20251001`. A typical deep-loop cube cell records at ~$0.40-0.65; the full deep-loop cube is ~$10 to re-record from scratch.
+- **Model-backed (deep loop)** — real Claude agents over the Anthropic Messages API. The role is carried entirely in the agent's *system prompt* (the loop is role-blind). Recordings live as *cassettes* at `packages/server/test/fixtures/golden-*.json` (sha256-keyed by request body); replay is byte-deterministic and key-free. Default model: `claude-haiku-4-5-20251001`. A typical deep-loop cube cell records at ~$0.40-1.20.
+
+**Cassette cadence.** The model-backed cassettes pin a *behavioral regression baseline*, not a per-commit unit invariant — running the full re-cohort on every cosmetic change to a tool description or guidance string turns the cube into a tax on polish rather than a guard against regressions. The cadence is split:
+- The **cheap pair** (`golden-cassette.test.ts` + `golden-deep-loop.test.ts`, ~$1 to re-record together) runs in default CI on every commit. Cheap, fast, validates basic flows.
+- The **cube** (`golden-deep-loop-cube.test.ts`, 11 parameter-sweep cells, ~$15-18 full re-cohort) is opt-in via `ANCHORAGE_CUBE_CASSETTE=1`. Run it on cadence — before substantive tool-shape changes ship (release-time gate), not per PR. The scripted byte-for-byte science in [`population-loop.test.ts`](../packages/server/src/population-loop.test.ts) guards the load-bearing closures regardless, so the per-commit cube signal is not load-bearing. What still triggers a cube re-cohort: input/output schema changes, MCP tool surface additions/removals, behavior changes that *should* shift model decisions. Cosmetic clarifications (parameter examples, schema notes, ordering reshuffles that don't change available actions) skip the re-record.
 
 **Cube layer.** Each cube sweeps one or more *defense parameters* against a fixed *attack pattern*, reads the attack-success-rate (and lockout-rate where the failure mode is honest-pool collapse rather than attack pass-through), and asserts the load-bearing shape — usually "ASR < ε with the named defense on, ASR ≥ T with it off, monotone between". Cubes are CI assertions, not separate runs: every PR runs them.
 
@@ -109,19 +113,21 @@ cd anchorage
 pnpm install
 ```
 
-**Run the scripted cube layer (no API key needed).**
+**Run the scripted cube layer + cheap-pair cassettes (no API key needed).**
 
 ```bash
 pnpm test
 ```
 
-This runs all 18 scripted cubes plus the model-backed cube cells in cassette-replay mode (the checked-in `golden-*.json` fixtures). Byte-deterministic, ~5 seconds, no network. A pass means every cube cell's load-bearing assertion holds.
+This runs all 18 scripted cubes plus the cheap-pair cassettes (`golden-cassette.test.ts` + `golden-deep-loop.test.ts`) in replay mode. Byte-deterministic, ~5 seconds, no network. A pass means every scripted cube cell's load-bearing assertion holds and the cheap pair replays clean.
 
-**Replay a single model-backed cube cell from cassette.**
+**Replay the model-backed deep-loop parameter-sweep cube from cassette (opt-in).**
 
 ```bash
-pnpm --filter @anchorage/server test golden-deep-loop-cube
+ANCHORAGE_CUBE_CASSETTE=1 pnpm --filter @anchorage/server test golden-deep-loop-cube
 ```
+
+The cube is env-gated because re-recording it costs ~$15-18 — it's a release-time behavioral baseline, not a per-commit invariant. The default-CI cassette guard is the cheap pair; the cube runs when you want to verify the parameter-sweep landscape against fresh model samples.
 
 **Re-record a single model-backed cube cell against a live model** (requires `ANTHROPIC_API_KEY` in repo-root `.env`; ~$0.40-0.65 per cell on `claude-haiku-4-5-20251001`):
 
