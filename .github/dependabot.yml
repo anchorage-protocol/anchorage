@@ -5,6 +5,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Pin @types/node to the major that matches the engines floor (Node
+    # 24, set in root package.json and the production Dockerfile).
+    # Letting the types outpace the runtime means typecheck-clean code
+    # can call APIs that do not exist on the deployed Node version.
+    # Lift this when the engines floor moves.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       dev-minor:
         dependency-type: development
