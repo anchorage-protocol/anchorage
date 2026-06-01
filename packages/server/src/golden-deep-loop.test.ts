@@ -116,36 +116,32 @@ describe('golden cassette: a recorded deep-loop population run replays determini
     // Single-slot, no-accept re-record (PRD §Assignment: no
     // set_capacity and no accept_assignment — request_assignment
     // returns the slot already held). The honest agents pull one
-    // assignment at a time and the small `ci` frontier drains in three
+    // assignment at a time and the small `ci` frontier drains in two
     // rounds, so the run stops on `frontier_drained`. One proposal
-    // split this draw and went to the between-rounds curator pass: in
-    // round 3 a non-contested work excerpt (`prp_deep-ci_0011`) was
-    // escalated and closed `accept` (1-0) — not the contested item,
-    // which closed `rejected` on the normal vote path. These are
-    // trajectory details of one recorded model draw (this post-
-    // assigned/idle-reshape re-record drained in one round with no
-    // escalation — the new idle-payload guidance reorder (propose_
-    // synthesis/supersedes first, propose_anchor only if bringing new
-    // evidence) and the propose_anchor description tightening
-    // (external_ref shape example) appear to have produced a tighter
-    // run with less spontaneous-propose friction than the immediately
-    // prior recording — but exact rounds/escalations are draw-
-    // specific). The robustness properties this golden exists to pin
-    // (the contested overstatement is rejected, the patient adversary
-    // casts no accept vote on it) are asserted below and are unchanged.
+    // split this draw and went to the between-rounds curator pass: after
+    // round 2 a non-contested work excerpt (`prp_deep-ci_0009`) was
+    // escalated and closed `accept` on a 1-1 split — not the contested
+    // item, which closed `rejected` on the normal vote path. These are
+    // trajectory details of one recorded model draw (this re-record,
+    // taken after the idle-payload guidance learned to branch on pending
+    // reviews — "your votes are recorded, the queue waits on other
+    // contributors" when the caller has already reviewed what it could —
+    // drained in two rounds with one curator escalation; exact
+    // rounds/escalations are draw-specific). The robustness properties
+    // this golden exists to pin (the contested overstatement is
+    // rejected, the patient adversary casts no accept vote on it) are
+    // asserted below and are unchanged.
     expect(result.stop_reason).toBe('frontier_drained');
-    expect(result.rounds_run).toBe(1);
-    expect(result.escalations.length).toBe(0);
+    expect(result.rounds_run).toBe(2);
+    expect(result.escalations.length).toBe(1);
 
     // Bootstrap + run effect: proposals accepted at the bookkeeping
-    // level (5 anchors + 2 pre-accepted calibration excerpts + N peer-
-    // reviewed excerpts on the work anchors). The contested
-    // overstatement ends rejected. Exact counts vary draw-to-draw with
-    // LLM sampling; the robust shape is "anchors all accepted,
-    // contested rejected." This re-record (post-polish: idle-payload
-    // ordering + propose_anchor description) lands a smaller-run draw
-    // than the immediately prior recording, with one peer-reviewed
-    // excerpt and one rejected excerpt outside the contested claim.
+    // level (5 anchors + 2 pre-accepted calibration excerpts + the work
+    // excerpts the peer pool cleared). The contested overstatement ends
+    // rejected. Exact counts vary draw-to-draw with LLM sampling; the
+    // robust shape is "anchors all accepted, contested rejected." This
+    // re-record lands two peer-reviewed work excerpts accepted, and the
+    // lone rejection is the contested claim itself.
     const accepted = [...server.store.proposals.values()].filter((p) => p.status === 'accepted');
     const rejected = [...server.store.proposals.values()].filter((p) => p.status === 'rejected');
     expect(accepted.length).toBe(9);
@@ -182,9 +178,10 @@ describe('golden cassette: a recorded deep-loop population run replays determini
     // calibration; the load-bearing calibration science is pinned
     // independently by the scripted deciders in
     // population-loop.test.ts. Exact pass/fail counts shift recording-
-    // to-recording as model decisions move; the post-polish re-record
-    // saw fewer draws (the run was shorter) and the model got them all
-    // right. Record keys are `identityId|causeId|subTopicId`.
+    // to-recording as model decisions move; this re-record saw the
+    // honest-2 agent miss two calibration items (totalFails=2), so a
+    // bound — not a fixed count — is what we pin. Record keys are
+    // `identityId|causeId|subTopicId`.
     const calRecords = [...server.store.calibrationRecords.entries()].filter(
       ([key]) => key.split('|')[1] === cause_id,
     );

@@ -2050,13 +2050,47 @@ export class Server {
           if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
           return a.id.localeCompare(b.id);
         });
-      return {
-        status: 'idle',
-        cause_id: parsed.cause_id,
-        reason: 'no_eligible_frontier_item',
-        sub_topics: subTopics,
-        guidance:
-          'No scheduled work is currently eligible for you in this cause — the ' +
+      // Why the frontier is empty *for this caller* shapes the guidance.
+      // A common exhaustion mode in a small live cohort: the caller has
+      // already reviewed every still-staged proposal they were eligible
+      // to review (own-proposal and already-voted skips above), so the
+      // queue is not empty — it is waiting on *other* contributors'
+      // independent votes, which this caller cannot supply. Without
+      // surfacing that, an agent reads idle as "nothing happened / go
+      // propose more" and piles new proposals onto a queue that is
+      // actually starved of second reviewers (the live cold-start trap a
+      // four-contributor instance hit: every staged item sat one
+      // independent vote short). The signal stays deliberately
+      // qualitative — we do *not* expose vote counts or proximity to
+      // convergence, which would hand a coalition the timing to land a
+      // closing vote; the caller already knows which proposals they voted
+      // on, so this leaks nothing new. Same `reason` and payload shape
+      // either way; only the prose differs.
+      const hasPendingReviewedHere = [...this.store.reviewVotes.values()].some((v) => {
+        if (v.reviewer_id !== identity.id) return false;
+        const reviewed = this.store.proposals.get(v.proposal_id);
+        return (
+          !!reviewed &&
+          reviewed.status === 'staged' &&
+          this.reputationCauseFor(reviewed) === parsed.cause_id
+        );
+      });
+      const guidance = hasPendingReviewedHere
+        ? 'No scheduled work is currently eligible for you in this cause right now. ' +
+          'You have already reviewed the open proposals available to you — your votes ' +
+          'are recorded, and those proposals now converge only when *other* ' +
+          'contributors review them independently (you cannot supply the additional ' +
+          'votes yourself). So this idle state is the queue waiting on more reviewers, ' +
+          'not a dead end or a sign your work was lost. The highest-value next steps ' +
+          'are to return later to pick up newly-staged work, or to bring another ' +
+          'contributor in to review. You may also add to the graph now — the propose_* ' +
+          'tools remain callable off-slot (connect accepted nodes you saw via review ' +
+          'with propose_synthesis, supersede stale anchors with propose_supersedes, or ' +
+          "use a sub-topic's `scope_query` to anchor new in-scope literature with " +
+          'propose_anchor) — but note new proposals will themselves need independent ' +
+          'reviewers before they converge, so proposing more does not by itself clear ' +
+          'what is already pending.'
+        : 'No scheduled work is currently eligible for you in this cause — the ' +
           "graph-derivable frontier (others' proposals to review, gap-closing tasks " +
           'over accepted nodes) is exhausted for you right now. The cause is still ' +
           'open: the propose_* tools remain callable off-slot. The lowest-friction ' +
@@ -2066,7 +2100,13 @@ export class Server {
           'instead you want to bring new evidence into scope, each sub-topic carries ' +
           'a `scope_query` you can use to find in-scope literature not yet anchored ' +
           'and submit it with propose_anchor. Your spontaneous contribution becomes ' +
-          "the frontier the next contributor's request_assignment will draw from.",
+          "the frontier the next contributor's request_assignment will draw from.";
+      return {
+        status: 'idle',
+        cause_id: parsed.cause_id,
+        reason: 'no_eligible_frontier_item',
+        sub_topics: subTopics,
+        guidance,
       };
     },
 

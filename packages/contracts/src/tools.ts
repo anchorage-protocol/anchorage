@@ -55,12 +55,21 @@ export type RequestAssignmentInput = z.infer<typeof RequestAssignmentInput>;
 //     eligible for this caller. The cause is still open — the
 //     propose_* tools remain callable off-slot — so the response
 //     carries the active sub-topics (each with `scope_query`) and a
-//     fixed guidance string the agent uses to switch into spontaneous
+//     guidance string the agent uses to switch into spontaneous
 //     proposing rather than terminating. This is what closes the
 //     cold-start UX gap a small-population live deployment surfaced:
 //     "no scheduled work" was previously a `not_found` error, which a
 //     freshly-connected agent reads as "stop," but the design intent
-//     was always "switch modes."
+//     was always "switch modes." The guidance is *not* fixed: when the
+//     caller has already reviewed still-staged proposals in this cause
+//     (the queue is waiting on other contributors' independent votes,
+//     not on this caller), the prose says so and dampens the
+//     propose-more reflex, since new proposals also need independent
+//     reviewers before converging. The branch is qualitative only —
+//     `reason` and the payload shape are identical either way, and no
+//     vote counts or convergence-proximity are exposed (that would let
+//     a coalition time a closing vote); the caller already knows which
+//     proposals it voted on, so the branch leaks nothing new.
 //
 // The reputation-gate refusals (recent below threshold,
 // no-demonstrated-competence) deliberately stay errors: their remedy

@@ -903,6 +903,39 @@ describe('tools.requestAssignment', () => {
     expect(result.guidance).toMatch(/propose_anchor/);
   });
 
+  it('idle guidance reflects pending reviews once the caller has reviewed every eligible staged proposal', async () => {
+    const f = fixture();
+    // Alice (base caller) stages an anchor. Bob reviews it, but a single
+    // accept can't converge it (votes_to_accept=2), so it stays staged.
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const bob = f.server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    await f.server.tools.castReviewVote(bobCaller, {
+      proposal_id,
+      decision: 'accept',
+      rationale: 'verifies cleanly and the claim is well-anchored',
+    });
+    // Bob has now voted on the only staged proposal he was eligible to
+    // review, so a fresh pull is idle — but the queue is waiting on
+    // *other* contributors' independent votes, not on Bob. The guidance
+    // says exactly that, distinct from the empty-frontier branch which
+    // leads with the propose_* path.
+    const result = await f.server.tools.requestAssignment(bobCaller, { cause_id: f.cause_id });
+    expect(result.status).toBe('idle');
+    if (result.status !== 'idle') throw new Error('narrowing');
+    expect(result.reason).toBe('no_eligible_frontier_item');
+    expect(result.guidance).toMatch(/already reviewed|votes are recorded/i);
+    expect(result.guidance).toMatch(/other\b.*contributors|independent/i);
+    // Same payload shape as the empty-frontier branch — no leaked vote
+    // counts or convergence-proximity, only qualitative prose.
+    expect(result.guidance).not.toMatch(/\b1 of 2\b|votes? remaining|\bneeds? \d/i);
+  });
+
   it('offers an excerpt task for an orphan anchor under a different proposer', async () => {
     const f = fixture();
     // Alice (the base caller) seeds an orphan anchor.
