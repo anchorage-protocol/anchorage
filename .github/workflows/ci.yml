@@ -25,3 +25,34 @@ jobs:
       - run: pnpm typecheck:tests
       - run: pnpm test
       - run: pnpm build
+
+  # Build and boot the production image. `validate` proves the source
+  # typechecks and tests pass; it does NOT prove the Docker image the
+  # deploy ships actually builds and starts. A dependency bump can leave
+  # `validate` green while breaking the image — the esbuild JS/native
+  # split that crash-looped prod (the `web/package.json` frozen-install
+  # gap surfaced by a dev-minor esbuild bump) passed `validate` and only
+  # failed at deploy. This job closes that gap: same `docker build` the
+  # deploy runs, then boot the image in local-dev posture (no GitHub
+  # OAuth env -> HarnessAuthenticator, `/healthz` served) and require it
+  # to go healthy. A bad bump fails here, before merge, instead of in
+  # production.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build production image
+        run: docker build -t anchorage-mcp:ci .
+      - name: Boot the image and probe /healthz
+        run: |
+          docker run -d --name anchorage-ci -p 8080:8080 anchorage-mcp:ci
+          ok=
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://localhost:8080/healthz; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs anchorage-ci || true
+          test -n "$ok" || { echo "::error::production image did not become healthy"; exit 1; }
+      - name: Stop container
+        if: always()
+        run: docker rm -f anchorage-ci || true
