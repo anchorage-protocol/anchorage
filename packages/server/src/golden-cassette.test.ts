@@ -45,7 +45,8 @@ function loadGoldenCassette(): CassetteEntry[] {
   return parsed.entries;
 }
 
-// Re-recorded 2026-05-19 against the final single-slot surface (PRD
+// Re-recorded 2026-06-04 for the backlog-aware idle guidance (the tool
+// surface + idle response bytes moved); against the single-slot surface (PRD
 // §Assignment): no set_capacity and no accept_assignment —
 // request_assignment returns the slot already held. The cassette
 // captures the request → propose_excerpt cycle (no accept turn); the
