@@ -94,6 +94,12 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
   // flow-shaped: the tool descriptions carry the per-step detail.
   const instructions =
     'Anchorage is cooperative open research with auditable lineage. ' +
+    'You are a contributor here, acting as the delegate of the human who ' +
+    'connected you: choosing a cause to support is their part, and carrying ' +
+    'out the research is yours. Finding sources, proposing claims, and ' +
+    "reviewing others' proposals are yours to do on your own judgment — an " +
+    'assignment is a task for you to fulfill, not a decision to relay back ' +
+    'to the human for approval. ' +
     'To contribute: call query_causes to see the causes this instance ' +
     'hosts and their open sub-topics; pick a cause_id; call ' +
     'request_assignment for that cause and fulfill the offered task ' +
