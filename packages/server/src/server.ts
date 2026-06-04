@@ -2050,57 +2050,61 @@ export class Server {
           if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
           return a.id.localeCompare(b.id);
         });
-      // Why the frontier is empty *for this caller* shapes the guidance.
-      // A common exhaustion mode in a small live cohort: the caller has
-      // already reviewed every still-staged proposal they were eligible
-      // to review (own-proposal and already-voted skips above), so the
-      // queue is not empty — it is waiting on *other* contributors'
-      // independent votes, which this caller cannot supply. Without
-      // surfacing that, an agent reads idle as "nothing happened / go
-      // propose more" and piles new proposals onto a queue that is
-      // actually starved of second reviewers (the live cold-start trap a
-      // four-contributor instance hit: every staged item sat one
-      // independent vote short). The signal stays deliberately
+      // Why the frontier is empty *for this caller* shapes the guidance,
+      // and the split is whether a review backlog exists at all. If there
+      // are still-staged proposals in the cause, then — because any one
+      // this caller could review would have been handed back as a review
+      // task above — every one of them is a proposal this caller cannot
+      // act on: either they proposed it (own-proposal skip) or they
+      // already voted on it. The queue is not empty; it is waiting on
+      // *other* contributors' independent votes, which this caller cannot
+      // supply. Without surfacing that, an agent reads idle as "nothing
+      // happened / go propose more" and piles new proposals onto a queue
+      // that is actually starved of second reviewers (the live cold-start
+      // trap a four-contributor instance hit: every staged item sat one
+      // independent vote short — and the single-session pile-up where a
+      // delegate, told to "add as many as you can," staged seven anchors
+      // into a queue no one else was reviewing). Only when there are *no*
+      // staged proposals at all is spontaneous proposing the
+      // highest-value move, because then it seeds the review work the
+      // next contributor will draw from. The signal stays deliberately
       // qualitative — we do *not* expose vote counts or proximity to
       // convergence, which would hand a coalition the timing to land a
-      // closing vote; the caller already knows which proposals they voted
-      // on, so this leaks nothing new. Same `reason` and payload shape
-      // either way; only the prose differs.
-      const hasPendingReviewedHere = [...this.store.reviewVotes.values()].some((v) => {
-        if (v.reviewer_id !== identity.id) return false;
-        const reviewed = this.store.proposals.get(v.proposal_id);
-        return (
-          !!reviewed &&
-          reviewed.status === 'staged' &&
-          this.reputationCauseFor(reviewed) === parsed.cause_id
-        );
-      });
-      const guidance = hasPendingReviewedHere
-        ? 'No scheduled work is currently eligible for you in this cause right now. ' +
-          'You have already reviewed the open proposals available to you — your votes ' +
-          'are recorded, and those proposals now converge only when *other* ' +
-          'contributors review them independently (you cannot supply the additional ' +
-          'votes yourself). So this idle state is the queue waiting on more reviewers, ' +
-          'not a dead end or a sign your work was lost. The highest-value next steps ' +
-          'are to return later to pick up newly-staged work, or to bring another ' +
-          'contributor in to review. You may also add to the graph now — the propose_* ' +
-          'tools remain callable off-slot (connect accepted nodes you saw via review ' +
-          'with propose_synthesis, supersede stale anchors with propose_supersedes, or ' +
-          "use a sub-topic's `scope_query` to anchor new in-scope literature with " +
-          'propose_anchor) — but note new proposals will themselves need independent ' +
-          'reviewers before they converge, so proposing more does not by itself clear ' +
-          'what is already pending.'
+      // closing vote; the caller already knows which proposals it
+      // proposed or voted on, so this leaks nothing new. Same `reason`
+      // and payload shape either way; only the prose differs.
+      const hasStagedBacklogHere = [...this.store.proposals.values()].some(
+        (p) => p.status === 'staged' && this.reputationCauseFor(p) === parsed.cause_id,
+      );
+      const guidance = hasStagedBacklogHere
+        ? 'No scheduled work is currently eligible for you in this cause right now — ' +
+          'but the queue is not empty. Every still-staged proposal here is one you ' +
+          'cannot act on yourself: either you proposed it, or you have already reviewed ' +
+          'it. Those proposals converge only when *other* contributors review them ' +
+          'independently — votes you cannot supply. So this idle state is the queue ' +
+          'waiting on more reviewers, not a dead end and not a signal to manufacture ' +
+          'more work: piling on new proposals only deepens a queue already starved of ' +
+          'second reviewers. Reviewing is the scarce resource that moves the graph, not ' +
+          'proposing. The highest-value next steps are to bring another contributor in ' +
+          'to review, or simply to step away and return later to pick up newly-staged ' +
+          'work — an idle cause with a healthy backlog is a fine place to stop, not a ' +
+          'failure state. If you do have a genuinely new connection or source in mind, ' +
+          'the propose_* tools remain callable off-slot (propose_synthesis over accepted ' +
+          "nodes, propose_supersedes for stale anchors, or a sub-topic's `scope_query` " +
+          'with propose_anchor for new in-scope literature), but treat that as optional ' +
+          'seeding, not a way to clear what is already pending.'
         : 'No scheduled work is currently eligible for you in this cause — the ' +
           "graph-derivable frontier (others' proposals to review, gap-closing tasks " +
-          'over accepted nodes) is exhausted for you right now. The cause is still ' +
-          'open: the propose_* tools remain callable off-slot. The lowest-friction ' +
-          'spontaneous actions use the accepted graph you already saw via review — ' +
-          'browse subgraph:// for the cause and connect existing accepted nodes with ' +
-          'propose_synthesis, or supersede stale anchors with propose_supersedes. If ' +
-          'instead you want to bring new evidence into scope, each sub-topic carries ' +
-          'a `scope_query` you can use to find in-scope literature not yet anchored ' +
-          'and submit it with propose_anchor. Your spontaneous contribution becomes ' +
-          "the frontier the next contributor's request_assignment will draw from.";
+          'over accepted nodes) is genuinely empty right now, with no staged proposals ' +
+          'waiting. The cause is still open: the propose_* tools remain callable ' +
+          'off-slot, and here a spontaneous proposal is the highest-value move because ' +
+          'it seeds the frontier the next contributor will review. Lowest-friction ' +
+          'first: browse subgraph:// and connect existing accepted nodes with ' +
+          'propose_synthesis, or supersede stale anchors with propose_supersedes; to ' +
+          'bring new evidence into scope, each sub-topic carries a `scope_query` you ' +
+          'can use to find in-scope literature not yet anchored and submit it with ' +
+          'propose_anchor. Stepping away until other contributors add work is equally ' +
+          'legitimate — idle is not a failure state.';
       return {
         status: 'idle',
         cause_id: parsed.cause_id,

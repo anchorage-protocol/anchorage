@@ -936,6 +936,33 @@ describe('tools.requestAssignment', () => {
     expect(result.guidance).not.toMatch(/\b1 of 2\b|votes? remaining|\bneeds? \d/i);
   });
 
+  it('idle guidance treats a backlog the caller can only-proposed (never reviewed) the same as one they reviewed', async () => {
+    const f = fixture();
+    // Alice stages two anchors and reviews nothing — she cannot review
+    // her own proposals (conflict-of-interest), and there is no other
+    // work, so her own pull is idle. The backlog is real (her two staged
+    // proposals are waiting on *other* reviewers), so the guidance must
+    // take the backlog branch even though Alice has cast zero votes —
+    // the case the old reviewed-only signal missed, where a delegate
+    // told to "add as many as you can" pads an unreviewed queue.
+    for (const value of ['1', '2']) {
+      await f.server.tools.proposeAnchor(f.caller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: `anchor ${value}`,
+        external_ref: { kind: 'pmid', value },
+      });
+    }
+    const result = await f.server.tools.requestAssignment(f.caller, { cause_id: f.cause_id });
+    expect(result.status).toBe('idle');
+    if (result.status !== 'idle') throw new Error('narrowing');
+    // Names the proposer case, names review as the scarce resource, and
+    // does NOT lead with the empty-frontier seeding steer.
+    expect(result.guidance).toMatch(/you proposed it/i);
+    expect(result.guidance).toMatch(/scarce resource|optional seeding|deepens|does not.*clear/i);
+    expect(result.guidance).not.toMatch(/seeds the frontier/i);
+  });
+
   it('offers an excerpt task for an orphan anchor under a different proposer', async () => {
     const f = fixture();
     // Alice (the base caller) seeds an orphan anchor.

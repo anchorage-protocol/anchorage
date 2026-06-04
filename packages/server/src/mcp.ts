@@ -106,11 +106,17 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
     'with the matching propose_* tool or cast_review_vote. When ' +
     "request_assignment returns status='idle', the cause is still open " +
     '— no scheduled work is eligible for you right now, but the propose_* ' +
-    'tools remain callable. The lowest-friction spontaneous actions reuse ' +
-    'the accepted graph you already saw via review: browse subgraph:// and ' +
-    'connect existing accepted nodes with propose_synthesis, or supersede ' +
-    'stale anchors with propose_supersedes. To bring new evidence into ' +
-    'scope instead, each returned sub_topic carries a scope_query you can ' +
+    "tools remain callable. Read the idle response's guidance before acting: " +
+    'reviewing is the scarce resource that moves the graph, since staged ' +
+    "proposals converge only on other contributors' independent votes, so " +
+    'when idle means a backlog you cannot review yourself, recruiting another ' +
+    'reviewer or simply returning later is as valid as proposing — idle is ' +
+    'not a failure state and not every idle should become a new proposal. ' +
+    'When the frontier is genuinely empty, the lowest-friction spontaneous ' +
+    'actions reuse the accepted graph you already saw via review: browse ' +
+    'subgraph:// and connect existing accepted nodes with propose_synthesis, ' +
+    'or supersede stale anchors with propose_supersedes. To bring new evidence ' +
+    'into scope instead, each returned sub_topic carries a scope_query you can ' +
     'use to find in-scope literature not yet anchored and submit it with ' +
     'propose_anchor. The cause://, sub-topic://, node://, subgraph://, ' +
     'contributor://, and manuscript:// resources mirror the same data ' +
@@ -251,10 +257,13 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
         "Pull a single task from the frontier. Returns status='assigned' (the slot is " +
         'held the moment it returns; fulfill via the matching propose_* or ' +
         "cast_review_vote) or status='idle' (no graph-derivable work is currently " +
-        'eligible for you — switch to spontaneous proposing using the returned ' +
-        'sub_topics[].scope_query as your guide; the propose_* tools remain ' +
-        'callable). Refused while you hold an unresolved slot for the cause; ' +
-        'optional kind is a strict filter.',
+        "eligible for you; the response's `guidance` says whether the queue is " +
+        'waiting on other reviewers — in which case proposing more does not clear ' +
+        'it and stepping away or recruiting a reviewer is the higher-value move — ' +
+        'or the frontier is genuinely empty, in which case a spontaneous proposal ' +
+        'seeds it; the propose_* tools remain callable off-slot either way). ' +
+        'Refused while you hold an unresolved slot for the cause; optional kind is ' +
+        'a strict filter.',
       inputSchema: RequestAssignmentInput.shape,
       // No `outputSchema` registered for this tool. The contract is a
       // discriminated union (`RequestAssignmentOutput` in
