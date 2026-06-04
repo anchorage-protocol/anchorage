@@ -119,11 +119,36 @@ describe('OAuthProvider — dynamic client registration', () => {
     expect(b['token_endpoint_auth_method']).toBe('none');
   });
 
-  it('rejects missing or non-https/non-loopback redirect URIs', () => {
+  it('registers a native-app client with a private-use scheme redirect URI', () => {
+    // RFC 8252 §7.1: installed apps may use a private-use URI scheme.
+    // Cursor registers both a loopback URI and a `cursor://` callback in
+    // one batch; the all-or-nothing policy must accept the batch.
+    const { oauth } = setup();
+    const r = oauth.register({
+      redirect_uris: [
+        'http://127.0.0.1:54321/callback',
+        'cursor://anysphere.cursor-mcp/oauth/callback',
+      ],
+      client_name: 'Cursor',
+    });
+    expect(r.status).toBe(201);
+    expect(jsonBody(r)['redirect_uris']).toEqual([
+      'http://127.0.0.1:54321/callback',
+      'cursor://anysphere.cursor-mcp/oauth/callback',
+    ]);
+  });
+
+  it('rejects missing, non-loopback http, or browser-dangerous redirect URIs', () => {
     const { oauth } = setup();
     expect(oauth.register({}).status).toBe(400);
     expect(oauth.register({ redirect_uris: [] }).status).toBe(400);
     expect(oauth.register({ redirect_uris: ['http://evil.test/cb'] }).status).toBe(400);
+    expect(oauth.register({ redirect_uris: ['javascript:alert(1)'] }).status).toBe(400);
+    expect(oauth.register({ redirect_uris: ['file:///etc/passwd'] }).status).toBe(400);
+    // All-or-nothing: one bad URI rejects the whole batch.
+    expect(
+      oauth.register({ redirect_uris: ['cursor://app/cb', 'http://evil.test/cb'] }).status,
+    ).toBe(400);
   });
 });
 

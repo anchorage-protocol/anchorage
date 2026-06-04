@@ -165,7 +165,7 @@ export class OAuthProvider {
       return oauthError(
         400,
         'invalid_redirect_uri',
-        'redirect_uris must be a non-empty array of https or loopback URIs',
+        'redirect_uris must be a non-empty array of https, loopback, or private-use scheme URIs',
       );
     }
     const clientName =
@@ -370,7 +370,17 @@ function pkceS256(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url');
 }
 
-// OAuth 2.1: redirect URIs must be HTTPS or a loopback address.
+// Redirect-URI policy for dynamic client registration. OAuth 2.0 for
+// Native Apps (RFC 8252) blesses three redirect shapes, and we accept
+// all three: https (claimed domains), http to a loopback address, and
+// private-use URI schemes (e.g. `cursor://…`, `vscode://…`,
+// `com.example.app:/cb`) for installed apps that cannot host a public
+// https endpoint. The security weight is carried by mandatory PKCE plus
+// the exact-match + open-redirect guard at /authorize — not by the
+// scheme. A short denylist keeps schemes a browser could mishandle in a
+// 302 Location out of the registry.
+const DANGEROUS_REDIRECT_SCHEMES = new Set(['javascript:', 'data:', 'file:', 'vbscript:']);
+
 function isAllowedRedirectUri(uri: string): boolean {
   let u: URL;
   try {
@@ -379,10 +389,11 @@ function isAllowedRedirectUri(uri: string): boolean {
     return false;
   }
   if (u.protocol === 'https:') return true;
-  if (u.protocol === 'http:' && (u.hostname === '127.0.0.1' || u.hostname === 'localhost')) {
-    return true;
+  if (u.protocol === 'http:') {
+    return u.hostname === '127.0.0.1' || u.hostname === 'localhost';
   }
-  return false;
+  // Private-use URI scheme (native-app callback, RFC 8252 §7.1).
+  return !DANGEROUS_REDIRECT_SCHEMES.has(u.protocol);
 }
 
 function hostOf(uri: string): string {
