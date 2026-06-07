@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ExternalRef, QuotedSpan } from '@anchorage/contracts';
+import type { ExternalRef, QuotedSpan, SourceMetadata } from '@anchorage/contracts';
 import { ServerError } from './errors.js';
 import { normalizeForSpanMatch, type VerifiedRef, type Verifier } from './verifier.js';
 
@@ -107,17 +107,17 @@ export class LiveFetchVerifier implements Verifier {
   }
 
   async verifyExternalRef(ref: ExternalRef): Promise<VerifiedRef> {
-    const source = await this.fetchSource(ref);
-    this.cache.set(cacheKey(ref), source);
-    const normalized = normalizeForSpanMatch(source);
+    const { text, metadata } = await this.fetchSource(ref);
+    this.cache.set(cacheKey(ref), text);
+    const normalized = normalizeForSpanMatch(text);
     const content_hash = createHash('sha256').update(normalized).digest('hex');
-    return { content_hash };
+    return { content_hash, ...(metadata ? { metadata } : {}) };
   }
 
   async verifySpan(ref: ExternalRef, span: QuotedSpan): Promise<void> {
     let source = this.cache.get(cacheKey(ref));
     if (source === undefined) {
-      source = await this.fetchSource(ref);
+      source = (await this.fetchSource(ref)).text;
       this.cache.set(cacheKey(ref), source);
     }
     if (!normalizeForSpanMatch(source).includes(normalizeForSpanMatch(span.text))) {
@@ -128,7 +128,12 @@ export class LiveFetchVerifier implements Verifier {
     }
   }
 
-  private async fetchSource(ref: ExternalRef): Promise<string> {
+  // Each source fetch returns the `text` used for hashing and span
+  // matching, plus best-effort canonical `metadata` parsed from the same
+  // response (no extra round-trip). Metadata is absent for URL anchors
+  // (no structured record) and whenever a record yields nothing
+  // parseable; it never gates the fetch.
+  private async fetchSource(ref: ExternalRef): Promise<FetchedSource> {
     switch (ref.kind) {
       case 'pmid':
         return this.fetchPmid(ref.value);
@@ -159,7 +164,7 @@ export class LiveFetchVerifier implements Verifier {
   // distinct error code is breaking-change territory per the comment
   // in `packages/contracts/src/errors.ts`, deferred until a real
   // contributor experience argues for it.
-  private async fetchPmid(pmid: string): Promise<string> {
+  private async fetchPmid(pmid: string): Promise<FetchedSource> {
     const params = new URLSearchParams({
       db: 'pubmed',
       id: pmid,
@@ -182,7 +187,8 @@ export class LiveFetchVerifier implements Verifier {
         `external_ref does not resolve: pmid:${pmid} (empty response)`,
       );
     }
-    return body;
+    const metadata = parsePmidMetadata(body);
+    return { text: body, ...(metadata ? { metadata } : {}) };
   }
 
   // DOI via Crossref `works/{doi}`. Returns JSON metadata; we compose
@@ -193,7 +199,7 @@ export class LiveFetchVerifier implements Verifier {
   // PRD §Verification engine doesn't promise fuller source retrieval; a
   // Phase 3 fallback (Unpaywall, publisher fetch, full-text DBs) would
   // broaden this without changing the verifier's contract.
-  private async fetchDoi(doi: string): Promise<string> {
+  private async fetchDoi(doi: string): Promise<FetchedSource> {
     const url = `${CROSSREF_WORKS}/${encodeURIComponent(doi)}`;
     const res = await this.fetchWithUserAgent(url, { Accept: 'application/json' });
     if (!res.ok) {
@@ -219,7 +225,8 @@ export class LiveFetchVerifier implements Verifier {
         `external_ref does not resolve: doi:${doi} (no title or abstract in Crossref response)`,
       );
     }
-    return composed;
+    const metadata = parseCrossrefMetadata(message);
+    return { text: composed, ...(metadata ? { metadata } : {}) };
   }
 
   // URL via direct HTTP GET. Off by default (`reject_url`). When enabled
@@ -228,7 +235,7 @@ export class LiveFetchVerifier implements Verifier {
   // fallback. A real URL-anchor regime needs more (content-extraction,
   // archive.org snapshot for the stored-hash baseline, cloaking
   // defense); slice 1 commits the seam, not the regime.
-  private async fetchUrl(url: string): Promise<string> {
+  private async fetchUrl(url: string): Promise<FetchedSource> {
     const res = await this.fetchWithUserAgent(url);
     if (!res.ok) {
       throw new ServerError(
@@ -243,7 +250,8 @@ export class LiveFetchVerifier implements Verifier {
         `external_ref does not resolve: url:${url} (empty response)`,
       );
     }
-    return body;
+    // No structured record to mine — a raw URL fetch yields text only.
+    return { text: body };
   }
 
   private async fetchWithUserAgent(
@@ -261,11 +269,25 @@ function cacheKey(ref: ExternalRef): string {
   return `${ref.kind}:${ref.value}`;
 }
 
+// What a source fetch yields: the text used for hashing and span
+// matching, plus the best-effort canonical metadata mined from the same
+// response. `metadata` is undefined when nothing parseable was found.
+interface FetchedSource {
+  text: string;
+  metadata?: SourceMetadata;
+}
+
 interface CrossrefResponse {
-  message?: {
-    title?: string[];
-    abstract?: string;
-  };
+  message?: CrossrefMessage;
+}
+
+interface CrossrefMessage {
+  title?: string[];
+  abstract?: string;
+  author?: Array<{ given?: string; family?: string; name?: string }>;
+  'container-title'?: string[];
+  issued?: { 'date-parts'?: number[][] };
+  published?: { 'date-parts'?: number[][] };
 }
 
 // Strip JATS XML tags from Crossref abstract fields. Crossref returns
@@ -275,4 +297,121 @@ interface CrossrefResponse {
 // substring span matching.
 function stripJatsTags(s: string): string {
   return s.replace(/<[^>]+>/g, ' ');
+}
+
+// ---------------------------------------------------------------------------
+// Canonical-metadata extraction (PRD §Verification engine, Canonical
+// metadata). Both parsers are best-effort: they mine what the resolver's
+// own response states about the work and omit anything they can't read
+// cleanly. A return of `undefined` means "nothing parseable" — never an
+// error, never a block on acceptance. The point is to give a reviewer the
+// source's self-reported title/authors/year/venue next to the proposer's
+// free-text citation, so a transposed author or wrong venue is visible at
+// a glance instead of costing a manual lookup.
+// ---------------------------------------------------------------------------
+
+function collapseWs(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+// Assemble a SourceMetadata only if at least one field carries signal;
+// otherwise undefined, so callers never store an empty husk.
+function makeMetadata(m: {
+  title?: string | undefined;
+  authors: string[];
+  year?: number | undefined;
+  container_title?: string | undefined;
+}): SourceMetadata | undefined {
+  const hasSignal =
+    (m.title !== undefined && m.title.length > 0) ||
+    m.authors.length > 0 ||
+    m.year !== undefined ||
+    (m.container_title !== undefined && m.container_title.length > 0);
+  if (!hasSignal) return undefined;
+  return {
+    ...(m.title ? { title: m.title } : {}),
+    authors: m.authors,
+    ...(m.year !== undefined ? { year: m.year } : {}),
+    ...(m.container_title ? { container_title: m.container_title } : {}),
+  };
+}
+
+// Blocks that sit where a title or author list would but are clearly
+// neither — efetch interleaves these into the same blank-line-delimited
+// stream, so a naive "block[1] is the title" would otherwise capture them.
+const NON_BIBLIO_BLOCK =
+  /^(author information|erratum|comment|comment in|comment on|update of|updated in|republished|expression of concern|retraction|©|copyright|doi:|pmid:|pmcid:)/i;
+
+// PubMed efetch (rettype=abstract&retmode=text) layout, blank-line
+// delimited: [0] citation line ("J Clin Oncol. 2022 Mar 10;40(8):892-910.
+// doi: ..."), [1] title, [2] author list ("Baxter NN(1), Kennedy EB(2),
+// ..."), then author-information / abstract / identifiers. We read the
+// venue and year from the citation line and the title/authors from the
+// next two blocks, guarding each against the non-bibliographic blocks
+// efetch can interleave.
+function parsePmidMetadata(text: string): SourceMetadata | undefined {
+  const blocks = text
+    .split(/\n\s*\n/)
+    .map((b) => b.trim())
+    .filter((b) => b.length > 0);
+  if (blocks.length === 0) return undefined;
+
+  // Citation line: strip the leading "N. " record enumerator efetch
+  // prepends, then take the venue as the text up to the first ". " and
+  // the year as the first 19xx/20xx in the line.
+  const citation = (blocks[0] ?? '').replace(/^\d+\.\s+/, '');
+  const yearMatch = citation.match(/\b(19|20)\d{2}\b/);
+  const year = yearMatch ? Number(yearMatch[0]) : undefined;
+  const venue = citation.split('. ')[0]?.trim();
+  const container_title = venue && venue.length > 0 ? venue : undefined;
+
+  const titleBlock = blocks[1];
+  const title =
+    titleBlock && !NON_BIBLIO_BLOCK.test(titleBlock) ? collapseWs(titleBlock) : undefined;
+
+  const authorBlock = blocks[2];
+  const authors =
+    authorBlock && !NON_BIBLIO_BLOCK.test(authorBlock) ? parsePmidAuthors(authorBlock) : [];
+
+  return makeMetadata({ title, authors, year, container_title });
+}
+
+// "Baxter NN(1)(2), Kennedy EB(3), Berlin J(5)." -> ["Baxter NN",
+// "Kennedy EB", "Berlin J"]. Numeric affiliation markers and the trailing
+// period are stripped; commas separate authors.
+function parsePmidAuthors(block: string): string[] {
+  return collapseWs(block)
+    .replace(/\(\d+\)/g, '')
+    .replace(/\.\s*$/, '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+function parseCrossrefMetadata(message: CrossrefMessage): SourceMetadata | undefined {
+  const title = (message.title ?? [])[0]?.trim();
+  const container_title = (message['container-title'] ?? [])[0]?.trim();
+  const year = crossrefYear(message);
+  const authors = (message.author ?? [])
+    .map((a) => {
+      const composed = [a.given, a.family]
+        .filter((p) => p && p.length > 0)
+        .join(' ')
+        .trim();
+      return composed.length > 0 ? composed : (a.name ?? '').trim();
+    })
+    .filter((s) => s.length > 0);
+  return makeMetadata({
+    title: title && title.length > 0 ? title : undefined,
+    authors,
+    year,
+    container_title: container_title && container_title.length > 0 ? container_title : undefined,
+  });
+}
+
+// Crossref dates are nested arrays: issued.date-parts = [[year, month,
+// day]]. Prefer `issued` (publication date) and fall back to `published`.
+function crossrefYear(message: CrossrefMessage): number | undefined {
+  const y = message.issued?.['date-parts']?.[0]?.[0] ?? message.published?.['date-parts']?.[0]?.[0];
+  return typeof y === 'number' ? y : undefined;
 }

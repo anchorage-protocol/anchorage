@@ -1,4 +1,8 @@
-import type { RequestAssignmentAssigned, RequestAssignmentOutput } from '@anchorage/contracts';
+import type {
+  RequestAssignmentAssigned,
+  RequestAssignmentOutput,
+  SourceMetadata,
+} from '@anchorage/contracts';
 import { describe, expect, it } from 'vitest';
 import type { Caller } from './auth.js';
 import { FakeClock } from './clock.js';
@@ -38,12 +42,16 @@ interface Fixture {
 }
 
 function fixture(
-  opts: { unresolvable?: ReadonlySet<string>; review?: Partial<ReviewConfig> } = {},
+  opts: {
+    unresolvable?: ReadonlySet<string>;
+    review?: Partial<ReviewConfig>;
+    metadata?: ReadonlyMap<string, SourceMetadata>;
+  } = {},
 ): Fixture {
   const server = new Server({
     clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
     idGen: new SeededIdGen('t'),
-    verifier: new FakeVerifier(opts.unresolvable),
+    verifier: new FakeVerifier(opts.unresolvable, new Map(), new Map(), opts.metadata),
     ...(opts.review ? { review: opts.review } : {}),
   });
   const identity = server.bootstrap.mintIdentity({ display_name: 'alice' });
@@ -1531,6 +1539,63 @@ describe('tools.queryProposals', () => {
       status: 'staged',
     });
     expect(sourceStaged.map((p) => p.id)).toEqual([b.proposal_id]);
+  });
+
+  // PRD §Verification engine (Canonical metadata): the verifier observes
+  // canonical bibliographic metadata when it resolves an anchor's
+  // external_ref; query_proposals projects it so a reviewer sees what the
+  // source reports about itself next to the proposer's free-text citation.
+  it('projects resolved source metadata onto anchor proposals', async () => {
+    const meta: SourceMetadata = {
+      title: 'Adjuvant Therapy for Stage II Colon Cancer: ASCO Guideline Update',
+      authors: ['Baxter NN', 'Kennedy EB', 'Bergsland E'],
+      year: 2022,
+      container_title: 'J Clin Oncol',
+    };
+    const f = fixture({ metadata: new Map([['7', meta]]) });
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'Baxter et al., ASCO stage II guideline',
+      external_ref: { kind: 'pmid', value: '7' },
+    });
+    const { proposals } = await f.server.tools.queryProposals(f.caller, {});
+    const surfaced = proposals.find((p) => p.id === proposal_id);
+    expect(surfaced?.source_metadata).toEqual(meta);
+  });
+
+  it('omits source_metadata when the source yielded nothing parseable', async () => {
+    const f = fixture(); // FakeVerifier returns no metadata by default
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'x',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const { proposals } = await f.server.tools.queryProposals(f.caller, {});
+    const surfaced = proposals.find((p) => p.id === proposal_id);
+    expect(surfaced?.source_metadata).toBeUndefined();
+  });
+
+  it('materializes source metadata onto the accepted anchor node', async () => {
+    const meta: SourceMetadata = {
+      title: 'A study of CRC ctDNA',
+      authors: ['Tie J'],
+      year: 2022,
+      container_title: 'N Engl J Med',
+    };
+    const f = fixture({ metadata: new Map([['9', meta]]) });
+    const { proposal_id } = await f.server.tools.proposeAnchor(f.caller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'Tie et al.',
+      external_ref: { kind: 'pmid', value: '9' },
+    });
+    const nodeId = f.server.curator.acceptProposal(proposal_id).node_id;
+    if (!nodeId) throw new Error('expected anchor node');
+    const node = f.server.store.nodes.get(nodeId);
+    if (node?.kind !== 'anchor') throw new Error('expected anchor node');
+    expect(node.source_metadata).toEqual(meta);
   });
 });
 

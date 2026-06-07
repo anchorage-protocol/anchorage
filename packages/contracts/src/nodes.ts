@@ -17,6 +17,32 @@ export const QuotedSpan = z
   .strict();
 export type QuotedSpan = z.infer<typeof QuotedSpan>;
 
+// Canonical bibliographic metadata observed from the resolved source at
+// verification time (PubMed efetch / Crossref). This is server-observed,
+// not contributor-asserted — the contributor's `content` is their free-
+// text description and citation; this is what the source itself says it
+// is. Surfacing the two side by side is what lets a reviewer's stake buy
+// judgment (scope fit, faithful representation) instead of being spent
+// re-deriving the citation by hand to catch a transposed author or a
+// wrong cohort line. PRD §Verification engine (Canonical metadata).
+//
+// Every field is best-effort: resolvers return uneven records (a DOI
+// with no author list, a PMID whose layout doesn't parse cleanly), so an
+// unreadable field is simply omitted rather than blocking the write.
+// `authors` is always an array (possibly empty); the rest are optional.
+// Extraction never gates acceptance — a source with no parseable
+// metadata still resolves and stages.
+export const SourceMetadata = z
+  .object({
+    title: z.string().min(1).optional(),
+    authors: z.array(z.string().min(1)),
+    year: z.number().int().optional(),
+    // Journal / venue ("container" in Crossref's vocabulary).
+    container_title: z.string().min(1).optional(),
+  })
+  .strict();
+export type SourceMetadata = z.infer<typeof SourceMetadata>;
+
 export const NodeKind = z.enum(['anchor', 'excerpt', 'synthesis', 'open_question']);
 export type NodeKind = z.infer<typeof NodeKind>;
 
@@ -55,6 +81,13 @@ export const AnchorNode = z
     // picks the oldest `last_verified_at` first; see PRD §Verification
     // engine (Re-verification).
     last_verified_at: Timestamp,
+    // Canonical bibliographic metadata captured from the resolved source
+    // at verification time (see SourceMetadata). Server-observed, not
+    // contributor-asserted. Optional because extraction is best-effort
+    // and because anchors materialized before this field existed carry
+    // none; absence means "nothing parseable was captured", not "not yet
+    // verified". PRD §Verification engine (Canonical metadata).
+    source_metadata: SourceMetadata.optional(),
   })
   .strict();
 export type AnchorNode = z.infer<typeof AnchorNode>;

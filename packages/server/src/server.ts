@@ -2606,11 +2606,16 @@ export class Server {
         if (a.created_at !== b.created_at) return a.created_at.localeCompare(b.created_at);
         return a.id.localeCompare(b.id);
       });
-      // Project the derived stratification-degraded flag at read-path
-      // (PRD §Reviewer assignment: "visible to the contributor"). No-op
-      // when stratification is disabled or the proposal has reached a
-      // terminal status — projectStratificationFlag handles both.
-      const projected = proposals.map((p) => this.projectStratificationFlag(p));
+      // Project the derived read-path fields: the stratification-degraded
+      // flag (PRD §Reviewer assignment: "visible to the contributor") and
+      // the canonical source metadata (PRD §Verification engine, Canonical
+      // metadata) so a reviewer sees what the source reports about itself
+      // next to the proposer's citation. Both are joins over server-side
+      // state, not persisted on the proposal record; each projector is a
+      // no-op where it doesn't apply.
+      const projected = proposals.map((p) =>
+        this.projectSourceMetadata(this.projectStratificationFlag(p)),
+      );
       return { proposals: projected };
     },
 
@@ -4641,6 +4646,19 @@ export class Server {
     };
   }
 
+  // Join the verifier-observed canonical metadata onto an anchor proposal
+  // at read-path (PRD §Verification engine, Canonical metadata). The
+  // metadata is keyed by proposal_id in `verifiedRefs` (captured when the
+  // external_ref was resolved at propose-time), not stored on the
+  // proposal record. No-op for non-anchor proposals and for anchors whose
+  // source yielded nothing parseable.
+  private projectSourceMetadata(proposal: Proposal): Proposal {
+    if (proposal.payload.kind !== 'anchor') return proposal;
+    const metadata = this.store.verifiedRefs.get(proposal.id)?.metadata;
+    if (!metadata) return proposal;
+    return { ...proposal, source_metadata: metadata };
+  }
+
   // Apply the result of materialize() to the store. Centralized so the
   // accept and defer paths can't drift in how they persist results.
   private applyMaterialization(result: MaterializationResult): void {
@@ -4701,6 +4719,10 @@ export class Server {
         updated_at: now,
         external_ref: proposal.payload.external_ref,
         content_hash: verified.content_hash,
+        // Canonical metadata the verifier observed at propose-time
+        // (PRD §Verification engine, Canonical metadata). Best-effort —
+        // omitted when the source yielded nothing parseable.
+        ...(verified.metadata ? { source_metadata: verified.metadata } : {}),
         // Initial verify; the re-verification scheduler bumps this on
         // every subsequent successful fetch whose hash still matches.
         last_verified_at: now,

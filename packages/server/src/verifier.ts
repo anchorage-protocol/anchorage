@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ExternalRef, QuotedSpan } from '@anchorage/contracts';
+import type { ExternalRef, QuotedSpan, SourceMetadata } from '@anchorage/contracts';
 import { ServerError } from './errors.js';
 
 // Verifier is the seam where the verifiable-anchor write path meets the
@@ -11,12 +11,21 @@ import { ServerError } from './errors.js';
 // `FakeVerifier` below; `StructuralVerifier` is the no-network
 // placeholder for tests that don't exercise the verifier at all.
 //
-// The verifier returns observed metadata (currently `content_hash`,
-// later: span-match offsets, fetched-source provenance). This lives on
-// the server, not on the contributor's proposal payload, because it is
-// server-observed not contributor-asserted.
+// The verifier returns observed metadata (the `content_hash`, and the
+// canonical bibliographic `metadata` the source reports about itself).
+// This lives on the server, not on the contributor's proposal payload,
+// because it is server-observed not contributor-asserted: the
+// contributor writes a free-text citation in `content`; the verifier
+// records what the resolved source actually says.
 export interface VerifiedRef {
   content_hash: string;
+  // Canonical bibliographic metadata captured from the resolved source
+  // (title, authors, year, venue). Best-effort and optional: omitted
+  // when the source yields nothing parseable, and never load-bearing for
+  // acceptance. Surfaced to reviewers via query_proposals and
+  // materialized onto the anchor node. PRD §Verification engine
+  // (Canonical metadata).
+  metadata?: SourceMetadata;
 }
 
 export interface Verifier {
@@ -63,18 +72,26 @@ export class StructuralVerifier implements Verifier {
 //   fidelity, and forcing them all to provide source fixtures would be
 //   noise. Scenarios that *do* exercise the verification engine
 //   populate `sources` explicitly.
+// - `metadata` is the canonical-metadata fixture map: when a ref's
+//   metadata is configured, verifyExternalRef returns it, mirroring what
+//   LiveFetchVerifier parses out of PubMed/Crossref. Unconfigured refs
+//   return no metadata (the common case). This keeps the sim≡prod
+//   posture — a testbed scenario can exercise the metadata-surfacing
+//   path identically to production.
 export class FakeVerifier implements Verifier {
   constructor(
     private readonly unresolvable: ReadonlySet<string> = new Set(),
     private readonly hashes: ReadonlyMap<string, string> = new Map(),
     private readonly sources: ReadonlyMap<string, string> = new Map(),
+    private readonly metadata: ReadonlyMap<string, SourceMetadata> = new Map(),
   ) {}
   async verifyExternalRef(ref: ExternalRef): Promise<VerifiedRef> {
     if (this.unresolvable.has(ref.value)) {
       throw new ServerError('invalid_input', `external_ref does not resolve: ${ref.value}`);
     }
     const content_hash = this.hashes.get(ref.value) ?? `fake:${ref.kind}:${ref.value}`;
-    return { content_hash };
+    const metadata = this.metadata.get(ref.value);
+    return { content_hash, ...(metadata ? { metadata } : {}) };
   }
   async verifySpan(ref: ExternalRef, span: QuotedSpan): Promise<void> {
     const source = this.sources.get(ref.value);

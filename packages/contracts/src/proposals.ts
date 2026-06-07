@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { AssignmentId, CauseId, IdentityId, NodeId, ProposalId, SubTopicId } from './ids.js';
-import { ExternalRef, QuotedSpan } from './nodes.js';
+import { ExternalRef, QuotedSpan, SourceMetadata } from './nodes.js';
 import { Timestamp } from './timestamps.js';
 
 // Persisted-proposal lifecycle. Proposals that fail synchronous
@@ -140,6 +140,16 @@ export const Proposal = z
     // pool is diverse enough; true when the diversity floor is not
     // met.
     stratification_degraded: z.boolean().optional(),
+    // PRD §Verification engine (Canonical metadata): for anchor
+    // proposals, the canonical bibliographic metadata the verifier
+    // observed when it resolved the external_ref, projected at the read-
+    // path (query_proposals) so a reviewer sees what the source says it
+    // is next to the proposer's free-text citation. Like
+    // stratification_degraded, not persisted on the proposal record — it
+    // is joined in from the server-side verification metadata every time
+    // the proposal is surfaced. Absent for non-anchor proposals and for
+    // anchors whose source yielded nothing parseable.
+    source_metadata: SourceMetadata.optional(),
   })
   .strict();
 export type Proposal = z.infer<typeof Proposal>;

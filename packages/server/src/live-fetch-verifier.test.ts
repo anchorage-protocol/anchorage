@@ -204,6 +204,119 @@ describe('LiveFetchVerifier.verifyExternalRef', () => {
   });
 });
 
+// PRD §Verification engine (Canonical metadata): the verifier mines the
+// resolver's own response for the work's canonical title/authors/year/
+// venue, surfaced to reviewers and materialized onto the node. Extraction
+// is best-effort — an unparseable record yields no metadata, never an
+// error.
+describe('LiveFetchVerifier canonical metadata', () => {
+  // A realistic efetch (rettype=abstract&retmode=text) record: enumerator-
+  // prefixed citation line, title block, author block with numeric
+  // affiliation markers, an "Author information:" block that must NOT be
+  // mistaken for authors, then the abstract and identifiers.
+  const PMID_ABSTRACT_RICH = [
+    '1. J Clin Oncol. 2022 Mar 10;40(8):892-910. doi: 10.1200/JCO.21.02538. Epub 2022 Jan 5.',
+    '',
+    'Adjuvant Therapy for Stage II Colon Cancer: ASCO Guideline Update.',
+    '',
+    'Baxter NN(1)(2), Kennedy EB(3), Bergsland E(4), Berlin J(5).',
+    '',
+    'Author information:',
+    '(1)Dalla Lana School of Public Health, University of Toronto.',
+    '',
+    'PURPOSE: To develop recommendations for adjuvant therapy for stage II colon cancer.',
+    '',
+    'DOI: 10.1200/JCO.21.02538',
+    'PMID: 34995109 [Indexed for MEDLINE]',
+  ].join('\n');
+
+  it('extracts title, authors, year, and venue from a PMID efetch record', async () => {
+    const { fetch } = stubFetch([{ match: () => true, response: ok(PMID_ABSTRACT_RICH) }]);
+    const v = new LiveFetchVerifier({ fetch });
+
+    const { metadata } = await v.verifyExternalRef(PMID_REF);
+
+    expect(metadata).toEqual({
+      title: 'Adjuvant Therapy for Stage II Colon Cancer: ASCO Guideline Update.',
+      authors: ['Baxter NN', 'Kennedy EB', 'Bergsland E', 'Berlin J'],
+      year: 2022,
+      container_title: 'J Clin Oncol',
+    });
+  });
+
+  it('extracts title, authors, year, and venue from a Crossref record', async () => {
+    const crossrefBody = {
+      message: {
+        title: ['ESMO recommendations on the use of circulating tumour DNA assays'],
+        abstract: '<jats:p>Body.</jats:p>',
+        author: [
+          { given: 'J', family: 'Pascual' },
+          { given: 'G', family: 'Attard' },
+          { name: 'ESMO Precision Medicine Working Group' },
+        ],
+        'container-title': ['Annals of Oncology'],
+        issued: { 'date-parts': [[2022, 8]] },
+      },
+    };
+    const { fetch } = stubFetch([{ match: () => true, response: ok(crossrefBody) }]);
+    const v = new LiveFetchVerifier({ fetch });
+
+    const { metadata } = await v.verifyExternalRef(DOI_REF);
+
+    expect(metadata).toEqual({
+      title: 'ESMO recommendations on the use of circulating tumour DNA assays',
+      authors: ['J Pascual', 'G Attard', 'ESMO Precision Medicine Working Group'],
+      year: 2022,
+      container_title: 'Annals of Oncology',
+    });
+  });
+
+  it('returns partial metadata for a title-only Crossref record (authors empty)', async () => {
+    const { fetch } = stubFetch([
+      { match: () => true, response: ok({ message: { title: ['Title-only paper'] } }) },
+    ]);
+    const v = new LiveFetchVerifier({ fetch });
+
+    const { metadata } = await v.verifyExternalRef(DOI_REF);
+
+    expect(metadata).toEqual({ title: 'Title-only paper', authors: [] });
+  });
+
+  it('attaches no metadata to a URL anchor (no structured record to mine)', async () => {
+    const { fetch } = stubFetch([{ match: () => true, response: ok('raw page text') }]);
+    const v = new LiveFetchVerifier({ fetch, reject_url: false });
+
+    const { metadata } = await v.verifyExternalRef(URL_REF);
+
+    expect(metadata).toBeUndefined();
+  });
+
+  it('does not mistake an interleaved non-bibliographic block for authors', async () => {
+    // A record whose third block is an erratum notice, not an author list.
+    const oddRecord = [
+      '1. J Foo. 2020;2(2):3-4. doi: 10.0/x.',
+      '',
+      'A short report.',
+      '',
+      'Erratum in: J Foo. 2020;2(3):9-9.',
+      '',
+      'The body of the report.',
+    ].join('\n');
+    const { fetch } = stubFetch([{ match: () => true, response: ok(oddRecord) }]);
+    const v = new LiveFetchVerifier({ fetch });
+
+    const { metadata } = await v.verifyExternalRef(PMID_REF);
+
+    // Title and venue/year still parse; authors are correctly empty.
+    expect(metadata).toEqual({
+      title: 'A short report.',
+      authors: [],
+      year: 2020,
+      container_title: 'J Foo',
+    });
+  });
+});
+
 describe('LiveFetchVerifier.verifySpan', () => {
   it('accepts a span that is a verbatim substring of the fetched PMID source', async () => {
     const { fetch, calls } = stubFetch([{ match: () => true, response: ok(PMID_ABSTRACT) }]);
