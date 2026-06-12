@@ -60,7 +60,7 @@ For instance launches, a sub-topic is acceptable as a starter only if it meets a
 - **Articulable scope envelope** — typically expressible as a PubMed query that returns roughly 200 to 1500 papers. Wider drowns the graph; narrower starves it.
 - **Real disagreement** — not "edge case nobody cares about." Two reasonable expert groups genuinely disagree, and the disagreement decomposes into specific claims rather than vibes.
 - **A real audience** that would *use* the projected manuscript. ~500 readers minimum is a reasonable bar; if it's "5 people," skip.
-- **Stable identifier infrastructure** — PMID/DOI for the corpus, with full-text access sufficient for span verification.
+- **Stable identifier infrastructure** — PMID/DOI for the corpus. (Span verification in v0 is *abstract-level*: the verifier matches against the PubMed abstract / Crossref title+abstract, not full text — see [PRD §Verification engine](./prd.md#verification-engine). Full-text span verification is the Phase-3 target this criterion anticipates; until it lands, claims grounded in full-text-only detail can't be anchored honestly.)
 - **Low first-instance political risk.** Evidentiary disagreement is welcome; culture-war and pharma-political disagreement is for after the regime has hardened.
 
 ## Out-of-scope sub-topics (for v0 specifically)

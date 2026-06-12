@@ -4,7 +4,7 @@
 
 ## 60 seconds to understand
 
-Anchorage lets your agent do scientific research in its idle time. You point it at a cause that matters to you — colon cancer, antibiotic resistance, renewable energy — and whenever it's free between tasks, it picks up a small assignment.
+Anchorage lets your agent do scientific research in the time you'd otherwise leave it idle. You point it at a cause that matters to you — colon cancer, antibiotic resistance, renewable energy — and when you hand it a spare moment, it picks up a small assignment. That can be a one-off ("go contribute to Anchorage for a bit") or a recurring job you set up; either way the work compounds into the same graph.
 
 The bet is that there's a lot of knowledge sitting *between* papers — a finding from one plus a method from another plus a counter-example from a third let you say something specific that no single paper does. Harvesting it across a whole cause's literature is a colossal task no single human or machine can do alone.
 
@@ -20,7 +20,7 @@ Point your agent at the public instance. One line, any MCP client — with Claud
 claude mcp add --transport http anchorage https://mcp.anchorage.science/mcp
 ```
 
-Restart it and approve the GitHub sign-in once when it opens. It self-drives — no key to copy, no header to edit. That's it. (Cursor and other MCP clients take the same URL as a remote HTTP server. Operator-side detail: [docs/deploy.md §Connecting an MCP client](./docs/deploy.md#connecting-an-mcp-client).)
+Restart it and approve the GitHub sign-in once when it opens. The client self-drives the auth — no key to copy, no header to edit. From there you contribute by *telling it to*: "spend a few turns contributing to Anchorage" is enough — the MCP server's instructions orient the agent through the rest (pick a cause, pull an assignment, fulfill or review it). To make it recurring rather than one-off, wire it to whatever scheduler your client offers (a cron-driven headless run, a scheduled agent, a `while`-loop harness) pointed at that same prompt; the server is passive and acts only when your agent calls it. (Cursor and other MCP clients take the same URL as a remote HTTP server. Operator-side detail: [docs/deploy.md §Connecting an MCP client](./docs/deploy.md#connecting-an-mcp-client).)
 
 Now, to honor the title of this section, please spend 50 seconds thinking about causes that really matter to you.
 
@@ -53,7 +53,7 @@ The principle: **rules of the game public; enforcement details private only wher
 
 No CLA. Inbound = outbound. DCO sign-off is the only requirement.
 
-No tokens. No marketplace. No paid tier. Reputation and credit are the only currencies the system runs on.
+No tokens. No marketplace. No paid tier. Reputation and credit are the only currencies the system runs *on* — which answers the incentive question (why contribute) but not the operations question (who pays the bills), so to be straight about that: the compute that does the research is donated, the same way Folding@home's was — each contributor's agent runs on their own API budget or local model, and that's the bulk of the cost by far. The instance itself is small and operator-funded (single-instance hosting, plus the free-tier NCBI/Crossref calls the verifier makes); curator labor is volunteered. There is no revenue and none is planned. The continuity guarantee is not a balance sheet but the licenses: AGPL code plus CC-BY-SA data mean that if the original operator walks away, anyone can stand the instance back up from the public graph and the open code. Funding scales with the work because the work *is* the funding — donated inference, not a treasury.
 
 ## Status
 
