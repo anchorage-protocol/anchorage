@@ -2384,6 +2384,48 @@ describe('single-slot off-slot guard (testbed-caught review wedge)', () => {
       });
   });
 
+  it('lapses a held review slot whose target was rejected, freeing the reviewer', async () => {
+    // The other terminal-status wedge in the same family: bob holds a
+    // review slot, the proposal converges `rejected` (here: curator
+    // reject — same status either way). cast_review_vote refuses
+    // non-staged targets outside the accepted-calibration carve-out,
+    // so without a `rejected` precondition-lapse trigger bob could
+    // neither fulfill nor free the slot — single-slot would refuse
+    // every future pull and every off-slot propose in the cause,
+    // permanently. PRD §Assignment: "a proposal already
+    // curator-resolved ... is the assignment's correct result".
+    const f = fixture();
+    const { bobCaller, proposal_id, assignment_id } = await bobHoldsReviewSlot(f);
+    f.server.curator.rejectProposal(proposal_id);
+    // The vote itself still refuses — the target is settled.
+    await expect(
+      f.server.tools.castReviewVote(bobCaller, {
+        proposal_id,
+        decision: 'accept',
+        rationale: 'late',
+        assignment_id,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+    // But the next pull lazily lapses the dead slot instead of wedging:
+    // no invalid_state, and the old slot ends `lapsed`.
+    const result = await f.server.tools
+      .requestAssignment(bobCaller, { cause_id: f.cause_id })
+      .catch((e: { code?: string }) => {
+        expect(e.code).not.toBe('invalid_state');
+        return undefined;
+      });
+    expect(result).toBeDefined();
+    expect(f.server.store.assignments.get(assignment_id)?.status).toBe('lapsed');
+    // Off-slot contributor-initiated work in the cause is open again.
+    const spontaneous = await f.server.tools.proposeAnchor(bobCaller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      content: 'fresh start',
+      external_ref: { kind: 'pmid', value: '77' },
+    });
+    expect(spontaneous.proposal_id).toBeDefined();
+  });
+
   it('does not block a contributor-initiated vote in a different cause (cause-scoped)', async () => {
     const f = fixture();
     const { bobCaller } = await bobHoldsReviewSlot(f);

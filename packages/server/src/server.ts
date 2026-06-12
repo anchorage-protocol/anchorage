@@ -1339,19 +1339,35 @@ export class Server {
   // The precondition for an open assignment: its scope is still open
   // and its target still admits the work. Conservative — only the
   // committed lapse triggers (cause/sub-topic closed; review target
-  // gone or archived-without-resolution; excerpt parent anchor gone
-  // `unresolvable`). A review task is NOT lapsed merely because its
-  // proposal left `staged`: a calibration review task is — by design,
-  // structurally indistinguishable from a real one — pointed at an
-  // `accepted` validated-history proposal, and a real review task
-  // whose proposal resolved concurrently degrades to a calibration-
-  // style late vote scored against ground truth. Only `unresolved-
-  // archived` (divergence-closure, no ground truth) makes the review
-  // genuinely moot.
+  // gone, rejected, or archived-without-resolution; excerpt parent
+  // anchor gone `unresolvable`). A review task is NOT lapsed merely
+  // because its proposal left `staged` *into `accepted`*: a calibration
+  // review task is — by design, structurally indistinguishable from a
+  // real one — pointed at an `accepted` validated-history proposal,
+  // and a real review task whose proposal resolved concurrently to
+  // `accepted` degrades to a calibration-style late vote scored
+  // against ground truth. The two statuses that DO lapse the slot are
+  // the ones `cast_review_vote` refuses: `unresolved-archived`
+  // (divergence-closure, no ground truth) and `rejected` (the
+  // calibration carve-out admits only `accepted` targets — a
+  // convergence- or curator-rejected proposal is not in the
+  // validated-history corpus). Without the `rejected` trigger a
+  // reviewer whose target was rejected by the other reviewers held a
+  // slot they could neither fulfill (the vote refuses) nor lapse —
+  // a permanent per-(identity, cause) deadlock under single-slot.
+  // PRD §Assignment commits this posture: "a proposal already
+  // curator-resolved is not a refusal but the assignment's correct
+  // result — see precondition-lapse".
   private assignmentPreconditionHolds(a: Assignment): boolean {
     if (a.task.kind === 'review') {
       const proposal = this.store.proposals.get(a.task.proposal_id);
-      if (!proposal || proposal.status === 'unresolved-archived') return false;
+      if (
+        !proposal ||
+        proposal.status === 'unresolved-archived' ||
+        proposal.status === 'rejected'
+      ) {
+        return false;
+      }
       const route = this.locateProposalForReview(proposal);
       if (!route) return false;
       return this.scopeOpen(route.cause_id, route.sub_topic_id);
