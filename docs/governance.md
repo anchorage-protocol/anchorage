@@ -2,7 +2,7 @@
 
 > How contributions enter the graph, how disputes are resolved, how reputation is earned and lost, and how the rules themselves change.
 
-This document is a **skeleton**. It captures the design we've committed to in principle; the operational details (specific calibration ratios, reputation formulas, reviewer-assignment algorithms, decay rates) are deliberately deferred to the [PRD](./prd.md) and to the adversary-testbed phase, where they will be tuned against simulation rather than guessed.
+This document captures the governance design we've committed to in principle and how it operates today; the quantitative operational details (specific calibration ratios, reputation formulas, reviewer-assignment algorithms, decay rates) live in the [PRD](./prd.md) and were tuned against the adversary testbed across Phase 1 (closed 2026-05-14) rather than guessed. Where a commitment here is not yet built, the [v0 operating reality](#what-is-committed-vs-what-is-deployed-v0-operating-reality) section below says so plainly.
 
 The principle: **the rules of the game are public; the enforcement details are operationally private only where exposure helps attackers without helping reviewers.**
 
@@ -16,11 +16,19 @@ Anchorage supports stable pseudonymous participation while retaining bounded ide
 
 ## Roles
 
-- **Contributor.** Anyone who proposes a node, edge, anchor, or synthesis. No prior reputation required to propose; reputation is required for proposals to merge into the canonical graph without staged review.
+- **Contributor.** Anyone who proposes a node, edge, anchor, or synthesis. No prior reputation required to propose. Every proposal stages and is reviewed — reputation does not buy a *bypass* of staged review; what it gates is whether a staged proposal advances into the review queue automatically (above threshold) or waits on curator action (below it). See [PRD §The contribution flow](./prd.md#the-contribution-flow) and §Verification engine (Reputation gates).
 - **Reviewer.** A contributor who has accumulated enough reputation in a topic (and ideally in the relevant sub-topic) to evaluate others' proposals. Reviewer assignment is randomized within the eligible pool, salted with calibration items.
 - **Curator.** A small set of trusted humans (initially: the maintainers) who handle edge cases the automated regime cannot: sub-topic creation in v0, dispute escalation, moderation of bad-faith behavior, governance proposals. Curator authority is bounded, auditable, and revocable: every curator action is logged in a tamper-evident audit log; affected contributors see *that* an action occurred and the broad category, with specific signals redacted only where exposure would aid evasion; a separate auditor role periodically samples curator actions for review; cause-level curators can be removed through a documented process (multi-curator vote in early phases, broader contributor input as the cause matures). Wikipedia's hardest governance arm is curator capture and accountability — the design accepts that a single-curator-trust-point is unacceptable and that audit + removal need to exist before they are needed.
 - **Auditor.** A rotating role (filled by curators of *other* causes, or by senior reviewers nominated for the role) that periodically samples curator actions and surfaces irregular patterns. Auditors do not overturn individual actions but can trigger curator-removal processes.
 - **Maintainer.** Project-level role for the codebase and protocol. Distinct from per-cause curators.
+
+### What is committed vs. what is deployed (v0 operating reality)
+
+The Curator and Auditor descriptions above are governance *commitments* — the accountability machinery the design holds itself to before scale, stated in the present tense because they are load-bearing for the trust story. They are not all built yet, and honesty about the gap matters more than the tense:
+
+- **The tamper-evident audit log does not exist yet.** Today the runtime's structured logging covers page views, the re-verification scheduler, and OAuth events — not a signed, append-only ledger of curator actions. The audit log is a commitment, not a current property.
+- **The Auditor role is unfilled, and multi-curator mechanisms are vacuous at one curator.** The live instance runs with a single maintainer-curator, so "removal by multi-curator vote", "an auditor samples curator actions", and "multi-curator approval to loosen a threshold" describe a future state, not the present one. At v0 the curator is a unilateral accept/reject/revoke/escalate authority; the check on it is that the data and code are open (AGPL + CC-BY-SA) and the graph is public, so curator actions are externally observable even without the formal log.
+- **These are commitments-before-scale by design.** The accountability machinery is sized for a multi-curator, multi-cause instance; it is built as the contributor base grows past what a single trusted operator can be transparent about by hand. Building it before there is anyone to hold accountable would be fake-mature signal. The commitment is that it lands before the instance relies on more than one curator's good faith — not that it already has.
 
 ---
 
@@ -28,7 +36,7 @@ Anchorage supports stable pseudonymous participation while retaining bounded ide
 
 The default flow is *assignment-driven*: the system assigns work from the frontier, and reputation accrues on assigned work. A contributor-initiated path exists for genuinely novel proposals but with weaker rep weighting. The shape:
 
-1. **Assignment.** The contributor requests work; the system draws a frontier task across all sub-topics in the cause on frontier priority alone — no expertise matching, no declared capacity. A contributor holds one assignment slot per cause and accepts it; there is no decline. A task that cannot be honestly completed (a source that will not resolve, a lapsed precondition) resolves as its own correct negative result rather than being refused, so selectivity has no surface to act on. The single slot is itself the only availability signal — there is no shopping list, which is what closes the rep-laundering vector.
+1. **Assignment.** The contributor requests work; the system draws a frontier task across all sub-topics in the cause on frontier priority alone — no expertise matching, no declared capacity. A contributor holds one assignment slot per cause, held the moment it is returned — there is no accept step and no decline. A task that cannot be honestly completed (a source that will not resolve, a lapsed precondition) resolves as its own correct negative result rather than being refused, so selectivity has no surface to act on. The single slot is itself the only availability signal — there is no shopping list, which is what closes the rep-laundering vector.
 
 2. **Submit.** The contributor submits work via the assigned-proposal tool; verification (grounding, lineage, rate) gates the submission synchronously.
 
@@ -122,8 +130,8 @@ The principle is that exposure should help reviewers more than it helps attacker
 
 ---
 
-## What this document will become
+## Where the rest of the governance design lives
 
-This is the skeleton. The full governance specification — with concrete parameter ranges, reviewer-assignment pseudocode, and the formal definition of the calibration regime — lives in the [PRD](./prd.md), and was tuned against the adversary testbed across Phase 1 (closed 2026-05-14); the testbed remains the regression handle for any subsequent governance change.
+The full governance specification — concrete parameter ranges, reviewer-assignment pseudocode, the formal definition of the calibration regime — lives in the [PRD](./prd.md), and was tuned against the adversary testbed across Phase 1 (closed 2026-05-14); the testbed remains the regression handle for any subsequent governance change.
 
-Operational governance for the running public instance — moderation guidelines, escalation paths, named curator responsibilities — will be added once the instance exists.
+The public instance is live (`anchorage.science` / `mcp.anchorage.science`, since 2026-05-16). Operational governance for it runs at the v0 posture described under [What is committed vs. what is deployed](#what-is-committed-vs-what-is-deployed-v0-operating-reality): a single maintainer-curator, moderation via the `curator_*` MCP tools, network-gated curator console, and the accountability machinery (audit log, auditor role, multi-curator removal) committed for when the contributor base outgrows a single trusted operator. The named-curator-responsibilities and formal escalation-path documents land alongside that machinery, before the instance relies on more than one curator.

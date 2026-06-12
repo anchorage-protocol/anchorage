@@ -446,8 +446,8 @@ Specifying these before testing them would be guessing. The testbed exists exact
 ## What's deliberately not in this document
 
 - **Operational moderation specifics.** Calibration items in active rotation, abuse-signal heuristics, specific moderation actions on the public instance. These are operationally private.
-- **UI/UX design.** The web UI's specific surfaces are a separate document, written when the UI is built.
-- **Implementation details.** Database choice, hosting, deployment story, specific languages and frameworks. These are not load-bearing for the design and will be decided when the code surface opens.
+- **UI/UX design.** The web read-tier's specific surfaces are documented in code and in [docs/deploy.md](./deploy.md) (the route list and gating posture); a fuller design document is deferred until the UI grows past the v0 read-only surface.
+- **Implementation details that turned out load-bearing have since been decided** and are documented where they live: the store backend is `node:sqlite` (`SqliteStore`), hosting is single-instance on Fly, the deployment story is [docs/deploy.md](./deploy.md), and the language is TypeScript across the monorepo. What remains genuinely undecided and out of scope here is the multi-instance / federation path (Phase 3+), where the database and deployment shape are reopened.
 
 ---
 
