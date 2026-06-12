@@ -242,7 +242,7 @@ The scheduler is *off* by default. The primitive remains available on-demand whe
 
    The runtime refuses at boot if only some of the three are set — there is no silent default for a cadence that drives real fetches against upstream verifiers. Drop the `INTERVAL` to turn it off, or all three to revert to the unset shape.
 
-3. The scheduler's tick fires every `INTERVAL_MS`, picks up to `BATCH_SIZE` `active` anchors whose `last_verified_at` predates `now - MAX_AGE_MS` (oldest first), and re-verifies each in turn. Per-tick errors are caught and surfaced through the structured-log sink (`anchorage.reverify.error`); a transient upstream failure does not kill the scheduler. Outcomes for a non-empty tick are logged as `anchorage.reverify.tick` with `{ checked, unchanged, unresolvable }`. The `/curator/unresolvable` view (slice 7c) surfaces flagged anchors to a seated curator, most-recent-drift-first.
+3. The scheduler's tick fires every `INTERVAL_MS`, picks up to `BATCH_SIZE` `active` anchors whose `last_verified_at` predates `now - MAX_AGE_MS` (oldest first), and re-verifies each in turn. Per-tick errors are caught and surfaced through the structured-log sink (`anchorage.reverify.error`); a transient upstream failure does not kill the scheduler. Outcomes for a non-empty tick are logged as `anchorage.reverify.tick` with `{ checked, unchanged, unresolvable, transient }` — `transient` counts upstream 429/5xx signals, which persist nothing and stop the batch early (the next tick retries for free). The `/curator/unresolvable` view (slice 7c) surfaces flagged anchors to a seated curator, most-recent-drift-first.
 
 ## Connecting an MCP client
 
@@ -276,7 +276,7 @@ The runtime emits structured logs via the injected log sink. The default sink is
 - `web.page.curator.index` / `web.page.curator.queue` / `web.page.curator.decline_patterns` / `web.page.curator.identity_clusters` — emitted on every served curator-console page (slice 7b). Carries projection-shape counts (cause count, proposal count, entry count, pair count) and the cause_id filter where applicable.
 - `web.page.curator.unresolvable` — emitted on every served `/curator/unresolvable` page (slice 7c). Carries `{ anchor_count, cause_id }`.
 - `anchorage.reverify.started` — emitted once per boot when the re-verification scheduler is configured (slice 7c). Carries `{ interval_ms, max_age_ms, batch_size }`. Absent when the scheduler is disabled.
-- `anchorage.reverify.tick` — emitted per non-empty scheduler tick (slice 7c). Carries `{ checked, unchanged, unresolvable }`. Empty ticks are silent to keep the log volume bounded under quiet steady state.
+- `anchorage.reverify.tick` — emitted per non-empty scheduler tick (slice 7c). Carries `{ checked, unchanged, unresolvable, transient }`. Empty ticks are silent to keep the log volume bounded under quiet steady state.
 - `anchorage.reverify.error` — emitted per scheduler tick that threw (slice 7c). Carries `{ message }`. The scheduler itself survives the throw and keeps ticking.
 - `anchorage.server.stopped` — emitted once per graceful shutdown.
 - `auth.github.start` / `auth.github.complete` — one per device-code flow attempt (metadata only: `user_code`, `status` — never the secret).

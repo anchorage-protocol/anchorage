@@ -6,6 +6,7 @@ import {
   type VerifierFetch,
   type VerifierResponse,
 } from './live-fetch-verifier.js';
+import { TransientFetchError } from './verifier.js';
 
 // Unit tests for LiveFetchVerifier (`live-fetch-verifier.ts`). The
 // verifier is the production-side implementation of the PRD §Verification
@@ -106,14 +107,44 @@ describe('LiveFetchVerifier.verifyExternalRef', () => {
     expect(calls[0]!.url).toContain('api_key=secret-key');
   });
 
-  it('rejects a PMID that returns HTTP non-200', async () => {
-    const { fetch } = stubFetch([{ match: () => true, response: notOk(500, 'oops') }]);
+  it('rejects a PMID that returns a permanent HTTP failure (4xx)', async () => {
+    const { fetch } = stubFetch([{ match: () => true, response: notOk(404, 'gone') }]);
     const v = new LiveFetchVerifier({ fetch });
 
     await expect(v.verifyExternalRef(PMID_REF)).rejects.toMatchObject({
       code: 'invalid_input',
-      message: expect.stringMatching(/pmid:40010001.*HTTP 500/),
+      message: expect.stringMatching(/pmid:40010001.*HTTP 404/),
     });
+  });
+
+  it('surfaces upstream 5xx as TransientFetchError, not a resolution failure', async () => {
+    // A 500 from NCBI says nothing about the PMID — the re-verification
+    // path must not flip anchors terminal on an upstream outage.
+    const { fetch } = stubFetch([{ match: () => true, response: notOk(500, 'oops') }]);
+    const v = new LiveFetchVerifier({ fetch });
+
+    const err = await v.verifyExternalRef(PMID_REF).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TransientFetchError);
+    expect((err as TransientFetchError).status).toBe(500);
+  });
+
+  it('surfaces upstream 429 (rate limit) as TransientFetchError', async () => {
+    const { fetch } = stubFetch([{ match: () => true, response: notOk(429, 'slow down') }]);
+    const v = new LiveFetchVerifier({ fetch });
+
+    const err = await v.verifyExternalRef(PMID_REF).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TransientFetchError);
+    expect((err as TransientFetchError).status).toBe(429);
   });
 
   it('rejects a PMID whose body is empty (E-utilities not-found returns 200 + empty)', async () => {

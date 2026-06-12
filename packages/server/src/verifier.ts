@@ -28,6 +28,26 @@ export interface VerifiedRef {
   metadata?: SourceMetadata;
 }
 
+// TransientFetchError marks an upstream condition that says nothing
+// about whether the ref resolves: HTTP 429 (the verifier hitting its
+// own upstream's rate limit at NCBI/Crossref) or 5xx (upstream outage).
+// It is deliberately NOT a ServerError — the re-verification path
+// treats typed verifier rejections as evidence about the *source*
+// (drift / retraction / host gone → `unresolvable`), and a transient
+// upstream signal is evidence about the upstream, not the source.
+// Callers either retry later for free (re-verification scheduler:
+// `transient` outcome, nothing persisted, next tick re-attempts) or
+// surface a retry message to the contributor (propose path).
+export class TransientFetchError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'TransientFetchError';
+  }
+}
+
 export interface Verifier {
   verifyExternalRef(ref: ExternalRef): Promise<VerifiedRef>;
   // PRD §Verification engine: for excerpts, the quoted span

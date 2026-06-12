@@ -454,6 +454,7 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
               checked: out.checked,
               unchanged: out.unchanged,
               unresolvable: out.unresolvable,
+              transient: out.transient,
             });
           }
         } catch (err) {

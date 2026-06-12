@@ -415,12 +415,14 @@ export type CuratorIdentityClustersOutput = z.infer<typeof CuratorIdentityCluste
 // Re-verification): pick `active` anchors whose `last_verified_at` is
 // older than `max_age_ms`, oldest first, up to `batch_size`, re-fetch
 // each through the configured verifier, and either bump
-// `last_verified_at` (hash match) or flip to `unresolvable` (hash
-// mismatch, or verifier refusal — retraction, host gone, network
-// failure all collapse here; the verifier seam conflates them). The
-// production scheduler ticks against this primitive; operators can
-// also drive it on demand.
-export const ReverifyAnchorOutcome = z.enum(['unchanged', 'unresolvable']);
+// `last_verified_at` (hash match), flip to `unresolvable` (hash
+// mismatch, or verifier refusal — retraction, host gone all collapse
+// here), or report `transient` (upstream HTTP 429/5xx — the upstream
+// said nothing about the source; nothing is persisted and the batch
+// stops early, since the same upstream serves the rest of it and the
+// next scheduler tick retries for free). The production scheduler
+// ticks against this primitive; operators can also drive it on demand.
+export const ReverifyAnchorOutcome = z.enum(['unchanged', 'unresolvable', 'transient']);
 export type ReverifyAnchorOutcome = z.infer<typeof ReverifyAnchorOutcome>;
 export const ReverifiedAnchor = z
   .object({ anchor_id: NodeId, outcome: ReverifyAnchorOutcome })
@@ -439,6 +441,7 @@ export const CuratorReverifyAnchorsOutput = z
     checked: z.number().int().nonnegative(),
     unchanged: z.number().int().nonnegative(),
     unresolvable: z.number().int().nonnegative(),
+    transient: z.number().int().nonnegative(),
     anchors: z.array(ReverifiedAnchor),
   })
   .strict();

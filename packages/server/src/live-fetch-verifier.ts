@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import type { ExternalRef, QuotedSpan, SourceMetadata } from '@anchorage/contracts';
 import { ServerError } from './errors.js';
-import { normalizeForSpanMatch, type VerifiedRef, type Verifier } from './verifier.js';
+import {
+  normalizeForSpanMatch,
+  TransientFetchError,
+  type VerifiedRef,
+  type Verifier,
+} from './verifier.js';
 
 // LiveFetchVerifier is the production verifier — the real implementation
 // of the PRD §Verification engine commitment ("external references must
@@ -156,14 +161,16 @@ export class LiveFetchVerifier implements Verifier {
   // against this full text — for a typical contributor quoting from the
   // abstract, that's what they're quoting.
   //
-  // Failure modes: HTTP non-200, empty response body (NCBI returns 200
-  // with empty content for a PMID that doesn't exist), network error.
-  // All three surface as `invalid_input` — the wire-level distinction
-  // between transient (network) and permanent (not found) failure is
-  // not modeled today; the contributor retries either way. Adding a
-  // distinct error code is breaking-change territory per the comment
-  // in `packages/contracts/src/errors.ts`, deferred until a real
-  // contributor experience argues for it.
+  // Failure modes: HTTP 429/5xx surface as `TransientFetchError` (the
+  // upstream said nothing about the ref — the re-verification scheduler
+  // must not flip an anchor terminal on its own rate limit, and the
+  // propose path tells the contributor to retry); any other non-200 and
+  // an empty response body (NCBI returns 200 with empty content for a
+  // PMID that doesn't exist) surface as `invalid_input`. The wire-level
+  // error-code vocabulary is unchanged — the transient/permanent split
+  // is a server-internal seam, not a new ServerErrorCode (which is
+  // breaking-change territory per the comment in
+  // `packages/contracts/src/errors.ts`).
   private async fetchPmid(pmid: string): Promise<FetchedSource> {
     const params = new URLSearchParams({
       db: 'pubmed',
@@ -175,10 +182,7 @@ export class LiveFetchVerifier implements Verifier {
     const url = `${NCBI_EFETCH}?${params.toString()}`;
     const res = await this.fetchWithUserAgent(url);
     if (!res.ok) {
-      throw new ServerError(
-        'invalid_input',
-        `external_ref does not resolve: pmid:${pmid} (HTTP ${res.status})`,
-      );
+      throw refusalFor(res.status, `pmid:${pmid}`);
     }
     const body = await res.text();
     if (body.trim().length === 0) {
@@ -203,10 +207,7 @@ export class LiveFetchVerifier implements Verifier {
     const url = `${CROSSREF_WORKS}/${encodeURIComponent(doi)}`;
     const res = await this.fetchWithUserAgent(url, { Accept: 'application/json' });
     if (!res.ok) {
-      throw new ServerError(
-        'invalid_input',
-        `external_ref does not resolve: doi:${doi} (HTTP ${res.status})`,
-      );
+      throw refusalFor(res.status, `doi:${doi}`);
     }
     const body = (await res.json()) as CrossrefResponse;
     const message = body.message;
@@ -238,10 +239,7 @@ export class LiveFetchVerifier implements Verifier {
   private async fetchUrl(url: string): Promise<FetchedSource> {
     const res = await this.fetchWithUserAgent(url);
     if (!res.ok) {
-      throw new ServerError(
-        'invalid_input',
-        `external_ref does not resolve: url:${url} (HTTP ${res.status})`,
-      );
+      throw refusalFor(res.status, `url:${url}`);
     }
     const body = await res.text();
     if (body.trim().length === 0) {
@@ -263,6 +261,21 @@ export class LiveFetchVerifier implements Verifier {
       headers: { 'User-Agent': this.user_agent, ...extra },
     });
   }
+}
+
+// Map a non-200 upstream status onto the verifier's two refusal
+// classes: 429 and 5xx say nothing about the ref (the upstream is
+// rate-limiting us or down) and surface as `TransientFetchError`;
+// everything else (404, 400, ...) is the upstream telling us the ref
+// does not resolve and surfaces as the usual `invalid_input`.
+function refusalFor(status: number, label: string): Error {
+  if (status === 429 || status >= 500) {
+    return new TransientFetchError(
+      status,
+      `source fetch temporarily unavailable: ${label} (HTTP ${status}); retry later`,
+    );
+  }
+  return new ServerError('invalid_input', `external_ref does not resolve: ${label} (HTTP ${status})`);
 }
 
 function cacheKey(ref: ExternalRef): string {

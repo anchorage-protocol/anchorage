@@ -5,7 +5,7 @@ import { FakeClock } from './clock.js';
 import { ServerError } from './errors.js';
 import { SeededIdGen } from './id-gen.js';
 import { Server } from './server.js';
-import { FakeVerifier, type VerifiedRef, type Verifier } from './verifier.js';
+import { FakeVerifier, TransientFetchError, type VerifiedRef, type Verifier } from './verifier.js';
 
 interface Fixture {
   server: Server;
@@ -629,7 +629,14 @@ describe('curator-side resource read projections (slice 7b)', () => {
 class MutableVerifier implements Verifier {
   readonly hashes = new Map<string, string>();
   readonly unresolvable = new Set<string>();
+  readonly transient = new Set<string>();
   async verifyExternalRef(ref: ExternalRef): Promise<VerifiedRef> {
+    if (this.transient.has(ref.value)) {
+      throw new TransientFetchError(
+        503,
+        `source fetch temporarily unavailable: ${ref.value} (HTTP 503); retry later`,
+      );
+    }
     if (this.unresolvable.has(ref.value)) {
       throw new ServerError('invalid_input', `external_ref does not resolve: ${ref.value}`);
     }
@@ -766,6 +773,30 @@ describe('curator.reverifyAnchor (slice 7c)', () => {
     const after = f.server.store.nodes.get(anchor_id);
     if (after?.kind !== 'anchor') throw new Error('expected anchor');
     expect(after.status).toBe('unresolvable');
+  });
+
+  it('reports transient on upstream 429/5xx and persists nothing', async () => {
+    // A TransientFetchError is evidence about the upstream, not the
+    // source: the anchor must stay active with both timestamps
+    // untouched, so the next scheduler tick retries for free.
+    const f = driftFixture();
+    const { anchor_id, initial_hash, initial_verified_at } = await landAnchor(f, '1012');
+    const before = f.server.store.nodes.get(anchor_id);
+    if (before?.kind !== 'anchor') throw new Error('expected anchor');
+    f.verifier.transient.add('1012');
+    const result = await f.server.curator.reverifyAnchor(anchor_id);
+    expect(result.outcome).toBe('transient');
+    expect(result.content_hash).toBe(initial_hash);
+    expect(result.last_verified_at).toBe(initial_verified_at);
+    const after = f.server.store.nodes.get(anchor_id);
+    if (after?.kind !== 'anchor') throw new Error('expected anchor');
+    expect(after.status).toBe('active');
+    expect(after.last_verified_at).toBe(initial_verified_at);
+    expect(after.updated_at).toBe(before.updated_at);
+    // Upstream recovers: the same anchor re-verifies cleanly.
+    f.verifier.transient.delete('1012');
+    const retry = await f.server.curator.reverifyAnchor(anchor_id);
+    expect(retry.outcome).toBe('unchanged');
   });
 
   it('refuses re-verification on non-active anchors', async () => {
@@ -998,10 +1029,46 @@ describe('curator.reverifyDueAnchors (slice 7c)', () => {
     expect(out.anchors[0]?.anchor_id).toBeDefined();
   });
 
+  it('stops the batch early on the first transient outcome', async () => {
+    // Upstream rate-limit/outage hits the whole batch: stop on the
+    // first transient signal instead of hammering the host, and leave
+    // the unprocessed remainder untouched so it sorts first next tick.
+    const f = driftFixture();
+    const ids: NodeId[] = [];
+    for (const pmid of ['2401', '2402', '2403']) {
+      const { proposal_id } = await f.server.tools.proposeAnchor(f.contributorCaller, {
+        cause_id: f.cause_id,
+        home_sub_topic_id: f.sub_topic_id,
+        content: pmid,
+        external_ref: { kind: 'pmid', value: pmid },
+      });
+      const { node_id } = f.server.curator.acceptProposal(proposal_id);
+      if (!node_id) throw new Error('expected anchor');
+      ids.push(node_id);
+    }
+    // The oldest anchor (first landed) hits the outage.
+    f.verifier.transient.add('2401');
+    f.clock.advance(60_000);
+    const out = await f.server.curator.reverifyDueAnchors({
+      batch_size: 10,
+      max_age_ms: 1_000,
+    });
+    expect(out.checked).toBe(1);
+    expect(out.transient).toBe(1);
+    expect(out.unchanged).toBe(0);
+    expect(out.unresolvable).toBe(0);
+    expect(out.anchors).toEqual([{ anchor_id: ids[0], outcome: 'transient' }]);
+    // Nothing flipped, nothing bumped: all three remain active and
+    // eligible for the next tick.
+    for (const id of ids) {
+      expect(f.server.store.nodes.get(id)?.status).toBe('active');
+    }
+  });
+
   it('no-ops on a non-positive batch_size', async () => {
     const f = driftFixture();
     const out = await f.server.curator.reverifyDueAnchors({ batch_size: 0, max_age_ms: 0 });
-    expect(out).toEqual({ checked: 0, unchanged: 0, unresolvable: 0, anchors: [] });
+    expect(out).toEqual({ checked: 0, unchanged: 0, unresolvable: 0, transient: 0, anchors: [] });
   });
 });
 

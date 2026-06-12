@@ -79,7 +79,7 @@ import { type Clock, SystemClock } from './clock.js';
 import { ServerError } from './errors.js';
 import { type IdGen, RandomIdGen } from './id-gen.js';
 import { MemoryStore, type Store } from './store.js';
-import { StructuralVerifier, type Verifier } from './verifier.js';
+import { StructuralVerifier, TransientFetchError, type Verifier } from './verifier.js';
 
 // Bootstrap input schemas. These are admin-surface inputs and are
 // deliberately separate from the contributor-facing MCP tool I/O in
@@ -653,6 +653,21 @@ const CALIBRATION_BATCH_SIZE = 3;
 // half-lives apply value * 0.5^(elapsed/halfLife). Sign is preserved
 // — a negative reputation balance decays toward zero from below the
 // same way a positive one decays toward zero from above.
+// Propose-path mapping for `TransientFetchError`: the wire vocabulary
+// has no transient code (adding one is breaking-change territory, see
+// `packages/contracts/src/errors.ts`), so a 429/5xx from the verifier's
+// upstream surfaces to the contributor as a typed refusal whose message
+// says to retry — rather than bubbling past the MCP layer as an opaque
+// internal error. The re-verification path does NOT use this mapping;
+// it handles `TransientFetchError` as a non-persisting `transient`
+// outcome (see `curator.reverifyAnchor`).
+function rethrowTransientAsRefusal(err: unknown): never {
+  if (err instanceof TransientFetchError) {
+    throw new ServerError('invalid_input', err.message);
+  }
+  throw err;
+}
+
 function decayValue(value: number, elapsedSeconds: number, halfLifeSeconds: number): number {
   if (value === 0) return 0;
   if (!Number.isFinite(halfLifeSeconds)) return value;
@@ -2148,7 +2163,9 @@ export class Server {
       // so a misdirected fulfillment fails fast without a wasted fetch.
       const assignment = this.resolveProposalAssignment(identity.id, parsed.assignment_id, payload);
 
-      const verified = await this.verifier.verifyExternalRef(parsed.external_ref);
+      const verified = await this.verifier
+        .verifyExternalRef(parsed.external_ref)
+        .catch(rethrowTransientAsRefusal);
 
       const now = this.clock.now();
       const proposal: Proposal = {
@@ -2209,7 +2226,9 @@ export class Server {
       // Span must appear in the parent anchor's source. Failure here
       // throws — the proposal is never staged, never assigned, never
       // shown to a reviewer.
-      await this.verifier.verifySpan(parentAnchor.external_ref, parsed.quoted_span);
+      await this.verifier
+        .verifySpan(parentAnchor.external_ref, parsed.quoted_span)
+        .catch(rethrowTransientAsRefusal);
 
       const now = this.clock.now();
       const proposal: Proposal = {
@@ -3943,7 +3962,7 @@ export class Server {
       anchorId: NodeId,
     ): Promise<{
       anchor_id: NodeId;
-      outcome: 'unchanged' | 'unresolvable';
+      outcome: 'unchanged' | 'unresolvable' | 'transient';
       content_hash: string;
       last_verified_at: Timestamp;
     }> => {
@@ -3986,12 +4005,23 @@ export class Server {
         }
         // Hash mismatch: confirmed drift.
       } catch (err) {
-        // Verifier threw: retraction, host gone, transient network
-        // failure — indistinguishable at the verifier seam (see comment
-        // above and `LiveFetchVerifier.fetchPmid`). v0 collapses all
-        // three to "unresolvable" rather than persisting a transient
-        // hiccup as a different state; the operator's recovery path
-        // is the same in every case (curator surfaces flagged anchors;
+        // TransientFetchError (upstream 429/5xx) is evidence about the
+        // upstream, not the source: persist nothing, report `transient`,
+        // and let the next scheduler tick retry for free. Without this
+        // carve-out one NCBI outage would mass-flip a whole batch of
+        // healthy anchors into the terminal state.
+        if (err instanceof TransientFetchError) {
+          return {
+            anchor_id: node.id,
+            outcome: 'transient',
+            content_hash: node.content_hash,
+            last_verified_at: node.last_verified_at,
+          };
+        }
+        // Other verifier throws: retraction, host gone — conflated at
+        // the verifier seam by design (see `LiveFetchVerifier.fetchPmid`);
+        // both collapse to "unresolvable", and the recovery path is the
+        // same in every case (curator surfaces flagged anchors;
         // contributors propose supersedes with a fresh external_ref).
         // Non-ServerError throws are rethrown — schema/zod failures
         // and Server programming errors should not silently flip
@@ -4037,13 +4067,14 @@ export class Server {
       checked: number;
       unchanged: number;
       unresolvable: number;
+      transient: number;
       anchors: Array<{
         anchor_id: NodeId;
-        outcome: 'unchanged' | 'unresolvable';
+        outcome: 'unchanged' | 'unresolvable' | 'transient';
       }>;
     }> => {
       if (options.batch_size <= 0) {
-        return { checked: 0, unchanged: 0, unresolvable: 0, anchors: [] };
+        return { checked: 0, unchanged: 0, unresolvable: 0, transient: 0, anchors: [] };
       }
       const now = this.clock.now();
       const cutoffMs = Date.parse(now) - options.max_age_ms;
@@ -4068,16 +4099,29 @@ export class Server {
         return a.id.localeCompare(b.id);
       });
       const batch = eligible.slice(0, options.batch_size);
-      const anchors: Array<{ anchor_id: NodeId; outcome: 'unchanged' | 'unresolvable' }> = [];
+      const anchors: Array<{
+        anchor_id: NodeId;
+        outcome: 'unchanged' | 'unresolvable' | 'transient';
+      }> = [];
       let unchanged = 0;
       let unresolvable = 0;
+      let transient = 0;
       for (const anchor of batch) {
         const result = await this.curator.reverifyAnchor(anchor.id);
         anchors.push({ anchor_id: result.anchor_id, outcome: result.outcome });
         if (result.outcome === 'unchanged') unchanged += 1;
-        else unresolvable += 1;
+        else if (result.outcome === 'unresolvable') unresolvable += 1;
+        else {
+          // Transient upstream signal (429/5xx): the same upstream
+          // serves the rest of the batch, so continuing would hammer a
+          // rate-limiting or down host for more of the same answer.
+          // Stop early; the unprocessed remainder keeps its old
+          // last_verified_at and sorts first next tick.
+          transient += 1;
+          break;
+        }
       }
-      return { checked: anchors.length, unchanged, unresolvable, anchors };
+      return { checked: anchors.length, unchanged, unresolvable, transient, anchors };
     },
   };
 
