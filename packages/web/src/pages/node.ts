@@ -1,7 +1,8 @@
-import type { Edge, ExternalRef, Node, NodeId, NodeNeighborhood } from '@anchorage/contracts';
+import type { Edge, Node, NodeId, NodeNeighborhood } from '@anchorage/contracts';
 import { html, type Raw, renderDocument } from '../render.js';
 import { baselineStylesheet } from '../styles.js';
 import { emptyState, siteFooter, siteHeader } from './layout.js';
+import { renderExternalRef } from './refs.js';
 
 // Node-detail page (slice 5c). Renders the node itself plus its
 // immediate active-edge neighborhood, with the provenance the graph
@@ -68,17 +69,6 @@ function kindSpecificDetails(node: Node): Raw {
       // `content`/`status` fields; the inbound `derives` edges in
       // the Neighbors section surface the parents.
       return html``;
-  }
-}
-
-function renderExternalRef(ref: ExternalRef): Raw {
-  switch (ref.kind) {
-    case 'pmid':
-      return html`<a href="https://pubmed.ncbi.nlm.nih.gov/${ref.value}/">PMID ${ref.value}</a>`;
-    case 'doi':
-      return html`<a href="https://doi.org/${ref.value}">DOI ${ref.value}</a>`;
-    case 'url':
-      return html`<a href="${ref.value}">${ref.value}</a>`;
   }
 }
 

@@ -1,6 +1,5 @@
 import type {
   CreditAttribution,
-  ExternalRef,
   Manuscript,
   ManuscriptCitation,
   ManuscriptSection,
@@ -8,6 +7,7 @@ import type {
 import { html, type Raw, renderDocument } from '../render.js';
 import { baselineStylesheet } from '../styles.js';
 import { emptyState, siteFooter, siteHeader } from './layout.js';
+import { renderExternalRef } from './refs.js';
 
 // Manuscript-projection page (slice 6b). Reads
 // `manuscript://{sub-topic-id}` through the in-process reader and
@@ -99,17 +99,6 @@ function renderParents(parentIds: readonly string[]): Raw {
   return html`<p class="manuscript-parents">Derives from ${parentIds.map(
     (id, i) => html`${i > 0 ? ', ' : ''}<a href="/node/${id}">${id}</a>`,
   )}</p>`;
-}
-
-function renderExternalRef(ref: ExternalRef): Raw {
-  switch (ref.kind) {
-    case 'pmid':
-      return html`<a href="https://pubmed.ncbi.nlm.nih.gov/${ref.value}/">PMID ${ref.value}</a>`;
-    case 'doi':
-      return html`<a href="https://doi.org/${ref.value}">DOI ${ref.value}</a>`;
-    case 'url':
-      return html`<a href="${ref.value}">${ref.value}</a>`;
-  }
 }
 
 function renderContributors(contributors: readonly CreditAttribution[]): Raw {

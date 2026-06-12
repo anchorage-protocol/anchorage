@@ -547,7 +547,7 @@ interface CuratorFixture {
   stagedProposalId: string;
 }
 
-async function curatorFixture(): Promise<CuratorFixture> {
+async function curatorFixture(opts: { curatorToken?: string } = {}): Promise<CuratorFixture> {
   const server = freshServer();
 
   // Public reader: contributor-role; the public web's anonymous-
@@ -595,6 +595,7 @@ async function curatorFixture(): Promise<CuratorFixture> {
   const handler = buildWebHandler({
     reader,
     curatorReader: cReader,
+    ...(opts.curatorToken !== undefined ? { curatorToken: opts.curatorToken } : {}),
     log: () => {},
     onError: () => {},
   });
@@ -811,5 +812,65 @@ describe('curator console (slice 7b)', () => {
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain('across all causes');
+  });
+});
+
+describe('response headers (security + caching)', () => {
+  it('public pages carry CSP/nosniff/referrer headers and a short shared-cache TTL', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('cache-control')).toBe('public, max-age=60');
+  });
+
+  it('curator pages and error pages are no-store', async () => {
+    const f = await curatorFixture();
+    webServer = f.webServer;
+    const curatorRes = await fetch(`${f.webUrl}/curator/queue`);
+    expect(curatorRes.status).toBe(200);
+    // The curator gating posture is a reverse-proxy ACL upstream; a
+    // shared cache between proxy and origin must never replay curator
+    // HTML to a request the ACL would have blocked.
+    expect(curatorRes.headers.get('cache-control')).toBe('no-store');
+    const missing = await fetch(`${f.webUrl}/no-such-page`);
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('malformed percent-encoding in an id segment 404s instead of 500ing', async () => {
+    const f = await fixture();
+    webServer = f.webServer;
+    const res = await fetch(`${f.webUrl}/node/%zz`);
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('curator console in-band token (optional second factor)', () => {
+  it('refuses /curator/* without the Basic credential and admits with it', async () => {
+    const f = await curatorFixture({ curatorToken: 'sekrit' });
+    webServer = f.webServer;
+    // No credential → 401 with a Basic challenge so a browser prompts.
+    const bare = await fetch(`${f.webUrl}/curator/queue`);
+    expect(bare.status).toBe(401);
+    expect(bare.headers.get('www-authenticate')).toContain('Basic');
+    expect(bare.headers.get('cache-control')).toBe('no-store');
+    // Wrong password → still 401, no curator data.
+    const wrong = await fetch(`${f.webUrl}/curator/queue`, {
+      headers: { Authorization: `Basic ${Buffer.from('curator:nope').toString('base64')}` },
+    });
+    expect(wrong.status).toBe(401);
+    // Right password (any username) → the console renders.
+    const ok = await fetch(`${f.webUrl}/curator/queue`, {
+      headers: { Authorization: `Basic ${Buffer.from('anyone:sekrit').toString('base64')}` },
+    });
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toContain('Moderation queue');
+    // The public pages are unaffected by the token.
+    const home = await fetch(`${f.webUrl}/`);
+    expect(home.status).toBe(200);
   });
 });

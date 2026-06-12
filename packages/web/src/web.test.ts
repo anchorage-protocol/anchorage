@@ -85,3 +85,32 @@ describe('route matchers', () => {
     expect(matchManuscriptRoute('/manuscript/abc%20def')).toBe('abc def');
   });
 });
+
+describe('external-ref rendering (shared refs module)', () => {
+  it('links http/https URL anchors and renders every other scheme as plain text', async () => {
+    const { renderExternalRef } = await import('./pages/refs.js');
+    const https = renderExternalRef({ kind: 'url', value: 'https://example.test/paper' });
+    expect(https.value).toContain('<a href="https://example.test/paper">');
+    // Escaping prevents attribute breakout but not scheme execution —
+    // a stored javascript:/data: URI must never become an href.
+    for (const value of ['javascript:alert(1)', 'data:text/html,x', 'ftp://example.test/x']) {
+      const out = renderExternalRef({ kind: 'url', value });
+      expect(out.value, value).not.toContain('<a ');
+    }
+  });
+
+  it('percent-encodes DOI suffixes, preserving slashes', async () => {
+    const { renderExternalRef } = await import('./pages/refs.js');
+    const out = renderExternalRef({ kind: 'doi', value: '10.1000/abc#frag?q' });
+    expect(out.value).toContain('href="https://doi.org/10.1000/abc%23frag%3Fq"');
+    // The visible label stays the raw DOI.
+    expect(out.value).toContain('DOI 10.1000/abc#frag?q');
+  });
+});
+
+describe('route matcher hardening', () => {
+  it('returns undefined (404) for malformed percent-encoding instead of throwing', () => {
+    expect(matchNodeRoute('/node/%zz')).toBeUndefined();
+    expect(matchSubTopicRoute('/sub-topic/%')).toBeUndefined();
+  });
+});

@@ -72,21 +72,34 @@ ${siteFooter()}`;
   });
 }
 
+// Render cap for the active-node list. The page recomputes a full
+// store scan per anonymous request; without a cap a few thousand
+// nodes make the public face a multi-megabyte page and the slowest
+// path in the system. Honest truncation ("showing first N of M")
+// over pagination machinery — the manuscript projection is the
+// long-form read surface; this list is orientation.
+const NODE_LIST_CAP = 500;
+
 function renderNodeList(nodes: readonly Node[]): Raw {
   if (nodes.length === 0) {
     return emptyState(
       'No active nodes in this sub-topic yet. The graph fills in as proposals are reviewed and accepted.',
     );
   }
+  const shown = nodes.slice(0, NODE_LIST_CAP);
   return html`<ul class="node-list">
-${nodes.map(
+${shown.map(
   (n) => html`<li>
   <span class="node-kind">${n.kind}</span>
   <a class="node-id" href="/node/${n.id}">${n.id}</a>
   <span class="node-content">${n.content}</span>
 </li>`,
 )}
-</ul>`;
+</ul>${
+    nodes.length > shown.length
+      ? html`<p class="empty">Showing the first ${String(shown.length)} of ${String(nodes.length)} active nodes.</p>`
+      : html``
+  }`;
 }
 
 function renderFrontier(frontier: QueryFrontierOutput): Raw {

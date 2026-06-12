@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { CauseId, IdentityId, NodeId, ServerError, SubTopicId } from '@anchorage/contracts';
 import { renderContributorPage } from './pages/contributor.js';
@@ -63,6 +64,14 @@ export interface WebHandlerOpts {
   // present, mounts the curator console pages, all read-only —
   // actions still run through MCP via the curator's agent.
   curatorReader?: AnchorageCuratorReader;
+  // Optional in-band second factor for `/curator/*`. The primary gate
+  // stays the operator's reverse-proxy ACL (PRD §Curator console);
+  // when this token is set, the console additionally requires HTTP
+  // Basic credentials whose password equals the token (any username),
+  // so a single proxy-config mistake no longer makes the moderation
+  // queue and identity-cluster projections world-readable. Refusals
+  // are 401 + `WWW-Authenticate: Basic` so a browser prompts.
+  curatorToken?: string;
   // Outbound info log sink. Defaults to `console.log`. Production
   // deployments inject structured-log sinks.
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -77,6 +86,7 @@ export type WebHandler = (req: IncomingMessage, res: ServerResponse) => Promise<
 export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
   const reader = opts.reader;
   const curatorReader = opts.curatorReader;
+  const curatorToken = opts.curatorToken;
   const log = opts.log ?? defaultLog;
   const onError = opts.onError ?? defaultOnError;
 
@@ -103,7 +113,7 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
       if (pathname === '/') {
         const data = await reader.getCauseDirectory();
         log('web.page.home', { causes: data.causes.length });
-        sendHtml(res, 200, renderHomePage(data), method);
+        sendHtml(res, 200, renderHomePage(data), method, 'public');
         return;
       }
 
@@ -120,7 +130,7 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
           reader.queryFrontier(parsed.data),
         ]);
         log('web.page.sub_topic', { sub_topic_id: parsed.data });
-        sendHtml(res, 200, renderSubTopicPage({ detail, subgraph, frontier }), method);
+        sendHtml(res, 200, renderSubTopicPage({ detail, subgraph, frontier }), method, 'public');
         return;
       }
 
@@ -133,7 +143,7 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
         }
         const neighborhood = await reader.getNodeNeighborhood(parsed.data);
         log('web.page.node', { node_id: parsed.data });
-        sendHtml(res, 200, renderNodePage(neighborhood), method);
+        sendHtml(res, 200, renderNodePage(neighborhood), method, 'public');
         return;
       }
 
@@ -146,7 +156,7 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
         }
         const manuscript = await reader.getManuscript(parsed.data);
         log('web.page.manuscript', { sub_topic_id: parsed.data });
-        sendHtml(res, 200, renderManuscriptPage(manuscript), method);
+        sendHtml(res, 200, renderManuscriptPage(manuscript), method, 'public');
         return;
       }
 
@@ -159,7 +169,7 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
         }
         const profile = await reader.getContributorProfile(parsed.data);
         log('web.page.contributor', { identity_id: parsed.data });
-        sendHtml(res, 200, renderContributorPage(profile), method);
+        sendHtml(res, 200, renderContributorPage(profile), method, 'public');
         return;
       }
 
@@ -171,6 +181,18 @@ export function buildWebHandler(opts: WebHandlerOpts): WebHandler {
       // /curator/* upstream; the in-process reader holds a curator-
       // role caller for the lifetime of the deployment.
       if (curatorReader !== undefined) {
+        // In-band second factor (see `curatorToken`): checked before
+        // any curator route dispatch, so no curator data is rendered
+        // — not even into a response that upstream caching might
+        // retain — without the credential.
+        if (
+          curatorToken !== undefined &&
+          (pathname === '/curator' || pathname.startsWith('/curator/')) &&
+          !basicAuthPasswordMatches(req, curatorToken)
+        ) {
+          sendCuratorAuthRequired(res);
+          return;
+        }
         if (pathname === '/curator' || pathname === '/curator/') {
           const directory = await reader.getCauseDirectory();
           log('web.page.curator.index', { causes: directory.causes.length });
@@ -311,21 +333,57 @@ function matchSingleSegmentRoute(pathname: string, prefix: string): string | und
   if (!pathname.startsWith(prefix)) return undefined;
   const rest = pathname.slice(prefix.length);
   if (rest.length === 0 || rest.includes('/')) return undefined;
-  return decodeURIComponent(rest);
+  // Malformed percent-encoding (`/node/%zz`) is a client-side bad URL:
+  // a non-match → 404, not an uncaught URIError → 500 + operator-error
+  // log noise from scanner traffic.
+  try {
+    return decodeURIComponent(rest);
+  } catch {
+    return undefined;
+  }
 }
 
-function sendHtml(res: ServerResponse, status: number, body: string, method: string): void {
+// Cache posture per response. Public pages take a short shared-cache
+// TTL (they recompute full store scans per request; a minute of edge
+// caching absorbs anonymous bursts). Curator pages and every error
+// page are `no-store` — the curator gating posture is a reverse-proxy
+// ACL upstream, and a shared cache between proxy and origin must
+// never serve curator HTML to a request the ACL would have blocked.
+type CachePolicy = 'public' | 'no-store';
+
+function sendHtml(
+  res: ServerResponse,
+  status: number,
+  body: string,
+  method: string,
+  cache: CachePolicy = 'no-store',
+): void {
   if (res.headersSent || res.writableEnded) return;
   const buf = Buffer.from(body, 'utf8');
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': buf.byteLength,
+    'Cache-Control': cache === 'public' ? 'public, max-age=60' : 'no-store',
+    ...securityHeaders(),
   });
   if (method === 'HEAD') {
     res.end();
   } else {
     res.end(buf);
   }
+}
+
+// Zero-JS site: the CSP refuses scripts, frames, and every fetch
+// directive outright (also neutralizing `javascript:` navigation as a
+// second layer under refs.ts's scheme allowlist); inline styles are
+// the one allowance because the stylesheet ships in a <style> block.
+function securityHeaders(): Record<string, string> {
+  return {
+    'Content-Security-Policy':
+      "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'",
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+  };
 }
 
 function sendHtmlNotFound(
@@ -355,6 +413,43 @@ function sendHtmlError(
     body: notFoundBody(title, detail),
   });
   sendHtml(res, status, body, method);
+}
+
+// HTTP Basic credential check for the curator console's optional
+// in-band second factor. Username is ignored; the password must equal
+// the configured token. Comparison is over equal-length buffers via
+// timingSafeEqual to keep the check constant-time.
+function basicAuthPasswordMatches(req: IncomingMessage, token: string): boolean {
+  const header = req.headers.authorization;
+  if (typeof header !== 'string') return false;
+  const m = /^Basic\s+(.+)$/i.exec(header);
+  if (!m || m[1] === undefined) return false;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(m[1], 'base64').toString('utf8');
+  } catch {
+    return false;
+  }
+  const colon = decoded.indexOf(':');
+  if (colon < 0) return false;
+  const password = decoded.slice(colon + 1);
+  const a = Buffer.from(password, 'utf8');
+  const b = Buffer.from(token, 'utf8');
+  if (a.byteLength !== b.byteLength) return false;
+  return timingSafeEqual(a, b);
+}
+
+function sendCuratorAuthRequired(res: ServerResponse): void {
+  if (res.headersSent || res.writableEnded) return;
+  const body = 'Authentication required.';
+  res.writeHead(401, {
+    'WWW-Authenticate': 'Basic realm="anchorage-curator", charset="UTF-8"',
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
+    ...securityHeaders(),
+  });
+  res.end(body);
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

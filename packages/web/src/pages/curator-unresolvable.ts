@@ -2,6 +2,7 @@ import type { CauseId, ExternalRef, NodeId, SubTopicId, Timestamp } from '@ancho
 import { html, type Raw, renderDocument } from '../render.js';
 import { baselineStylesheet } from '../styles.js';
 import { emptyState, siteFooter, siteHeader } from './layout.js';
+import { renderExternalRef } from './refs.js';
 
 // Curator unresolvable-anchors view (slice 7c). Surfaces anchors the
 // re-verification scheduler flagged — content drift, retraction, host
@@ -76,15 +77,4 @@ ${anchors.map(
 )}
 </tbody>
 </table>`;
-}
-
-function renderExternalRef(ref: ExternalRef): Raw {
-  switch (ref.kind) {
-    case 'pmid':
-      return html`<a href="https://pubmed.ncbi.nlm.nih.gov/${ref.value}/">PMID ${ref.value}</a>`;
-    case 'doi':
-      return html`<a href="https://doi.org/${ref.value}">DOI ${ref.value}</a>`;
-    case 'url':
-      return html`<a href="${ref.value}">${ref.value}</a>`;
-  }
 }

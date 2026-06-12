@@ -79,6 +79,16 @@ export interface ProdConfig {
   // reader for cause-list rendering (the curator index page lists
   // causes for filter links), so the public tier must also be up.
   web_curator_identity_id?: IdentityId;
+  // Optional in-band second factor for `/curator/*`
+  // (`ANCHORAGE_WEB_CURATOR_TOKEN`). The primary gate stays the
+  // reverse-proxy ACL; when set, the console additionally requires
+  // HTTP Basic credentials whose password equals this token, so one
+  // proxy-config mistake no longer exposes the moderation queue and
+  // identity-cluster projections. Only meaningful alongside
+  // `web_curator_identity_id`; setting it without the console wired
+  // refuses at boot (a token guarding unmounted routes is a config
+  // error worth surfacing).
+  web_curator_token?: string;
   // Slice 7c part 2 — periodic re-verification scheduler. Three
   // env knobs configure the production tick that drives
   // `server.curator.reverifyDueAnchors` against the live verifier:
@@ -209,6 +219,16 @@ export function parseProdConfig(env: NodeJS.ProcessEnv): ProdConfig {
     );
   }
 
+  const web_curator_token_raw = env['ANCHORAGE_WEB_CURATOR_TOKEN'];
+  const web_curator_token =
+    web_curator_token_raw && web_curator_token_raw.length > 0 ? web_curator_token_raw : undefined;
+  if (web_curator_token !== undefined && web_curator_identity_id === undefined) {
+    throw new ServerError(
+      'invalid_input',
+      'ANCHORAGE_WEB_CURATOR_TOKEN requires ANCHORAGE_WEB_CURATOR_IDENTITY (a token guarding unmounted routes is a configuration error)',
+    );
+  }
+
   // Re-verification scheduler. The three knobs travel together —
   // setting the interval is the opt-in, and the other two are
   // required when it is set. Refusing at boot when only some are
@@ -253,6 +273,7 @@ export function parseProdConfig(env: NodeJS.ProcessEnv): ProdConfig {
   if (web_curator_identity_id !== undefined) {
     config.web_curator_identity_id = web_curator_identity_id;
   }
+  if (web_curator_token !== undefined) config.web_curator_token = web_curator_token;
   if (reverify_interval_ms !== undefined) {
     config.reverify_interval_ms = reverify_interval_ms;
     // Both guaranteed defined by the refusal block above.
@@ -412,6 +433,9 @@ export async function runProdServer(deps: ProdServerDeps): Promise<ProdServerHan
     webHandler = buildWebHandler({
       reader,
       ...(curatorReader ? { curatorReader } : {}),
+      ...(deps.config.web_curator_token !== undefined
+        ? { curatorToken: deps.config.web_curator_token }
+        : {}),
       log,
     });
   }
