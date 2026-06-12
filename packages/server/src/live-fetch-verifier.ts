@@ -275,7 +275,10 @@ function refusalFor(status: number, label: string): Error {
       `source fetch temporarily unavailable: ${label} (HTTP ${status}); retry later`,
     );
   }
-  return new ServerError('invalid_input', `external_ref does not resolve: ${label} (HTTP ${status})`);
+  return new ServerError(
+    'invalid_input',
+    `external_ref does not resolve: ${label} (HTTP ${status})`,
+  );
 }
 
 function cacheKey(ref: ExternalRef): string {

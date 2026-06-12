@@ -48,6 +48,23 @@ export interface MapLike<K, V> {
 // branching — see [CLAUDE.md §Load-bearing design commitments] on the
 // sim≡prod invariant.
 export interface Store {
+  // Atomicity boundary for compound mutations. Multi-record writes that
+  // must land together (proposal acceptance = status flip + node insert
+  // + edge inserts + in-place node updates; a review vote + the
+  // convergence resolution it triggers) run inside `transact` so a
+  // crash mid-sequence cannot persist states no code path can produce
+  // or repair (an `accepted` proposal with no node; a supersedes edge
+  // without the from-node flip). MemoryStore's implementation is
+  // identity — state dies with the process, so partial persistence is
+  // unexpressable there — which is exactly why the boundary must live
+  // on the Store interface: without it, SqliteStore's per-statement
+  // autocommit was a sim/prod behavioral gap the abstraction papered
+  // over. `fn` MUST be synchronous (the server's no-write-from-a-
+  // pre-await-snapshot invariant already forbids holding state across
+  // awaits; holding a write transaction across one would additionally
+  // entangle concurrent requests sharing the connection). Re-entrant:
+  // a `transact` inside a `transact` joins the outer transaction.
+  transact<T>(fn: () => T): T;
   readonly identities: MapLike<IdentityId, Identity>;
   readonly agentCredentials: MapLike<AgentCredentialId, AgentCredential>;
   // Bearer-secret index for the Authenticator seam (PRD §Identity).
@@ -135,6 +152,13 @@ export interface Store {
 // so the Server reaches state identically regardless of backend — the
 // sim≡prod invariant in code.
 export class MemoryStore implements Store {
+  // Identity: in-memory state is all-or-nothing with the process, so
+  // there is no partial-persistence failure mode to guard. The method
+  // exists so the Server can express the atomicity boundary once,
+  // backend-agnostically.
+  transact<T>(fn: () => T): T {
+    return fn();
+  }
   readonly identities = new Map<IdentityId, Identity>();
   readonly agentCredentials = new Map<AgentCredentialId, AgentCredential>();
   readonly agentCredentialSecrets = new Map<string, AgentCredentialId>();

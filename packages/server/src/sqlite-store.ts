@@ -174,6 +174,30 @@ export class SqliteStore implements Store {
     this.rateLimits = new JsonTable(this.db, 'rate_limits');
   }
 
+  // BEGIN IMMEDIATE / COMMIT with rollback on throw. Re-entrant by
+  // depth-tracking: an inner transact joins the outer transaction
+  // (SQLite has no nested transactions; savepoints would be overkill
+  // for a single-writer process whose inner units never need partial
+  // rollback). `fn` must be synchronous — see the Store interface
+  // comment; node:sqlite is synchronous anyway, so an await inside a
+  // transaction could interleave another request's writes into it.
+  #txnDepth = 0;
+  transact<T>(fn: () => T): T {
+    if (this.#txnDepth > 0) return fn();
+    this.db.exec('BEGIN IMMEDIATE');
+    this.#txnDepth += 1;
+    try {
+      const result = fn();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    } finally {
+      this.#txnDepth -= 1;
+    }
+  }
+
   close(): void {
     this.db.close();
   }

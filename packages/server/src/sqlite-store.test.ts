@@ -177,6 +177,49 @@ describe('SqliteStore vs MemoryStore — parity', () => {
     sqlStore.close();
   });
 
+  it('rolls back every write inside a transact whose function throws', () => {
+    // The atomicity boundary slice: a compound mutation (proposal
+    // acceptance = status flip + node insert + edge inserts) that
+    // throws partway must leave no partial state behind. MemoryStore
+    // cannot exhibit the failure (state dies with the process), which
+    // is exactly why the boundary lives on the Store interface.
+    const store = new SqliteStore({ path: ':memory:' });
+    store.rateLimits.set('id_outside' as never, { epoch: 1, count: 1 });
+    expect(() =>
+      store.transact(() => {
+        store.rateLimits.set('id_a' as never, { epoch: 1, count: 1 });
+        store.rateLimits.set('id_b' as never, { epoch: 2, count: 2 });
+        throw new Error('boom');
+      }),
+    ).toThrow('boom');
+    expect(store.rateLimits.get('id_a' as never)).toBeUndefined();
+    expect(store.rateLimits.get('id_b' as never)).toBeUndefined();
+    // Pre-transaction state is untouched, and the connection is usable
+    // again (the rollback did not leave a dangling transaction).
+    expect(store.rateLimits.get('id_outside' as never)).toEqual({ epoch: 1, count: 1 });
+    store.rateLimits.set('id_after' as never, { epoch: 3, count: 3 });
+    expect(store.rateLimits.get('id_after' as never)).toEqual({ epoch: 3, count: 3 });
+    store.close();
+  });
+
+  it('joins nested transacts to the outer transaction', () => {
+    const store = new SqliteStore({ path: ':memory:' });
+    expect(() =>
+      store.transact(() => {
+        store.rateLimits.set('id_outer' as never, { epoch: 1, count: 1 });
+        store.transact(() => {
+          store.rateLimits.set('id_inner' as never, { epoch: 2, count: 2 });
+        });
+        throw new Error('outer boom');
+      }),
+    ).toThrow('outer boom');
+    // The inner transact joined the outer transaction: its write rolls
+    // back with the outer failure.
+    expect(store.rateLimits.get('id_inner' as never)).toBeUndefined();
+    expect(store.rateLimits.get('id_outer' as never)).toBeUndefined();
+    store.close();
+  });
+
   it('survives close/reopen (durability)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'anchorage-sqlite-store-'));
     const path = join(dir, 'anchorage.sqlite');

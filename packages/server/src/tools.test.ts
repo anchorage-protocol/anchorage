@@ -1290,7 +1290,9 @@ describe('post-await revalidation (no store write from a pre-await snapshot)', (
     if (!parentId) throw new Error('expected anchor');
     const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
     const bobCaller: Caller = { identity_id: bob.id };
-    const slot = asAssigned(await server.tools.requestAssignment(bobCaller, { cause_id: cause.id }));
+    const slot = asAssigned(
+      await server.tools.requestAssignment(bobCaller, { cause_id: cause.id }),
+    );
     if (slot.task.kind !== 'excerpt') throw new Error('expected excerpt task');
 
     // Close the gate and fire two fulfillments of the same slot; each
@@ -1319,9 +1321,7 @@ describe('post-await revalidation (no store write from a pre-await snapshot)', (
       code: 'invalid_state',
     });
     // Exactly one proposal staged, slot fulfilled exactly once.
-    const staged = [...server.store.proposals.values()].filter(
-      (p) => p.payload.kind === 'excerpt',
-    );
+    const staged = [...server.store.proposals.values()].filter((p) => p.payload.kind === 'excerpt');
     expect(staged).toHaveLength(1);
     expect(server.store.assignments.get(slot.assignment_id)?.status).toBe('submitted');
   });

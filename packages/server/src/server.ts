@@ -2216,22 +2216,30 @@ export class Server {
       // double-credit assigned work) or lapsed (shadow win, scope
       // close). Re-require the invariant the pre-fetch guard
       // established before staging anything.
-      const liveAssignment = assignment ? this.reconfirmAssignmentAfterAwait(assignment) : undefined;
+      const liveAssignment = assignment
+        ? this.reconfirmAssignmentAfterAwait(assignment)
+        : undefined;
 
-      const now = this.clock.now();
-      const proposal: Proposal = {
-        id: this.idGen.proposalId(),
-        proposer_id: identity.id,
-        status: 'staged',
-        payload,
-        ...(liveAssignment ? { assignment_id: liveAssignment.id } : {}),
-        created_at: now,
-        updated_at: now,
-      };
-      this.store.proposals.set(proposal.id, proposal);
-      this.store.verifiedRefs.set(proposal.id, verified);
-      if (liveAssignment) this.fulfillAssignment(liveAssignment, proposal.id);
-      return { proposal_id: proposal.id };
+      // Atomic: the proposal, its verification record, and the slot
+      // fulfillment land together (see Store.transact) — a proposal
+      // without its verifiedRef breaks materialization; a fulfillment
+      // without its proposal wedges the slot.
+      return this.store.transact(() => {
+        const now = this.clock.now();
+        const proposal: Proposal = {
+          id: this.idGen.proposalId(),
+          proposer_id: identity.id,
+          status: 'staged',
+          payload,
+          ...(liveAssignment ? { assignment_id: liveAssignment.id } : {}),
+          created_at: now,
+          updated_at: now,
+        };
+        this.store.proposals.set(proposal.id, proposal);
+        this.store.verifiedRefs.set(proposal.id, verified);
+        if (liveAssignment) this.fulfillAssignment(liveAssignment, proposal.id);
+        return { proposal_id: proposal.id };
+      });
     },
 
     // PRD §Write-path tools (propose_excerpt): propose_excerpt stages an
@@ -2283,21 +2291,27 @@ export class Server {
 
       // Same post-await re-validation as propose_anchor: the span fetch
       // is a window for concurrent fulfillment or lapse of this slot.
-      const liveAssignment = assignment ? this.reconfirmAssignmentAfterAwait(assignment) : undefined;
+      const liveAssignment = assignment
+        ? this.reconfirmAssignmentAfterAwait(assignment)
+        : undefined;
 
-      const now = this.clock.now();
-      const proposal: Proposal = {
-        id: this.idGen.proposalId(),
-        proposer_id: identity.id,
-        status: 'staged',
-        payload,
-        ...(liveAssignment ? { assignment_id: liveAssignment.id } : {}),
-        created_at: now,
-        updated_at: now,
-      };
-      this.store.proposals.set(proposal.id, proposal);
-      if (liveAssignment) this.fulfillAssignment(liveAssignment, proposal.id);
-      return { proposal_id: proposal.id };
+      // Atomic staging, mirroring propose_anchor (no verifiedRef here —
+      // excerpt grounding lives on the derives edge to the parent).
+      return this.store.transact(() => {
+        const now = this.clock.now();
+        const proposal: Proposal = {
+          id: this.idGen.proposalId(),
+          proposer_id: identity.id,
+          status: 'staged',
+          payload,
+          ...(liveAssignment ? { assignment_id: liveAssignment.id } : {}),
+          created_at: now,
+          updated_at: now,
+        };
+        this.store.proposals.set(proposal.id, proposal);
+        if (liveAssignment) this.fulfillAssignment(liveAssignment, proposal.id);
+        return { proposal_id: proposal.id };
+      });
     },
 
     // PRD §Write-path tools: propose_synthesis covers both `synthesis`
@@ -2848,96 +2862,104 @@ export class Server {
         }
       }
 
-      const now = this.clock.now();
-      const vote: ReviewVote = {
-        id: this.idGen.reviewVoteId(),
-        proposal_id: proposal.id,
-        reviewer_id: identity.id,
-        decision: parsed.decision,
-        rationale: parsed.rationale,
-        ...(parsed.assignment_id ? { assignment_id: parsed.assignment_id } : {}),
-        created_at: now,
-      };
-      this.store.reviewVotes.set(vote.id, vote);
+      // Atomic from the vote insert through the convergence resolution
+      // it may trigger: a vote that persisted without its assignment
+      // flip (the holder would be wedged re-voting) or a convergence
+      // that flipped the proposal without its reputation deltas are
+      // states the recovery story has no answer for. Everything inside
+      // is synchronous; see Store.transact.
+      return this.store.transact(() => {
+        const now = this.clock.now();
+        const vote: ReviewVote = {
+          id: this.idGen.reviewVoteId(),
+          proposal_id: proposal.id,
+          reviewer_id: identity.id,
+          decision: parsed.decision,
+          rationale: parsed.rationale,
+          ...(parsed.assignment_id ? { assignment_id: parsed.assignment_id } : {}),
+          created_at: now,
+        };
+        this.store.reviewVotes.set(vote.id, vote);
 
-      // If the vote fulfilled an assignment, mark the assignment
-      // submitted and pin the fulfilling proposal. The assignment
-      // surface will read this on next request_assignment to know not
-      // to re-offer the same task.
-      if (parsed.assignment_id) {
-        const assignment = this.store.assignments.get(parsed.assignment_id);
-        if (assignment) {
-          this.store.assignments.set(assignment.id, {
-            ...assignment,
-            status: 'submitted',
-            fulfilled_by: proposal.id,
-            updated_at: now,
-          });
+        // If the vote fulfilled an assignment, mark the assignment
+        // submitted and pin the fulfilling proposal. The assignment
+        // surface will read this on next request_assignment to know not
+        // to re-offer the same task.
+        if (parsed.assignment_id) {
+          const assignment = this.store.assignments.get(parsed.assignment_id);
+          if (assignment) {
+            this.store.assignments.set(assignment.id, {
+              ...assignment,
+              status: 'submitted',
+              fulfilled_by: proposal.id,
+              updated_at: now,
+            });
+          }
         }
-      }
 
-      if (isCalibration) {
-        // Calibration scoring against ground truth. The proposal
-        // survived to acceptance in validated history, so the
-        // expected vote is `accept`. PRD §Calibration batches:
-        // "Reviewers who fail calibration lose reputation"; PRD
-        // §Reputation: "rejected calibration items both decrease
-        // reputation." `revise` is a no-op for symmetry with the
-        // convergence-driven rep path, which also doesn't move rep
-        // on revise (PRD §Reputation is silent on revise; treating
-        // it as no-op preserves the "reviewer asked for more"
-        // signal without forcing it onto a binary scoring axis).
-        // The vote does not run convergence — the proposal is
-        // already resolved.
-        //
-        // Calibration credit is *not* alpha-scaled. PRD §Reputation
-        // commits `review_credit_contention_alpha` as the
-        // difficulty-normalization knob on convergence-derived
-        // review credit, applied in `applyReputationUpdates` per-
-        // convergence. The calibration path is ground-truth-
-        // individual (each item's correct answer is known), not
-        // convergence-derived, so applying contention-scaling here
-        // would be a category error: there's no contention to
-        // measure on a single calibration vote, and the calibration
-        // signal's whole point is to be a clean honesty channel
-        // independent of the convergence-tally seam. Cube #3 (the
-        // alpha re-baseline) reads off this distinction: the recent
-        // gate's threshold survives alpha < 1 because the recent
-        // buffer's quiet-window decay is dominated by alpha-
-        // invariant calibration credit, while the demo gate's
-        // threshold has to scale by alpha because the bootstrap
-        // demonstrated buffer is convergence-derived.
-        const subTopicId = this.reputationSubTopicFor(proposal);
-        const causeId = this.reputationCauseFor(proposal);
-        if (subTopicId && causeId && parsed.decision !== 'revise') {
-          const delta =
-            parsed.decision === 'accept'
-              ? this.review.calibration_pass_gain
-              : -this.review.calibration_fail_loss;
-          this.bumpReputation(identity.id, causeId, subTopicId, delta);
-          // Track the pass/fail counts separately from the rep ledger.
-          // The convergence-layer defense reads this when calibration-
-          // aware vote weighting is enabled; keeping it on a separate
-          // counter avoids conflating calibration signal with
-          // convergence-vote-accuracy rep, which a coalition can farm.
-          this.bumpCalibrationRecord(
-            identity.id,
-            causeId,
-            subTopicId,
-            parsed.decision === 'accept' ? 'pass' : 'fail',
-          );
+        if (isCalibration) {
+          // Calibration scoring against ground truth. The proposal
+          // survived to acceptance in validated history, so the
+          // expected vote is `accept`. PRD §Calibration batches:
+          // "Reviewers who fail calibration lose reputation"; PRD
+          // §Reputation: "rejected calibration items both decrease
+          // reputation." `revise` is a no-op for symmetry with the
+          // convergence-driven rep path, which also doesn't move rep
+          // on revise (PRD §Reputation is silent on revise; treating
+          // it as no-op preserves the "reviewer asked for more"
+          // signal without forcing it onto a binary scoring axis).
+          // The vote does not run convergence — the proposal is
+          // already resolved.
+          //
+          // Calibration credit is *not* alpha-scaled. PRD §Reputation
+          // commits `review_credit_contention_alpha` as the
+          // difficulty-normalization knob on convergence-derived
+          // review credit, applied in `applyReputationUpdates` per-
+          // convergence. The calibration path is ground-truth-
+          // individual (each item's correct answer is known), not
+          // convergence-derived, so applying contention-scaling here
+          // would be a category error: there's no contention to
+          // measure on a single calibration vote, and the calibration
+          // signal's whole point is to be a clean honesty channel
+          // independent of the convergence-tally seam. Cube #3 (the
+          // alpha re-baseline) reads off this distinction: the recent
+          // gate's threshold survives alpha < 1 because the recent
+          // buffer's quiet-window decay is dominated by alpha-
+          // invariant calibration credit, while the demo gate's
+          // threshold has to scale by alpha because the bootstrap
+          // demonstrated buffer is convergence-derived.
+          const subTopicId = this.reputationSubTopicFor(proposal);
+          const causeId = this.reputationCauseFor(proposal);
+          if (subTopicId && causeId && parsed.decision !== 'revise') {
+            const delta =
+              parsed.decision === 'accept'
+                ? this.review.calibration_pass_gain
+                : -this.review.calibration_fail_loss;
+            this.bumpReputation(identity.id, causeId, subTopicId, delta);
+            // Track the pass/fail counts separately from the rep ledger.
+            // The convergence-layer defense reads this when calibration-
+            // aware vote weighting is enabled; keeping it on a separate
+            // counter avoids conflating calibration signal with
+            // convergence-vote-accuracy rep, which a coalition can farm.
+            this.bumpCalibrationRecord(
+              identity.id,
+              causeId,
+              subTopicId,
+              parsed.decision === 'accept' ? 'pass' : 'fail',
+            );
+          }
+          return { vote_id: vote.id };
         }
+
+        // Convergence check: enough accept-votes auto-accepts; enough
+        // reject-votes auto-rejects. Threshold is server-config so the
+        // testbed can sweep it (PRD §What's deliberately not specified here names this as a tuned
+        // parameter). Curator-only kinds short-circuit inside
+        // resolveByConvergence and are unaffected.
+        this.resolveByConvergence(proposal.id);
+
         return { vote_id: vote.id };
-      }
-
-      // Convergence check: enough accept-votes auto-accepts; enough
-      // reject-votes auto-rejects. Threshold is server-config so the
-      // testbed can sweep it (PRD §What's deliberately not specified here names this as a tuned
-      // parameter). Curator-only kinds short-circuit inside
-      // resolveByConvergence and are unaffected.
-      this.resolveByConvergence(proposal.id);
-
-      return { vote_id: vote.id };
+      });
     },
 
     // PRD §Calibration batches: reviewer batches mix
@@ -4207,14 +4229,22 @@ export class Server {
   // convergence path that fires after enough accept-votes accumulate
   // (PRD §The contribution flow (Resolve step): convergent vote merges).
   private acceptStaged(proposal: Proposal): { node_id?: NodeId; sub_topic_id?: SubTopicId } {
-    const result = this.materialize(proposal, 'active');
-    const now = this.clock.now();
-    this.store.proposals.set(proposal.id, { ...proposal, status: 'accepted', updated_at: now });
-    this.applyMaterialization(result);
-    if (result.node) return { node_id: result.node.id };
-    const created = result.subTopicCreates[0];
-    if (created) return { sub_topic_id: created.id };
-    return {};
+    // Atomic: the status flip, the node/edge inserts, and the in-place
+    // node updates must land together — a crash between them persists
+    // states no code path can produce or repair (an `accepted` proposal
+    // with no node breaks manuscript credit and calibration draws; a
+    // supersedes edge without the from-node flip breaks the
+    // status/edge sync invariant). See Store.transact.
+    return this.store.transact(() => {
+      const result = this.materialize(proposal, 'active');
+      const now = this.clock.now();
+      this.store.proposals.set(proposal.id, { ...proposal, status: 'accepted', updated_at: now });
+      this.applyMaterialization(result);
+      if (result.node) return { node_id: result.node.id };
+      const created = result.subTopicCreates[0];
+      if (created) return { sub_topic_id: created.id };
+      return {};
+    });
   }
 
   // After a review vote lands, check whether the proposal has reached
