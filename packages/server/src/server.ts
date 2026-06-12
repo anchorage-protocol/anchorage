@@ -696,6 +696,12 @@ interface MaterializationResult {
   node: Node | null;
   edges: readonly Edge[];
   nodeUpdates: readonly Node[];
+  // Existing edges whose status must be rewritten in place — used by
+  // the supersedes path to cascade `derives` edges into the superseded
+  // node out of `active`, preserving the contract invariant ("a derives
+  // edge is active iff the child it terminates at is active", PRD
+  // §Edges).
+  edgeUpdates: readonly Edge[];
   subTopicCreates: readonly SubTopic[];
 }
 
@@ -4209,6 +4215,14 @@ export class Server {
       // (`unresolvable_anchor`) and the curator projection.
       const updated: AnchorNode = { ...live, status: 'unresolvable', updated_at: now };
       this.store.nodes.set(live.id, updated);
+      // Cascade the same derives-edge invariant the supersedes path
+      // applies: any active derives edge terminating at the now-
+      // unresolvable node leaves `active`. (Anchors are rarely the
+      // child end of a derives edge, so this is usually a no-op, but
+      // the invariant holds uniformly across both exits from `active`.)
+      for (const e of this.deactivateDerivesEdgesInto(live.id)) {
+        this.store.edges.set(e.id, e);
+      }
       return {
         anchor_id: live.id,
         outcome: 'unresolvable',
@@ -4898,6 +4912,24 @@ export class Server {
 
   // Apply the result of materialize() to the store. Centralized so the
   // accept and defer paths can't drift in how they persist results.
+  // Compute the `derives`-edge status cascade for a node leaving
+  // `active`: every active derives edge whose child (`to`) is `nodeId`
+  // is rewritten to `rejected` (the only non-active EdgeStatus —
+  // derives edges are never `superseded`/`unresolvable`, see
+  // `contracts/src/edges.ts`). Returns the rewritten edges for the
+  // caller to persist; does not write. The supersedes path threads
+  // these through `edgeUpdates`; the re-verification flip writes them
+  // directly (it is not a materialization).
+  private deactivateDerivesEdgesInto(nodeId: NodeId): Edge[] {
+    const updates: Edge[] = [];
+    for (const e of this.store.edges.values()) {
+      if (e.kind === 'derives' && e.status === 'active' && e.to === nodeId) {
+        updates.push({ ...e, status: 'rejected' });
+      }
+    }
+    return updates;
+  }
+
   private applyMaterialization(result: MaterializationResult): void {
     if (result.node) {
       this.store.nodes.set(result.node.id, result.node);
@@ -4906,6 +4938,9 @@ export class Server {
       this.store.nodes.set(updated.id, updated);
     }
     for (const edge of result.edges) {
+      this.store.edges.set(edge.id, edge);
+    }
+    for (const edge of result.edgeUpdates) {
       this.store.edges.set(edge.id, edge);
     }
     for (const st of result.subTopicCreates) {
@@ -4965,7 +5000,7 @@ export class Server {
         // every subsequent successful fetch whose hash still matches.
         last_verified_at: now,
       };
-      return { node, edges: [], nodeUpdates: [], subTopicCreates: [] };
+      return { node, edges: [], nodeUpdates: [], edgeUpdates: [], subTopicCreates: [] };
     }
     if (proposal.payload.kind === 'excerpt') {
       // PRD §Edges: derives edges are created atomically with their
@@ -5001,7 +5036,7 @@ export class Server {
         created_by: proposal.proposer_id,
         created_at: now,
       };
-      return { node, edges: [edge], nodeUpdates: [], subTopicCreates: [] };
+      return { node, edges: [edge], nodeUpdates: [], edgeUpdates: [], subTopicCreates: [] };
     }
     if (proposal.payload.kind === 'synthesis' || proposal.payload.kind === 'open_question') {
       // All parents must be active at acceptance time. Re-checked
@@ -5039,7 +5074,7 @@ export class Server {
         created_by: proposal.proposer_id,
         created_at: now,
       }));
-      return { node, edges, nodeUpdates: [], subTopicCreates: [] };
+      return { node, edges, nodeUpdates: [], edgeUpdates: [], subTopicCreates: [] };
     }
     if (proposal.payload.kind === 'supersedes') {
       // Re-check both endpoints at acceptance: either could have moved
@@ -5088,7 +5123,20 @@ export class Server {
       // and edge state in sync means callers don't have to walk edges
       // to know whether a node is active.
       const updated: Node = { ...fromNode, status: 'superseded', updated_at: now };
-      return { node: null, edges: [edge], nodeUpdates: [updated], subTopicCreates: [] };
+      // Cascade: any active `derives` edge terminating at the now-
+      // superseded node (i.e. with `to === fromNode.id`) loses its
+      // child and must leave `active` too — the contract invariant in
+      // PRD §Edges. Without this the orphan-anchor frontier check and
+      // the induced-derives-degree credit multiplier both keep counting
+      // an edge into a dead node.
+      const edgeUpdates = this.deactivateDerivesEdgesInto(fromNode.id);
+      return {
+        node: null,
+        edges: [edge],
+        nodeUpdates: [updated],
+        edgeUpdates,
+        subTopicCreates: [],
+      };
     }
     if (proposal.payload.kind === 'membership') {
       // Re-check the node and target sub-topic at acceptance: either
@@ -5128,7 +5176,13 @@ export class Server {
         scope_memberships: [...node.scope_memberships, proposal.payload.sub_topic_id],
         updated_at: now,
       };
-      return { node: null, edges: [], nodeUpdates: [updated], subTopicCreates: [] };
+      return {
+        node: null,
+        edges: [],
+        nodeUpdates: [updated],
+        edgeUpdates: [],
+        subTopicCreates: [],
+      };
     }
     if (proposal.payload.kind === 'change_of_home') {
       const node = this.store.nodes.get(proposal.payload.node_id);
@@ -5164,7 +5218,13 @@ export class Server {
         scope_memberships: filteredMemberships,
         updated_at: now,
       };
-      return { node: null, edges: [], nodeUpdates: [updated], subTopicCreates: [] };
+      return {
+        node: null,
+        edges: [],
+        nodeUpdates: [updated],
+        edgeUpdates: [],
+        subTopicCreates: [],
+      };
     }
     if (proposal.payload.kind === 'sub_topic') {
       // Re-check the parent cause is still active. The cause is the
@@ -5186,7 +5246,13 @@ export class Server {
         status: subTopicStatus,
         created_at: now,
       };
-      return { node: null, edges: [], nodeUpdates: [], subTopicCreates: [subTopic] };
+      return {
+        node: null,
+        edges: [],
+        nodeUpdates: [],
+        edgeUpdates: [],
+        subTopicCreates: [subTopic],
+      };
     }
     // All ProposalPayload variants are handled above; this is an
     // exhaustiveness guard. If a new payload kind lands without a

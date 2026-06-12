@@ -9,6 +9,16 @@ export const ExternalRef = z.discriminatedUnion('kind', [
 ]);
 export type ExternalRef = z.infer<typeof ExternalRef>;
 
+// `text` is the verifiable span: the server matches it as a normalized
+// substring of the fetched source (PRD §Verification engine, Span
+// verification). `offset` is a contributor-supplied *hint* at where in
+// the source the span sits — it is NOT verified in v0: the verifier
+// normalizes the source (smart quotes, dashes, whitespace) before
+// matching, which shifts raw character offsets, so a stored offset
+// can't be checked against the normalized text without a fragile
+// re-derivation. It is carried for a future full-text-verification
+// phase where offsets become meaningful against full source text, and
+// must not be presented to readers as a server-verified locator.
 export const QuotedSpan = z
   .object({
     text: z.string().min(1),

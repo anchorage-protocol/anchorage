@@ -88,8 +88,9 @@ function kindSpecificCitation(item: ManuscriptCitation): Raw {
     return html`<p class="anchor-source">Reference: ${renderExternalRef(item.external_ref)}${item.content_hash ? html` · content hash <span class="node-id">${item.content_hash}</span>` : null}</p>`;
   }
   if (item.kind === 'excerpt' && item.quoted_span) {
-    return html`<blockquote class="excerpt-span">${item.quoted_span.text}</blockquote>
-<p class="node-id">Offset ${item.quoted_span.offset}</p>${renderParents(item.parent_node_ids)}`;
+    // Only the verified span text is shown; the unverified offset hint
+    // is not surfaced (see contracts QuotedSpan / node-detail page).
+    return html`<blockquote class="excerpt-span">${item.quoted_span.text}</blockquote>${renderParents(item.parent_node_ids)}`;
   }
   return renderParents(item.parent_node_ids);
 }

@@ -60,9 +60,12 @@ function kindSpecificDetails(node: Node): Raw {
   <li>Content hash: <span class="node-id">${node.content_hash}</span></li>
 </ul>`;
     case 'excerpt':
+      // The span `text` is the server-verified content (matched against
+      // the source); `offset` is an unverified contributor hint and is
+      // deliberately not surfaced as an authoritative locator (see
+      // contracts QuotedSpan).
       return html`<h2>Quoted span</h2>
-<blockquote class="excerpt-span">${node.quoted_span.text}</blockquote>
-<p class="node-id">Offset ${node.quoted_span.offset}</p>`;
+<blockquote class="excerpt-span">${node.quoted_span.text}</blockquote>`;
     case 'synthesis':
     case 'open_question':
       // Synthesis and open-question carry only the common

@@ -922,6 +922,48 @@ describe('curator.reverifyAnchor (slice 7c)', () => {
     expect(edge?.status).toBe('active');
   });
 
+  it('cascades derives-edge status when the child is superseded (orphan re-surfaces)', async () => {
+    // Contract invariant (PRD §Edges): a derives edge is active iff its
+    // child is active. Superseding an excerpt whose replacement does
+    // NOT re-derive from the same anchor must leave the anchor's stale
+    // derives edge non-active, so the anchor re-surfaces as an orphan.
+    const f = driftFixture();
+    const { anchor_id } = await landAnchor(f, '1013');
+    // Land an excerpt under the anchor (derives edge anchor -> excerpt).
+    const { proposal_id: ex } = await f.server.tools.proposeExcerpt(f.contributorCaller, {
+      cause_id: f.cause_id,
+      home_sub_topic_id: f.sub_topic_id,
+      parent_anchor_id: anchor_id,
+      content: 'span text here',
+      quoted_span: { text: 'span', offset: 0 },
+    });
+    const { node_id: excerpt_id } = f.server.curator.acceptProposal(ex);
+    if (!excerpt_id) throw new Error('expected excerpt');
+    // A second, unrelated active node to supersede the excerpt INTO
+    // (so the replacement does not re-derive from the anchor).
+    const { anchor_id: replacement } = await landAnchor(f, '1014');
+    const { proposal_id: sup } = await f.server.tools.proposeSupersedes(f.contributorCaller, {
+      from_node_id: excerpt_id,
+      to_node_id: replacement,
+      rationale: 'replace the excerpt',
+    });
+    f.server.curator.acceptProposal(sup);
+
+    // The derives edge into the now-superseded excerpt is no longer active.
+    const derivesIntoExcerpt = [...f.server.store.edges.values()].find(
+      (e) => e.kind === 'derives' && e.to === excerpt_id,
+    );
+    expect(derivesIntoExcerpt?.status).toBe('rejected');
+    // Behavioral payoff: the anchor re-surfaces as an orphan on the
+    // frontier (its only excerpt child is gone). Before the cascade the
+    // stale active edge kept the anchor out of the orphan set forever.
+    const { items } = await f.server.tools.queryFrontier(f.contributorCaller, {
+      cause_id: f.cause_id,
+    });
+    const orphan = items.find((i) => i.kind === 'orphan_anchor' && i.anchor_id === anchor_id);
+    expect(orphan).toBeDefined();
+  });
+
   it('still refuses propose_supersedes from a rejected or superseded node', async () => {
     // The unresolvable carve-out must not loosen the gate for the
     // other non-active statuses: superseding an already-superseded
