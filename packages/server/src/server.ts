@@ -322,6 +322,17 @@ export interface ReviewConfig {
   // seam rather than regressing it (PRD §Reviewer assignment,
   // ROADMAP §Status).
   calibration_aware_convergence: boolean;
+  // Upper bound on the calibration-derived vote weight (1 + passes -
+  // fails, floored at 0). Uncapped, a long all-accept calibration
+  // record accrues unbounded convergence influence — and because the
+  // v0 corpus is accept-only ground truth, "always accept" maxes the
+  // record (see the corpus-composition note in PRD §Calibration
+  // batches). Default Infinity keeps every existing scenario, golden
+  // cassette, and scripted-cube baseline byte-identical (same
+  // land-inert posture as `contested_votes_to_accept`); the testbed
+  // sweeps the cap before the operational instance adopts a finite
+  // value.
+  calibration_weight_cap: number;
   // Stratified-by-history reviewer assignment (PRD §Reviewer
   // assignment). When true, the assignment selector partitions the
   // eligible reviewer pool into vote-pattern co-occurrence clusters
@@ -610,6 +621,7 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   calibration_pass_gain: 1,
   calibration_fail_loss: 1,
   calibration_aware_convergence: false,
+  calibration_weight_cap: Number.POSITIVE_INFINITY,
   stratification_enabled: false,
   stratum_min_shared_proposals: 3,
   stratum_agreement_threshold: 0.8,
@@ -4549,7 +4561,9 @@ export class Server {
     const key = `${identityId}|${causeId}|${subTopicId}` as const;
     const rec = this.store.calibrationRecords.get(key);
     if (!rec) return 1;
-    return Math.max(0, 1 + rec.passes - rec.fails);
+    // Capped above by `calibration_weight_cap` (default Infinity —
+    // inert; see the ReviewConfig comment for why the cap exists).
+    return Math.min(this.review.calibration_weight_cap, Math.max(0, 1 + rec.passes - rec.fails));
   }
 
   // Vote-pattern co-occurrence clustering (PRD §Reviewer assignment,

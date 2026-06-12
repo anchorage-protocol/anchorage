@@ -44,14 +44,16 @@ The Phase 1 ROADMAP language called for "third-party replication" of these resul
 |---|---|---|
 | Honest-weak | `runHonestWeak` (friction-rate test) | n/a (PRD frames as small local model; deep loop is frontier-only) |
 | Honest-strong | `runHonestStrong` (proposer/honest pool in ~20 cubes) | `honestStrongRole` (every deep-loop cube cell runs 2) |
-| Lazy | `acceptAllDecider` (caught by calibration) | n/a (calibration scoring exercised via patient-adversary cells) |
+| Lazy | `acceptAllDecider` (caught by reviewer-as-staking; see correction note below) | n/a (calibration scoring exercised via patient-adversary cells) |
 | Hallucinator | `runHallucinator` (verifier-rejection) | n/a (caught pre-review at the verifier seam) |
 | Strategic adversary | strategic-coalition cubes #1-#4 + variants | `strategicAdversaryRole` (cube cells `strategic-adversary`, `borderline-contested`, `borderline-surrogate`, `borderline-subgroup`, `borderline-contested-v1/v2/v3/r2/r3`) |
 | Patient adversary | testbed two-component drain + assignment-gate refusal | `patientAdversaryRole` (cube cells `calibration-on/off` + `golden-deep-loop` replay) |
 | Sybil farm | sybil-amplified-coalition + binding-cost + rate-limit + cross-cause clustering + adversary-budget primitive | n/a (sybil resistance is sub-MCP; no model surface) |
 | Coalition (multi-variant) | decorrelating, unanimous-priming, anti-correlation, mixed-strategy, contention-weighted+anti-correlation | n/a (coordination is structural, not behavioral) |
 
-The scripted/model-backed split mirrors the PRD's design partition: archetypes whose distinguishing behavior is *structural* (coalition coordination, sybil minting, hallucination caught at the verifier) are scripted-only by design; archetypes whose distinguishing behavior is *judgment under partial information* (patient drift, strategic borderline-defense) are where the model-backed tier earns its keep. Honest-weak and lazy are scripted-only because their named defense (calibration scoring) is exercised in scripted form on the same surface, and the model-backed tier would add no signal.
+The scripted/model-backed split mirrors the PRD's design partition: archetypes whose distinguishing behavior is *structural* (coalition coordination, sybil minting, hallucination caught at the verifier) are scripted-only by design; archetypes whose distinguishing behavior is *judgment under partial information* (patient drift, strategic borderline-defense) are where the model-backed tier earns its keep. Honest-weak and lazy are scripted-only because their named defense is exercised in scripted form on the same surface, and the model-backed tier would add no signal.
+
+*Correction (2026-06-12).* The original table attributed the lazy accept-biased archetype's closure to calibration. That attribution was wrong: the v0 calibration corpus is accept-only ground truth, so an indiscriminate accepter passes every calibration item by construction. What actually catches `acceptAllDecider` in these runs — and what the relevant scripted assertions in fact pin ("rep moves down when honest rejecters converge") — is **reviewer-as-staking**. Calibration meters reject-bias and drift. PRD §Calibration batches now records this precisely, along with the committed redesign (staged calibration copies with reject-expected distractors) that brings the accept-biased form into calibration's reach.
 
 ### Defense axes ([PRD §What's deliberately not specified](./prd.md#whats-deliberately-not-specified))
 

@@ -2765,6 +2765,76 @@ describe('calibration loop', () => {
   });
 });
 
+describe('calibration_weight_cap (convergence-influence ceiling)', () => {
+  // The calibration-derived vote weight (1 + passes - fails) is
+  // unbounded above, and the v0 accept-only corpus means an
+  // indiscriminate accepter maxes it. The cap bounds how much
+  // convergence influence any calibration record can buy. Default
+  // Infinity is inert (same land-inert posture as
+  // contested_votes_to_accept); these pin the knob's semantics.
+  async function weightedFixture(cap: number) {
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('cap'),
+      verifier: new FakeVerifier(),
+      review: {
+        calibration_aware_convergence: true,
+        votes_to_accept: 2,
+        ...(Number.isFinite(cap) ? { calibration_weight_cap: cap } : {}),
+      },
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
+    const st = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'mrd',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const { proposal_id } = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: st.id,
+        content: 'claim',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    // Bob holds a long all-pass calibration record (weight 11
+    // uncapped); carol's record zeroes her weight.
+    server.store.calibrationRecords.set(`${bob.id}|${cause.id}|${st.id}`, {
+      passes: 10,
+      fails: 0,
+    });
+    server.store.calibrationRecords.set(`${carol.id}|${cause.id}|${st.id}`, {
+      passes: 0,
+      fails: 5,
+    });
+    await server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'accept', rationale: 'r' },
+    );
+    await server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id, decision: 'accept', rationale: 'r' },
+    );
+    return { server, proposal_id };
+  }
+
+  it('uncapped (default), a deep calibration record alone drives the weighted threshold', async () => {
+    const { server, proposal_id } = await weightedFixture(Number.POSITIVE_INFINITY);
+    expect(server.store.proposals.get(proposal_id as never)?.status).toBe('accepted');
+  });
+
+  it('capped, the same record cannot push the weighted sum past threshold', async () => {
+    const { server, proposal_id } = await weightedFixture(1);
+    // Distinct count is 2 (met) but the capped weighted sum is 1 + 0 < 2.
+    expect(server.store.proposals.get(proposal_id as never)?.status).toBe('staged');
+  });
+});
+
 describe('two-component reputation decay', () => {
   // PRD §Reputation: demonstrated-competence (slow-decay) and
   // recent-activity (fast-decay) move together on every reputation
