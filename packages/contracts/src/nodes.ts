@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IdentityId, NodeId, SubTopicId } from './ids.js';
+import { IdentityId, NodeId, ProposalId, SubTopicId } from './ids.js';
 import { Timestamp } from './timestamps.js';
 
 export const ExternalRef = z.discriminatedUnion('kind', [
@@ -61,6 +61,15 @@ const nodeBase = {
   created_by: IdentityId,
   created_at: Timestamp,
   updated_at: Timestamp,
+  // The proposal whose acceptance materialized this node. The
+  // node→proposal linkage is load-bearing for manuscript credit
+  // (reviewer credit walks the votes on the materializing proposal,
+  // PRD §Manuscript projection) and must not rest on inference —
+  // the previous content-key join assumed a no-duplicate-content
+  // invariant the tool boundary never enforced. Optional because
+  // nodes materialized before the field existed carry none; the
+  // credit walk falls back to the content-key join for those.
+  proposal_id: ProposalId.optional(),
 };
 
 export const AnchorNode = z

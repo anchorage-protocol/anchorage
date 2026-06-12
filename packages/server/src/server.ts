@@ -3439,25 +3439,15 @@ export class Server {
       // accrues `credit_proposer_weight * multiplier`; reviewers who
       // voted `accept` on the proposal that materialized the node
       // accrue `credit_reviewer_weight * multiplier`. Locating the
-      // materializing proposal: nodes carry a `created_by` +
-      // `created_at`, and the proposal whose acceptance produced the
-      // node is the one whose `materialized_node_id` (if persisted)
-      // matches — but we don't persist that link. Instead, we index
-      // accepted proposals by their fulfillment-time node payload:
-      // (proposer_id, payload kind, content) is sufficient to match
-      // the node back to its proposal under the v0 schema where
-      // every accepted node-creating proposal materializes exactly
-      // one node, and `(proposer_id, content)` is unique per
-      // proposal (the proposer can't propose two anchors with
-      // identical content/external_ref payload — the verifier
-      // rejects the duplicate at the tool boundary). Cleaner-but-
-      // heavier alternatives (persisting `proposal_id` on `Node`)
-      // are deferred to the slice-7 operational tooling pass.
+      // materializing proposal: nodes persist `proposal_id` at
+      // materialization, so the linkage is a direct lookup. Nodes
+      // materialized before the field existed fall back to the
+      // legacy content-key join — (proposer_id, kind, content) —
+      // which rested on a no-duplicate-content assumption the tool
+      // boundary never actually enforced; the persisted link is what
+      // keeps the fallback's ambiguity from mis-attributing reviewer
+      // credit on any node created since.
       const proposalsByMaterializedNodeId = new Map<NodeId, Proposal>();
-      // Inverted index: (proposer_id, kind, content) → accepted
-      // proposal. Sufficient under v0's no-duplicate-content
-      // invariant at the tool boundary (the verifier rejects a
-      // duplicate excerpt/anchor at write time).
       const proposalByContentKey = new Map<string, Proposal>();
       for (const p of this.store.proposals.values()) {
         if (p.status !== 'accepted') continue;
@@ -3469,6 +3459,7 @@ export class Server {
         proposalByContentKey.set(key, p);
       }
       const proposalForNode = (n: Node): Proposal | undefined => {
+        if (n.proposal_id !== undefined) return this.store.proposals.get(n.proposal_id);
         return proposalByContentKey.get(`${n.created_by}|${n.kind}|${n.content}`);
       };
       // Cache the linkage so the survivor / load lookup and the
@@ -3498,18 +3489,26 @@ export class Server {
         accrue(n.created_by, this.review.credit_proposer_weight * mult, n.id, 'p');
         const proposal = proposalsByMaterializedNodeId.get(n.id);
         if (!proposal) continue;
-        // Reviewer credit: any vote with `decision === 'accept'` on
-        // the materializing proposal aligns with the converged
-        // outcome (the node is in the included set, which is
-        // active-only — so the proposal's terminal state is
-        // accepted). Self-votes by the proposer (which the review
+        // Reviewer credit: an `accept` vote on the materializing
+        // proposal that was cast *before the proposal converged*
+        // (vote created_at ≤ proposal updated_at — updated_at is
+        // stamped at acceptance) aligns with the converged outcome.
+        // Post-convergence votes are excluded: a calibration draw
+        // points later reviewers at the same accepted proposal, and
+        // crediting those votes would make calibration items a
+        // risk-free manuscript-credit-farming channel — the
+        // calibration path pays in reputation, not credit (PRD
+        // §Manuscript projection: "converged-accept-aligned reviewer
+        // credit"). Self-votes by the proposer (which the review
         // pipeline already filters at assignment time) are skipped
         // here as a defense-in-depth.
+        const convergedAtMs = Date.parse(proposal.updated_at);
         const reviewerSeen = new Set<IdentityId>();
         for (const v of this.store.reviewVotes.values()) {
           if (v.proposal_id !== proposal.id) continue;
           if (v.decision !== 'accept') continue;
           if (v.reviewer_id === proposal.proposer_id) continue;
+          if (Date.parse(v.created_at) > convergedAtMs) continue;
           if (reviewerSeen.has(v.reviewer_id)) continue;
           reviewerSeen.add(v.reviewer_id);
           accrue(v.reviewer_id, this.review.credit_reviewer_weight * mult, n.id, 'r');
@@ -4873,6 +4872,7 @@ export class Server {
         created_by: proposal.proposer_id,
         created_at: now,
         updated_at: now,
+        proposal_id: proposal.id,
         external_ref: proposal.payload.external_ref,
         content_hash: verified.content_hash,
         // Canonical metadata the verifier observed at propose-time
@@ -4907,6 +4907,7 @@ export class Server {
         created_by: proposal.proposer_id,
         created_at: now,
         updated_at: now,
+        proposal_id: proposal.id,
         quoted_span: proposal.payload.quoted_span,
       };
       const edge: DerivesEdge = {
@@ -4941,6 +4942,7 @@ export class Server {
         created_by: proposal.proposer_id,
         created_at: now,
         updated_at: now,
+        proposal_id: proposal.id,
       };
       const node: SynthesisNode | OpenQuestionNode =
         proposal.payload.kind === 'synthesis'

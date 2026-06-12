@@ -612,6 +612,156 @@ describe('mcp resources (PRD §Read-path tools and resources)', () => {
       expect(parsed.contributors.map((c) => c.contributor_id)).toEqual([alice.id, bob.id]);
     });
 
+    it('excludes post-convergence accept votes from reviewer credit (calibration is not a credit channel)', async () => {
+      // Calibration draws point later reviewers at the same accepted
+      // proposal; those votes pay in reputation, never in manuscript
+      // credit — otherwise calibration items are risk-free credit
+      // farming. PRD §Manuscript projection ("converged-accept-
+      // aligned" is enforced temporally).
+      const server = new Server({
+        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+        idGen: new SeededIdGen('postc'),
+        verifier: new FakeVerifier(),
+        review: {
+          credit_proposer_weight: 1.0,
+          credit_reviewer_weight: 0.25,
+          credit_survivor_bonus_per_supersede: 0,
+          credit_load_bonus_per_induced_derives: 0,
+        },
+      });
+      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+      const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+      const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+      const { secret } = server.bootstrap.bindAgentCredential({
+        identity_id: alice.id,
+        label: 'd',
+      });
+      const crc = server.bootstrap.createCause({ name: 'CRC', description: 'c' });
+      const mrd = server.bootstrap.seedSubTopic({
+        cause_id: crc.id,
+        name: 'mrd',
+        description: 'm',
+        scope_query: 'm',
+      });
+      const anchor = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: crc.id,
+          home_sub_topic_id: mrd.id,
+          content: 'a content',
+          external_ref: { kind: 'pmid', value: '1' },
+        },
+      );
+      // Bob votes pre-convergence; the proposal is then accepted.
+      await server.tools.castReviewVote(
+        { identity_id: bob.id },
+        { proposal_id: anchor.proposal_id, decision: 'accept', rationale: 'pre' },
+      );
+      server.curator.acceptProposal(anchor.proposal_id);
+      // Carol's vote lands after acceptance — the shape a calibration
+      // draw produces. Constructed directly at the store seam because
+      // the tool path requires the calibration assignment plumbing;
+      // the projection walks store state either way.
+      server.store.reviewVotes.set('rv_post_carol' as never, {
+        id: 'rv_post_carol' as never,
+        proposal_id: anchor.proposal_id as never,
+        reviewer_id: carol.id,
+        decision: 'accept',
+        rationale: 'calibration-style late vote',
+        created_at: server.clock.now(),
+      });
+
+      const mcp = buildMcpServer(server, { token: secret });
+      const client = new Client({ name: 't', version: '0.0.0' });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([mcp.connect(st), client.connect(ct)]);
+      const parsed = Manuscript.parse(
+        parseJsonResource((await client.readResource({ uri: `manuscript://${mrd.id}` })).contents),
+      );
+      const byContributor = new Map(parsed.contributors.map((c) => [c.contributor_id, c]));
+      expect(byContributor.get(bob.id)?.units).toBeCloseTo(0.25);
+      expect(byContributor.get(carol.id)).toBeUndefined();
+    });
+
+    it('attributes reviewer credit per-proposal under duplicate content (persisted proposal_id linkage)', async () => {
+      // The same proposer CAN stage two anchors with identical content
+      // (different sources) — the tool boundary never enforced the
+      // no-duplicate-content assumption the legacy content-key join
+      // relied on. With the persisted Node.proposal_id, each node's
+      // reviewer credit walks its own proposal's votes.
+      const server = new Server({
+        clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+        idGen: new SeededIdGen('dup'),
+        verifier: new FakeVerifier(),
+        review: {
+          credit_proposer_weight: 1.0,
+          credit_reviewer_weight: 0.25,
+          credit_survivor_bonus_per_supersede: 0,
+          credit_load_bonus_per_induced_derives: 0,
+        },
+      });
+      const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+      const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+      const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+      const { secret } = server.bootstrap.bindAgentCredential({
+        identity_id: alice.id,
+        label: 'd',
+      });
+      const crc = server.bootstrap.createCause({ name: 'CRC', description: 'c' });
+      const mrd = server.bootstrap.seedSubTopic({
+        cause_id: crc.id,
+        name: 'mrd',
+        description: 'm',
+        scope_query: 'm',
+      });
+      const sameContent = 'two sources report the same claim';
+      const p1 = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: crc.id,
+          home_sub_topic_id: mrd.id,
+          content: sameContent,
+          external_ref: { kind: 'pmid', value: '101' },
+        },
+      );
+      const p2 = await server.tools.proposeAnchor(
+        { identity_id: alice.id },
+        {
+          cause_id: crc.id,
+          home_sub_topic_id: mrd.id,
+          content: sameContent,
+          external_ref: { kind: 'pmid', value: '102' },
+        },
+      );
+      // Bob reviews only the first, carol only the second.
+      await server.tools.castReviewVote(
+        { identity_id: bob.id },
+        { proposal_id: p1.proposal_id, decision: 'accept', rationale: 'r1' },
+      );
+      await server.tools.castReviewVote(
+        { identity_id: carol.id },
+        { proposal_id: p2.proposal_id, decision: 'accept', rationale: 'r2' },
+      );
+      server.curator.acceptProposal(p1.proposal_id);
+      server.curator.acceptProposal(p2.proposal_id);
+
+      const mcp = buildMcpServer(server, { token: secret });
+      const client = new Client({ name: 't', version: '0.0.0' });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([mcp.connect(st), client.connect(ct)]);
+      const parsed = Manuscript.parse(
+        parseJsonResource((await client.readResource({ uri: `manuscript://${mrd.id}` })).contents),
+      );
+      const byContributor = new Map(parsed.contributors.map((c) => [c.contributor_id, c]));
+      // Each reviewer earns exactly one node's worth of reviewer
+      // credit — under the content-key join both nodes resolved to
+      // one proposal and one of these assertions failed.
+      expect(byContributor.get(bob.id)?.units).toBeCloseTo(0.25);
+      expect(byContributor.get(bob.id)?.reviewed_node_count).toBe(1);
+      expect(byContributor.get(carol.id)?.units).toBeCloseTo(0.25);
+      expect(byContributor.get(carol.id)?.reviewed_node_count).toBe(1);
+    });
+
     it('applies the load-bearing multiplier from the induced subgraph (an anchor with a child excerpt counts more than a peripheral anchor)', async () => {
       const server = new Server({
         clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
