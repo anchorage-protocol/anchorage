@@ -84,6 +84,18 @@ export interface AnchorageHttpOpts {
   // separate workspace package and `packages/server` does not
   // depend on it; `run-prod.ts` composes them.
   webHandler?: AnchorageHttpHandler;
+  // Per-IP throttle over the unauthenticated auth/OAuth surface
+  // (`/register`, `/authorize`, `/token`, `/auth/github/*`). These
+  // routes sit *before* every identity-keyed control the server has —
+  // the issuance cap only fires after a full GitHub round-trip, and
+  // `/auth/github/start` spends the deployment's GitHub-side device-
+  // code budget per hit — so without an IP-keyed gate the whole
+  // pre-auth surface is an unmetered abuse target. Epoch-counter
+  // shape mirrors the server's per-identity rate limits; counters
+  // reset every epoch, which also bounds the map. Defaults on
+  // (60/min per IP); pass `false` to disable (in-process test
+  // harnesses that hammer the endpoints deliberately).
+  authThrottle?: { limit: number; epoch_seconds: number } | false;
   // Outbound info log sink. Defaults to `console.log`. Production
   // deployments inject structured-log sinks.
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -107,6 +119,12 @@ export function buildHttpHandler(opts: AnchorageHttpOpts): AnchorageHttpHandler 
   const oauth = opts.oauth;
   const webHandler = opts.webHandler;
   const wwwAuthenticate = oauth ? oauth.wwwAuthenticate() : undefined;
+  const throttle =
+    opts.authThrottle === false
+      ? undefined
+      : new IpEpochThrottle(opts.authThrottle ?? { limit: 60, epoch_seconds: 60 }, () =>
+          Date.parse(server.clock.now()),
+        );
 
   return async (req, res) => {
     const method = req.method ?? 'GET';
@@ -117,6 +135,18 @@ export function buildHttpHandler(opts: AnchorageHttpOpts): AnchorageHttpHandler 
     const pathname = url.pathname;
 
     try {
+      // The pre-auth surface throttles per client IP before any route
+      // logic runs (see `authThrottle`). `/mcp` is exempt: it is
+      // bearer-gated and the per-identity rate limits own it.
+      if (throttle && isThrottledPath(pathname)) {
+        if (!throttle.allow(clientIpOf(req))) {
+          sendJson(res, 429, {
+            code: 'rate_limited',
+            message: 'too many auth requests from this address; retry later',
+          });
+          return;
+        }
+      }
       if (pathname === '/healthz') {
         if (method !== 'GET') {
           sendMethodNotAllowed(res, ['GET']);
@@ -334,6 +364,55 @@ async function handleMcp(
   await transport.handleRequest(req, res);
 }
 
+// The unauthenticated routes the per-IP throttle covers. Everything
+// here either spends an upstream budget (GitHub device codes), mints
+// unauthenticated state (DCR registrations, authorize sessions), or
+// gates a secret exchange (token, complete) — the exact surface an
+// unauthenticated flood targets.
+function isThrottledPath(pathname: string): boolean {
+  return (
+    pathname === '/register' ||
+    pathname === '/authorize' ||
+    pathname === '/token' ||
+    pathname.startsWith('/auth/github/')
+  );
+}
+
+// Client IP for throttle bucketing. `Fly-Client-IP` is set by the
+// Fly proxy the production instance sits behind (deploy.md) and is
+// not client-forgeable there; the socket address is the fallback for
+// direct exposure. `X-Forwarded-For` is deliberately not consulted —
+// it is attacker-controlled whenever the origin is reachable
+// directly, which would turn the throttle into a no-op.
+function clientIpOf(req: IncomingMessage): string {
+  const fly = req.headers['fly-client-ip'];
+  if (typeof fly === 'string' && fly.length > 0) return fly;
+  return req.socket?.remoteAddress ?? 'unknown';
+}
+
+// Per-IP epoch counter: same shape as the server's per-identity rate
+// limits (a single counter per key, reset on epoch boundary). The
+// whole map clears when the epoch advances, which bounds memory to
+// one epoch's worth of distinct client IPs.
+class IpEpochThrottle {
+  private epoch = -1;
+  private counts = new Map<string, number>();
+  constructor(
+    private readonly config: { limit: number; epoch_seconds: number },
+    private readonly nowMs: () => number,
+  ) {}
+  allow(ip: string): boolean {
+    const epoch = Math.floor(this.nowMs() / (this.config.epoch_seconds * 1000));
+    if (epoch !== this.epoch) {
+      this.epoch = epoch;
+      this.counts.clear();
+    }
+    const next = (this.counts.get(ip) ?? 0) + 1;
+    this.counts.set(ip, next);
+    return next <= this.config.limit;
+  }
+}
+
 function extractBearer(req: IncomingMessage): string | undefined {
   const auth = req.headers.authorization;
   if (typeof auth !== 'string') return undefined;
@@ -527,6 +606,14 @@ export async function startHttpServer(opts: StartHttpServerOpts): Promise<Anchor
   const httpServer = createServer((req, res) => {
     void handler(req, res);
   });
+  // Slow-client bounds. Node's defaults (60s headers, 300s request)
+  // let a modest connection flood hold the single-instance origin's
+  // sockets open for minutes; a legitimate client sends headers in
+  // milliseconds and the body cap is 64 KB. `requestTimeout` bounds
+  // *receiving* the request only — long-lived SSE responses on
+  // `GET /mcp` are unaffected.
+  httpServer.headersTimeout = 15_000;
+  httpServer.requestTimeout = 60_000;
   const host = opts.host ?? '127.0.0.1';
   const port = opts.port ?? 0;
   await new Promise<void>((resolve, reject) => {

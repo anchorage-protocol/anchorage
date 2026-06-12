@@ -51,7 +51,22 @@ interface RegisteredClient {
   client_id: string;
   redirect_uris: string[];
   client_name: string;
+  // Last time this client_id was seen at /register (creation) or
+  // /authorize. Drives idle-expiry in `gc()` and LRU eviction at the
+  // registry cap — without both, the unauthenticated RFC 7591 endpoint
+  // is an unbounded heap-growth primitive (one POST loop OOMs the
+  // instance).
+  last_seen_ms: number;
 }
+
+// Registry bounds for unauthenticated dynamic client registration.
+// MCP clients re-run DCR when their client_id stops resolving (the
+// /authorize `invalid_client` refusal tells them to), so both idle
+// expiry and LRU eviction are recoverable for legitimate clients —
+// unlike the alternative (refusing registration at the cap), which
+// would let an attacker fill the registry once and lock everyone out.
+const MAX_REGISTERED_CLIENTS = 5000;
+const CLIENT_IDLE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 interface AuthSession {
   client_id: string;
@@ -155,28 +170,42 @@ export class OAuthProvider {
   // current MCP clients (including Claude Code) drive; Client ID
   // Metadata Documents are a documented future addition.
   register(body: unknown): OAuthResult {
+    this.gc();
     const obj = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
     const redirectUris = obj['redirect_uris'];
     if (
       !Array.isArray(redirectUris) ||
       redirectUris.length === 0 ||
+      redirectUris.length > 10 ||
       !redirectUris.every((u) => typeof u === 'string' && isAllowedRedirectUri(u))
     ) {
       return oauthError(
         400,
         'invalid_redirect_uri',
-        'redirect_uris must be a non-empty array of https, loopback, or private-use scheme URIs',
+        'redirect_uris must be a non-empty array (max 10) of https, loopback, or private-use scheme URIs',
       );
     }
     const clientName =
       typeof obj['client_name'] === 'string' && obj['client_name'].length > 0
-        ? (obj['client_name'] as string)
+        ? (obj['client_name'] as string).slice(0, 200)
         : 'MCP client';
+    // LRU eviction at the cap: registration stays open (refusing at
+    // the cap would let an attacker lock new clients out), the oldest
+    // idle registration pays, and an evicted legitimate client
+    // re-registers transparently on its next connect.
+    if (this.clients.size >= MAX_REGISTERED_CLIENTS) {
+      let oldest: RegisteredClient | undefined;
+      for (const c of this.clients.values()) {
+        if (!oldest || c.last_seen_ms < oldest.last_seen_ms) oldest = c;
+      }
+      if (oldest) this.clients.delete(oldest.client_id);
+    }
     const client_id = `anc_client_${randomToken()}`;
     const client: RegisteredClient = {
       client_id,
       redirect_uris: redirectUris as string[],
       client_name: clientName,
+      last_seen_ms: this.nowMs(),
     };
     this.clients.set(client_id, client);
     this.log('oauth.register', { client_id, redirect_uris: client.redirect_uris.length });
@@ -217,6 +246,7 @@ export class OAuthProvider {
     if (!client) {
       return oauthError(400, 'invalid_client', 'unknown client_id (register first)');
     }
+    client.last_seen_ms = this.nowMs();
     if (!redirectUri || !client.redirect_uris.includes(redirectUri)) {
       // Pre-redirect-trust failure: do NOT redirect (open-redirect
       // guard) — render the error directly.
@@ -351,6 +381,9 @@ export class OAuthProvider {
   }
 
   // Lazy expiry — same shape as the device-flow garbage collection.
+  // Sweeps all three maps: sessions and codes on their short TTLs,
+  // and registered clients on the idle TTL (the unauthenticated
+  // registry would otherwise grow forever; see RegisteredClient).
   private gc(): void {
     const now = this.nowMs();
     for (const [k, s] of this.sessions) {
@@ -358,6 +391,9 @@ export class OAuthProvider {
     }
     for (const [k, c] of this.codes) {
       if (now > c.expires_ms) this.codes.delete(k);
+    }
+    for (const [k, c] of this.clients) {
+      if (now - c.last_seen_ms > CLIENT_IDLE_TTL_MS) this.clients.delete(k);
     }
   }
 }
@@ -377,9 +413,41 @@ function pkceS256(verifier: string): string {
 // `com.example.app:/cb`) for installed apps that cannot host a public
 // https endpoint. The security weight is carried by mandatory PKCE plus
 // the exact-match + open-redirect guard at /authorize — not by the
-// scheme. A short denylist keeps schemes a browser could mishandle in a
-// 302 Location out of the registry.
-const DANGEROUS_REDIRECT_SCHEMES = new Set(['javascript:', 'data:', 'file:', 'vbscript:']);
+// scheme. The private-use branch cannot require RFC 8252's reverse-DNS
+// shape (the dominant MCP clients use `cursor:`/`vscode:`-style
+// schemes with no dot), so it is validated structurally — RFC 3986
+// scheme grammar — plus a denylist of every scheme a browser or OS
+// gives special powers to in a 302 Location (script execution, local
+// file access, app-store/intent dispatch, devtools surfaces). The
+// standard network schemes are excluded too: a "private-use" URI that
+// claims `http:`/`ws:`/`ftp:` is either a loopback case (handled
+// above) or an attempt to smuggle a web redirect past the https rule.
+const DANGEROUS_REDIRECT_SCHEMES = new Set([
+  'javascript:',
+  'data:',
+  'file:',
+  'vbscript:',
+  'blob:',
+  'filesystem:',
+  'about:',
+  'chrome:',
+  'chrome-extension:',
+  'moz-extension:',
+  'resource:',
+  'intent:',
+  'android-app:',
+  'ms-appx:',
+  'ms-appx-web:',
+  'ms-browser-extension:',
+  'jar:',
+  'view-source:',
+  'ws:',
+  'wss:',
+  'ftp:',
+  'http:',
+]);
+
+const SCHEME_GRAMMAR = /^[a-z][a-z0-9+.-]*:$/i;
 
 function isAllowedRedirectUri(uri: string): boolean {
   let u: URL;
@@ -393,7 +461,8 @@ function isAllowedRedirectUri(uri: string): boolean {
     return u.hostname === '127.0.0.1' || u.hostname === 'localhost';
   }
   // Private-use URI scheme (native-app callback, RFC 8252 §7.1).
-  return !DANGEROUS_REDIRECT_SCHEMES.has(u.protocol);
+  if (!SCHEME_GRAMMAR.test(u.protocol)) return false;
+  return !DANGEROUS_REDIRECT_SCHEMES.has(u.protocol.toLowerCase());
 }
 
 function hostOf(uri: string): string {

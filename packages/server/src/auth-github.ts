@@ -539,13 +539,25 @@ interface DeviceFlowState {
   // Once `completeSignin` succeeds, the issued credential's secret
   // is cached here so a retry by the same client returns the same
   // secret instead of minting a duplicate. The cached secret is the
-  // plaintext; it is never stored on the Server.
+  // plaintext; it is never stored on the Server — and it is retained
+  // only for COMPLETED_RETENTION_MS after completion (`completed_at_ms`
+  // below): long enough to absorb a dropped network response, short
+  // enough that the flow map is not an indefinite plaintext-secret
+  // cache any holder of the device_code can replay against.
   completed?: {
     secret: string;
     credential_id: string;
     identity_id: IdentityId;
+    completed_at_ms: number;
   };
 }
+
+// How long a completed device flow keeps re-returning its secret to
+// retries before the entry is dropped. The idempotency window the PRD
+// commits ("a client that lost the previous network response gets the
+// same (credential_id, secret) back") needs seconds, not process
+// lifetime; past it, replaying the device_code returns `expired`.
+const COMPLETED_RETENTION_MS = 2 * 60 * 1000;
 
 export interface GithubSigninResult {
   status: 'pending' | 'expired' | 'denied' | 'authorized';
@@ -619,6 +631,16 @@ export class GithubOAuthAuthenticator implements Authenticator {
   async startSignin(): Promise<GithubDeviceCode> {
     const dc = await this.api.requestDeviceCode();
     const nowMs = Date.parse(this.server.clock.now());
+    // Lazy sweep: drop expired flows and completed flows past the
+    // retention window, so the map's size tracks live signins rather
+    // than process lifetime (abandoned flows previously only fell out
+    // when their own device_code was re-polled).
+    for (const [k, s] of this.flows) {
+      const stale = s.completed
+        ? nowMs - s.completed.completed_at_ms > COMPLETED_RETENTION_MS
+        : nowMs > s.expires_at_ms;
+      if (stale) this.flows.delete(k);
+    }
     this.flows.set(dc.device_code, {
       device_code: dc.device_code,
       expires_at_ms: nowMs + dc.expires_in_seconds * 1000,
@@ -640,8 +662,16 @@ export class GithubOAuthAuthenticator implements Authenticator {
       return { status: 'expired' };
     }
     if (state.completed) {
-      // Idempotent terminal state. Re-return the cached secret so a
-      // client that lost the previous response can still pick it up.
+      // Idempotent terminal state, bounded: re-return the cached
+      // secret so a client that lost the previous response can still
+      // pick it up — but only inside the retention window. Past it the
+      // entry is dropped (the client has its secret; anyone else
+      // replaying the device_code gets nothing).
+      const nowMs = Date.parse(this.server.clock.now());
+      if (nowMs - state.completed.completed_at_ms > COMPLETED_RETENTION_MS) {
+        this.flows.delete(device_code);
+        return { status: 'expired' };
+      }
       const identity = this.server.store.identities.get(state.completed.identity_id);
       return {
         status: 'authorized',
@@ -706,6 +736,7 @@ export class GithubOAuthAuthenticator implements Authenticator {
       secret: minted.secret,
       credential_id: minted.credential_id,
       identity_id: minted.identity_id,
+      completed_at_ms: Date.parse(this.server.clock.now()),
     };
     return {
       status: 'authorized',

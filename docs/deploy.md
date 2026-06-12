@@ -256,6 +256,8 @@ What the operator sees: `anchorage.server.started` logs `mcp_oauth: true`; `oaut
 
 The legacy device routes (`/auth/github/start` + `/auth/github/complete`) remain for clients that drive the device flow directly, but no human needs them in the OAuth-server path.
 
+The whole pre-auth surface (`/register`, `/authorize`, `/token`, `/auth/github/*`) is throttled per client IP at the HTTP layer (default 60 requests/minute per address; refusals are `429` `rate_limited`). The throttle keys on `Fly-Client-IP` when present (set by the Fly proxy and not client-forgeable there) and falls back to the socket address — if you front the instance with a different proxy, make sure it either sets `Fly-Client-IP` or terminates close enough that socket addresses are meaningful, or the throttle degrades to bucketing all traffic under the proxy's address. `/mcp` is exempt: it is bearer-gated and the per-identity rate limits own it. The dynamically-registered OAuth client registry is bounded (idle registrations expire after 30 days; at the hard cap the oldest-idle registration is evicted and the affected client transparently re-registers on its next connect).
+
 ## Backups
 
 The SQLite file is the source of truth. Loss of the file is loss of the instance. Two reasonable approaches:

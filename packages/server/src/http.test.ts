@@ -321,3 +321,42 @@ describe('routing edges', () => {
     expect(res.headers.get('allow')).toBe('POST');
   });
 });
+
+describe('per-IP throttle on the pre-auth surface', () => {
+  it('refuses with 429 rate_limited past the per-epoch limit, and exempts /mcp and /healthz', async () => {
+    // The pre-auth routes sit before every identity-keyed control the
+    // server has; the throttle is the only gate an unauthenticated
+    // flood meets. /mcp is bearer-gated (per-identity rate limits own
+    // it) and stays exempt.
+    const server = freshServer();
+    const githubAuth = new GithubOAuthAuthenticator({
+      server,
+      githubApi: new FakeGithubApi(),
+    });
+    httpServer = await startHttpServer({
+      server,
+      githubAuth,
+      // Wide epoch so the FakeClock's 1s-per-call ticks stay inside
+      // one epoch for the whole test.
+      authThrottle: { limit: 3, epoch_seconds: 24 * 60 * 60 },
+      log: () => {},
+    });
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const res = await fetch(`${httpServer.url}/auth/github/start`, { method: 'POST' });
+      statuses.push(res.status);
+      await res.arrayBuffer();
+    }
+    expect(statuses.slice(0, 3)).toEqual([200, 200, 200]);
+    expect(statuses.slice(3)).toEqual([429, 429]);
+    const last = await fetch(`${httpServer.url}/auth/github/start`, { method: 'POST' });
+    const body = (await last.json()) as { code: string };
+    expect(body.code).toBe('rate_limited');
+    // Exempt routes are unaffected by the exhausted budget.
+    const health = await fetch(`${httpServer.url}/healthz`);
+    expect(health.status).toBe(200);
+    const mcp = await fetch(`${httpServer.url}/mcp`, { method: 'POST' });
+    expect(mcp.status).toBe(401); // missing bearer, not 429
+    await mcp.arrayBuffer();
+  });
+});

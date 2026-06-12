@@ -238,6 +238,30 @@ describe('GithubOAuthAuthenticator — device-code flow', () => {
     expect(server.store.identities.size).toBe(1);
     expect(server.store.agentCredentials.size).toBe(1);
   });
+
+  it('stops re-returning the secret after the completed-retention window', async () => {
+    // The idempotency window absorbs a dropped network response; it
+    // must not be an indefinite plaintext-secret cache that any later
+    // holder of the device_code can replay against.
+    const server = freshServer();
+    const auth = new GithubOAuthAuthenticator({
+      server,
+      githubApi: new FakeGithubApi(),
+    });
+    const dc = await auth.startSignin();
+    const first = await auth.completeSignin(dc.device_code);
+    expect(first.status).toBe('authorized');
+    // Within the window: retry still returns the cached secret.
+    const retry = await auth.completeSignin(dc.device_code);
+    expect(retry.secret).toBe(first.secret);
+    // Past the window: the entry is gone; the replay gets nothing.
+    (server.clock as FakeClock).advance(3 * 60 * 1000);
+    const replay = await auth.completeSignin(dc.device_code);
+    expect(replay.status).toBe('expired');
+    expect(replay.secret).toBeUndefined();
+    // No duplicate credential was minted by any of it.
+    expect(server.store.agentCredentials.size).toBe(1);
+  });
 });
 
 describe('GithubOAuthAuthenticator — identity-on-first-signin', () => {

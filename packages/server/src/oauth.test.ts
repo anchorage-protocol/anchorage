@@ -149,6 +149,51 @@ describe('OAuthProvider — dynamic client registration', () => {
     expect(
       oauth.register({ redirect_uris: ['cursor://app/cb', 'http://evil.test/cb'] }).status,
     ).toBe(400);
+    // Schemes a browser or OS gives special powers to in a 302
+    // Location — the denylist beyond the original four.
+    for (const uri of [
+      'blob:https://evil.test/x',
+      'filesystem:https://evil.test/x',
+      'about:blank',
+      'chrome://settings',
+      'intent://scan/#Intent;end',
+      'view-source:https://evil.test',
+      'ws://evil.test/cb',
+      'ftp://evil.test/cb',
+    ]) {
+      expect(oauth.register({ redirect_uris: [uri] }).status, uri).toBe(400);
+    }
+    // Oversized batches refuse too (registry-flooding hygiene).
+    expect(
+      oauth.register({
+        redirect_uris: Array.from({ length: 11 }, (_, i) => `https://client.test/cb${i}`),
+      }).status,
+    ).toBe(400);
+  });
+
+  it('sweeps idle registrations and evicts oldest at the cap (unbounded-registry guard)', () => {
+    // The unauthenticated RFC 7591 endpoint must not be a heap-growth
+    // primitive: clients idle past the TTL are gc-swept, and the
+    // registry caps with LRU eviction (an evicted legitimate client
+    // re-registers transparently on its next connect).
+    const clock = new FakeClock('2026-05-14T00:00:00.000Z', 0);
+    const { oauth } = setup(clock);
+    const oldClient = registerClient(oauth, 'https://old.test/cb');
+    // 31 days later the idle registration is swept on the next gc-ing
+    // call; /authorize then refuses the stale client_id.
+    clock.advance(31 * 24 * 60 * 60 * 1000);
+    registerClient(oauth, 'https://fresh.test/cb');
+    const q = new URLSearchParams({
+      response_type: 'code',
+      client_id: oldClient,
+      redirect_uri: 'https://old.test/cb',
+      code_challenge: pkce('v'),
+      code_challenge_method: 'S256',
+      resource: `${BASE}/mcp`,
+    });
+    const r = oauth.authorize(q);
+    expect(r.status).toBe(400);
+    expect(jsonBody(r)['error']).toBe('invalid_client');
   });
 });
 
