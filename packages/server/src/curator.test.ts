@@ -781,6 +781,58 @@ describe('curator.reverifyAnchor (slice 7c)', () => {
     });
   });
 
+  it('recovers an unresolvable anchor via propose_supersedes from a fresh external_ref', async () => {
+    // The documented recovery from the terminal re-verification state
+    // (PRD §Verification engine): a fresh anchor supersedes the dead
+    // one. The from-end status gate must admit `unresolvable` at both
+    // propose time and acceptance, or the state is a permanent dead end.
+    const f = driftFixture();
+    const { anchor_id: dead_id } = await landAnchor(f, '1007');
+    f.verifier.unresolvable.add('1007');
+    await f.server.curator.reverifyAnchor(dead_id);
+    const { anchor_id: fresh_id } = await landAnchor(f, '1008');
+
+    const { proposal_id } = await f.server.tools.proposeSupersedes(f.contributorCaller, {
+      from_node_id: dead_id,
+      to_node_id: fresh_id,
+      rationale: 'source no longer resolves; fresh ref carries the same claim',
+    });
+    f.server.curator.acceptProposal(proposal_id);
+
+    const dead = f.server.store.nodes.get(dead_id);
+    expect(dead?.status).toBe('superseded');
+    const fresh = f.server.store.nodes.get(fresh_id);
+    expect(fresh?.status).toBe('active');
+    const edge = [...f.server.store.edges.values()].find(
+      (e) => e.kind === 'supersedes' && e.from === dead_id && e.to === fresh_id,
+    );
+    expect(edge?.status).toBe('active');
+  });
+
+  it('still refuses propose_supersedes from a rejected or superseded node', async () => {
+    // The unresolvable carve-out must not loosen the gate for the
+    // other non-active statuses: superseding an already-superseded
+    // node would fork the lineage chain.
+    const f = driftFixture();
+    const { anchor_id: dead_id } = await landAnchor(f, '1009');
+    const { anchor_id: fresh_id } = await landAnchor(f, '1010');
+    const { anchor_id: third_id } = await landAnchor(f, '1011');
+    const { proposal_id } = await f.server.tools.proposeSupersedes(f.contributorCaller, {
+      from_node_id: dead_id,
+      to_node_id: fresh_id,
+      rationale: 'replace',
+    });
+    f.server.curator.acceptProposal(proposal_id);
+    // dead_id is now `superseded`; a second supersedes from it refuses.
+    await expect(
+      f.server.tools.proposeSupersedes(f.contributorCaller, {
+        from_node_id: dead_id,
+        to_node_id: third_id,
+        rationale: 'fork attempt',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+
   it('refuses re-verification on a non-anchor node', async () => {
     const f = driftFixture();
     const { anchor_id } = await landAnchor(f, '1006');

@@ -2321,7 +2321,13 @@ export class Server {
       if (!fromNode) {
         throw new ServerError('not_found', `from node not found: ${parsed.from_node_id}`);
       }
-      if (fromNode.status !== 'active') {
+      // `unresolvable` is admitted alongside `active`: superseding the
+      // dead anchor with a fresh source IS the documented recovery from
+      // the terminal re-verification state (PRD §Verification engine —
+      // "lineage continues via propose_supersedes from a fresh
+      // external_ref"). Refusing it here would make `unresolvable` a
+      // permanent dead end.
+      if (fromNode.status !== 'active' && fromNode.status !== 'unresolvable') {
         throw new ServerError('invalid_state', `from node ${fromNode.id} is ${fromNode.status}`);
       }
       const toNode = this.store.nodes.get(parsed.to_node_id);
@@ -4808,10 +4814,15 @@ export class Server {
       // concurrent supersedes acceptance could have introduced a path
       // that wasn't there at propose time.
       const fromNode = this.store.nodes.get(proposal.payload.from_node_id);
-      if (!fromNode || fromNode.status !== 'active') {
+      // `unresolvable` is admitted on the from end here for the same
+      // reason as at propose time (recovery from the terminal
+      // re-verification state) — and additionally because the anchor
+      // may flip to `unresolvable` *while the supersedes is staged*;
+      // the replacement landing is exactly the right outcome then.
+      if (!fromNode || (fromNode.status !== 'active' && fromNode.status !== 'unresolvable')) {
         throw new ServerError(
           'invalid_state',
-          `from node ${proposal.payload.from_node_id} is not active at acceptance`,
+          `from node ${proposal.payload.from_node_id} is not supersedable at acceptance`,
         );
       }
       const toNode = this.store.nodes.get(proposal.payload.to_node_id);
