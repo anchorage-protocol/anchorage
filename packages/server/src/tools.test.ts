@@ -1230,6 +1230,103 @@ describe('single-slot resolution: precondition-lapse and TTL-shadow', () => {
   });
 });
 
+describe('post-await revalidation (no store write from a pre-await snapshot)', () => {
+  // The server has no concurrency control; correctness rests on
+  // handlers being synchronous between check and write. The verifier
+  // awaits break that for the propose paths: the assignment guard runs
+  // before a multi-second network fetch and fulfillment after. Without
+  // the post-await re-read, two concurrent requests citing the same
+  // slot both pass the guard, both stage, and both earn assigned-work
+  // reputation — a rep-multiplication primitive.
+
+  // A verifier whose awaits park until the test releases them, so a
+  // test can interleave a second request inside the first one's fetch
+  // window. `open` short-circuits the gate for setup traffic.
+  class GatedVerifier {
+    open = true;
+    private waiters: Array<() => void> = [];
+    release(): void {
+      const next = this.waiters.shift();
+      if (next) next();
+    }
+    private async gate(): Promise<void> {
+      if (this.open) return;
+      await new Promise<void>((resolve) => {
+        this.waiters.push(resolve);
+      });
+    }
+    async verifyExternalRef(ref: { kind: string; value: string }) {
+      await this.gate();
+      return { content_hash: `gated:${ref.kind}:${ref.value}` };
+    }
+    async verifySpan(): Promise<void> {
+      await this.gate();
+    }
+  }
+
+  it('refuses the second of two concurrent fulfillments of the same excerpt slot', async () => {
+    const verifier = new GatedVerifier();
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('race'),
+      verifier,
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const aliceCaller: Caller = { identity_id: alice.id };
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
+    const st = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'ctDNA-MRD',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const a = await server.tools.proposeAnchor(aliceCaller, {
+      cause_id: cause.id,
+      home_sub_topic_id: st.id,
+      content: 'parent',
+      external_ref: { kind: 'pmid', value: '1' },
+    });
+    const parentId = server.curator.acceptProposal(a.proposal_id).node_id;
+    if (!parentId) throw new Error('expected anchor');
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const bobCaller: Caller = { identity_id: bob.id };
+    const slot = asAssigned(await server.tools.requestAssignment(bobCaller, { cause_id: cause.id }));
+    if (slot.task.kind !== 'excerpt') throw new Error('expected excerpt task');
+
+    // Close the gate and fire two fulfillments of the same slot; each
+    // parks inside its span-verification await with the guard already
+    // passed.
+    verifier.open = false;
+    const input = {
+      cause_id: cause.id,
+      home_sub_topic_id: st.id,
+      parent_anchor_id: parentId,
+      content: 'span content',
+      quoted_span: { text: 'span', offset: 0 },
+      assignment_id: slot.assignment_id,
+    };
+    const first = server.tools.proposeExcerpt(bobCaller, input);
+    const second = server.tools.proposeExcerpt(bobCaller, input);
+    verifier.release();
+    verifier.release();
+
+    const [r1, r2] = await Promise.allSettled([first, second]);
+    const fulfilled = [r1, r2].filter((r) => r.status === 'fulfilled');
+    const rejected = [r1, r2].filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+      code: 'invalid_state',
+    });
+    // Exactly one proposal staged, slot fulfilled exactly once.
+    const staged = [...server.store.proposals.values()].filter(
+      (p) => p.payload.kind === 'excerpt',
+    );
+    expect(staged).toHaveLength(1);
+    expect(server.store.assignments.get(slot.assignment_id)?.status).toBe('submitted');
+  });
+});
+
 describe('propose_* assignment fulfillment (the `assignment_id` argument)', () => {
   // An accepted excerpt-kind assignment for a freshly-staged anchor —
   // the loop state a `propose_excerpt` with `assignment_id` fulfills.

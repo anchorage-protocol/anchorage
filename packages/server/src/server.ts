@@ -79,7 +79,12 @@ import { type Clock, SystemClock } from './clock.js';
 import { ServerError } from './errors.js';
 import { type IdGen, RandomIdGen } from './id-gen.js';
 import { MemoryStore, type Store } from './store.js';
-import { StructuralVerifier, TransientFetchError, type Verifier } from './verifier.js';
+import {
+  StructuralVerifier,
+  TransientFetchError,
+  type VerifiedRef,
+  type Verifier,
+} from './verifier.js';
 
 // Bootstrap input schemas. These are admin-surface inputs and are
 // deliberately separate from the contributor-facing MCP tool I/O in
@@ -1273,6 +1278,28 @@ export class Server {
     return a;
   }
 
+  // Post-await re-validation for the propose paths. The server has no
+  // concurrency control; correctness rests on the invariant that no
+  // store write follows an `await` without re-reading what it depends
+  // on ("no store write from a pre-await snapshot"). The verifier's
+  // network round-trip sits between `resolveProposalAssignment`'s
+  // accepted-state guard and `fulfillAssignment`'s write — two
+  // concurrent requests citing the same slot would otherwise both pass
+  // the guard and both earn assigned-work credit. Re-read and
+  // re-require `accepted`; a slot that resolved mid-fetch refuses
+  // before anything is staged (dropped, credited nothing — the same
+  // posture as the TTL-shadow duplicate rule).
+  private reconfirmAssignmentAfterAwait(assignment: Assignment): Assignment {
+    const live = this.store.assignments.get(assignment.id);
+    if (!live || live.status !== 'accepted') {
+      throw new ServerError(
+        'invalid_state',
+        `assignment ${assignment.id} resolved while the source fetch was in flight (now ${live?.status ?? 'missing'}); nothing was staged`,
+      );
+    }
+    return live;
+  }
+
   // Transition an assignment to `submitted`, pointing `fulfilled_by` at
   // the proposal that just fulfilled it. The caller has already staged
   // the proposal and stamped its `assignment_id`.
@@ -2183,19 +2210,27 @@ export class Server {
         .verifyExternalRef(parsed.external_ref)
         .catch(rethrowTransientAsRefusal);
 
+      // No store write may rest on the pre-await snapshot: the fetch is
+      // a multi-second window in which the same slot may have been
+      // fulfilled by a concurrent request (double-fulfillment would
+      // double-credit assigned work) or lapsed (shadow win, scope
+      // close). Re-require the invariant the pre-fetch guard
+      // established before staging anything.
+      const liveAssignment = assignment ? this.reconfirmAssignmentAfterAwait(assignment) : undefined;
+
       const now = this.clock.now();
       const proposal: Proposal = {
         id: this.idGen.proposalId(),
         proposer_id: identity.id,
         status: 'staged',
         payload,
-        ...(assignment ? { assignment_id: assignment.id } : {}),
+        ...(liveAssignment ? { assignment_id: liveAssignment.id } : {}),
         created_at: now,
         updated_at: now,
       };
       this.store.proposals.set(proposal.id, proposal);
       this.store.verifiedRefs.set(proposal.id, verified);
-      if (assignment) this.fulfillAssignment(assignment, proposal.id);
+      if (liveAssignment) this.fulfillAssignment(liveAssignment, proposal.id);
       return { proposal_id: proposal.id };
     },
 
@@ -2246,18 +2281,22 @@ export class Server {
         .verifySpan(parentAnchor.external_ref, parsed.quoted_span)
         .catch(rethrowTransientAsRefusal);
 
+      // Same post-await re-validation as propose_anchor: the span fetch
+      // is a window for concurrent fulfillment or lapse of this slot.
+      const liveAssignment = assignment ? this.reconfirmAssignmentAfterAwait(assignment) : undefined;
+
       const now = this.clock.now();
       const proposal: Proposal = {
         id: this.idGen.proposalId(),
         proposer_id: identity.id,
         status: 'staged',
         payload,
-        ...(assignment ? { assignment_id: assignment.id } : {}),
+        ...(liveAssignment ? { assignment_id: liveAssignment.id } : {}),
         created_at: now,
         updated_at: now,
       };
       this.store.proposals.set(proposal.id, proposal);
-      if (assignment) this.fulfillAssignment(assignment, proposal.id);
+      if (liveAssignment) this.fulfillAssignment(liveAssignment, proposal.id);
       return { proposal_id: proposal.id };
     },
 
@@ -3999,27 +4038,9 @@ export class Server {
         );
       }
       const now = this.clock.now();
+      let fresh: VerifiedRef | undefined;
       try {
-        const fresh = await this.verifier.verifyExternalRef(node.external_ref);
-        if (fresh.content_hash === node.content_hash) {
-          // Hash match: source still resolves to the same content.
-          // Bump last_verified_at; updated_at stays put (the persisted
-          // record is unchanged in every observable way except the
-          // freshness timestamp, but `updated_at` semantically tracks
-          // user-meaningful changes — drift, supersedes — not
-          // background verification heartbeats, and bumping it would
-          // muddy the assignment-expiry and proposal-stale logic that
-          // keys off it).
-          const updated: AnchorNode = { ...node, last_verified_at: now };
-          this.store.nodes.set(node.id, updated);
-          return {
-            anchor_id: node.id,
-            outcome: 'unchanged',
-            content_hash: node.content_hash,
-            last_verified_at: now,
-          };
-        }
-        // Hash mismatch: confirmed drift.
+        fresh = await this.verifier.verifyExternalRef(node.external_ref);
       } catch (err) {
         // TransientFetchError (upstream 429/5xx) is evidence about the
         // upstream, not the source: persist nothing, report `transient`,
@@ -4036,29 +4057,62 @@ export class Server {
         }
         // Other verifier throws: retraction, host gone — conflated at
         // the verifier seam by design (see `LiveFetchVerifier.fetchPmid`);
-        // both collapse to "unresolvable", and the recovery path is the
-        // same in every case (curator surfaces flagged anchors;
-        // contributors propose supersedes with a fresh external_ref).
-        // Non-ServerError throws are rethrown — schema/zod failures
-        // and Server programming errors should not silently flip
-        // anchors. Same posture as `accountWriteAction`'s rate-limit
-        // surface: only typed verifier rejections are re-verification
-        // failures.
+        // both collapse to "unresolvable" (`fresh` stays undefined), and
+        // the recovery path is the same in every case (curator surfaces
+        // flagged anchors; contributors propose supersedes with a fresh
+        // external_ref). Non-ServerError throws are rethrown —
+        // schema/zod failures and Server programming errors should not
+        // silently flip anchors. Same posture as `accountWriteAction`'s
+        // rate-limit surface: only typed verifier rejections are
+        // re-verification failures.
         if (!(err instanceof ServerError)) throw err;
       }
-      // Flip to unresolvable. last_verified_at is *not* bumped — it
-      // continues to record when the source was last known good, which
-      // is the meaningful timestamp for the curator surface ("drifted
-      // after N days unchecked"). updated_at *is* bumped: the flip is
-      // a meaningful state change, surfaced through the frontier
+      // No store write may rest on the pre-await snapshot: a supersedes
+      // accepted while the fetch was in flight has already moved the
+      // node out of `active`, and writing the stale spread back would
+      // silently resurrect it. Re-read and re-require what the entry
+      // gate established; the in-flight race is rare enough that a
+      // typed refusal (caught and logged by the scheduler tick) is the
+      // right surface.
+      const live = this.store.nodes.get(node.id);
+      if (!live || live.kind !== 'anchor' || live.status !== 'active') {
+        throw new ServerError(
+          'invalid_state',
+          `anchor ${node.id} left 'active' while the re-verification fetch was in flight`,
+        );
+      }
+      if (fresh !== undefined && fresh.content_hash === live.content_hash) {
+        // Hash match: source still resolves to the same content.
+        // Bump last_verified_at; updated_at stays put (the persisted
+        // record is unchanged in every observable way except the
+        // freshness timestamp, but `updated_at` semantically tracks
+        // user-meaningful changes — drift, supersedes — not
+        // background verification heartbeats, and bumping it would
+        // muddy the assignment-expiry and proposal-stale logic that
+        // keys off it).
+        const updated: AnchorNode = { ...live, last_verified_at: now };
+        this.store.nodes.set(live.id, updated);
+        return {
+          anchor_id: live.id,
+          outcome: 'unchanged',
+          content_hash: live.content_hash,
+          last_verified_at: now,
+        };
+      }
+      // Hash mismatch (drift) or verifier refusal: flip to
+      // unresolvable. last_verified_at is *not* bumped — it continues
+      // to record when the source was last known good, which is the
+      // meaningful timestamp for the curator surface ("drifted after N
+      // days unchecked"). updated_at *is* bumped: the flip is a
+      // meaningful state change, surfaced through the frontier
       // (`unresolvable_anchor`) and the curator projection.
-      const updated: AnchorNode = { ...node, status: 'unresolvable', updated_at: now };
-      this.store.nodes.set(node.id, updated);
+      const updated: AnchorNode = { ...live, status: 'unresolvable', updated_at: now };
+      this.store.nodes.set(live.id, updated);
       return {
-        anchor_id: node.id,
+        anchor_id: live.id,
         outcome: 'unresolvable',
-        content_hash: node.content_hash,
-        last_verified_at: node.last_verified_at,
+        content_hash: live.content_hash,
+        last_verified_at: live.last_verified_at,
       };
     },
 
@@ -4123,6 +4177,12 @@ export class Server {
       let unresolvable = 0;
       let transient = 0;
       for (const anchor of batch) {
+        // The batch was snapshotted before any fetch; an earlier
+        // iteration's await is a window in which this anchor may have
+        // been superseded or flipped. Skip it silently — it left the
+        // re-verification loop, which is not an error.
+        const live = this.store.nodes.get(anchor.id);
+        if (!live || live.kind !== 'anchor' || live.status !== 'active') continue;
         const result = await this.curator.reverifyAnchor(anchor.id);
         anchors.push({ anchor_id: result.anchor_id, outcome: result.outcome });
         if (result.outcome === 'unchanged') unchanged += 1;

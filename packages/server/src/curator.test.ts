@@ -864,6 +864,67 @@ describe('curator.reverifyAnchor (slice 7c)', () => {
     ).rejects.toMatchObject({ code: 'invalid_state' });
   });
 
+  it('does not resurrect an anchor superseded while the re-verification fetch was in flight', async () => {
+    // No store write from a pre-await snapshot: reverifyAnchor reads
+    // the node, awaits the fetch, then writes. A supersedes accepted
+    // inside that window has already flipped the node out of `active`;
+    // writing the stale spread back would silently resurrect it.
+    let release: (() => void) | undefined;
+    const inner = new MutableVerifier();
+    const gated: Verifier = {
+      async verifyExternalRef(ref) {
+        if (release !== undefined) throw new Error('one gate at a time');
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        release = undefined;
+        return inner.verifyExternalRef(ref);
+      },
+      verifySpan: (ref, span) => inner.verifySpan(ref, span),
+    };
+    const clock = new FakeClock('2026-01-01T00:00:00.000Z', 1000);
+    const server = new Server({ clock, idGen: new SeededIdGen('t7cr'), verifier: inner });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const aliceCaller: Caller = { identity_id: alice.id };
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
+    const st = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'ctDNA-MRD',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const land = async (pmid: string): Promise<NodeId> => {
+      const { proposal_id } = await server.tools.proposeAnchor(aliceCaller, {
+        cause_id: cause.id,
+        home_sub_topic_id: st.id,
+        content: pmid,
+        external_ref: { kind: 'pmid', value: pmid },
+      });
+      const { node_id } = server.curator.acceptProposal(proposal_id);
+      if (!node_id) throw new Error('expected anchor');
+      return node_id;
+    };
+    const oldId = await land('3001');
+    const newId = await land('3002');
+    const { proposal_id: supersedes } = await server.tools.proposeSupersedes(aliceCaller, {
+      from_node_id: oldId,
+      to_node_id: newId,
+      rationale: 'replacement',
+    });
+    // Swap in the gated verifier and start the re-verification; it
+    // parks inside the fetch with a pre-await snapshot of the old node.
+    (server as unknown as { verifier: Verifier }).verifier = gated;
+    const inFlight = server.curator.reverifyAnchor(oldId);
+    await Promise.resolve(); // let reverifyAnchor reach its await
+    // The supersedes lands while the fetch is in flight.
+    server.curator.acceptProposal(supersedes);
+    expect(server.store.nodes.get(oldId)?.status).toBe('superseded');
+    release?.();
+    await expect(inFlight).rejects.toMatchObject({ code: 'invalid_state' });
+    // The stale spread was not written back: the node stays superseded.
+    expect(server.store.nodes.get(oldId)?.status).toBe('superseded');
+  });
+
   it('refuses re-verification on a non-anchor node', async () => {
     const f = driftFixture();
     const { anchor_id } = await landAnchor(f, '1006');
