@@ -255,6 +255,7 @@ describe('ToolName registry', () => {
     'curator_defer_sub_topic',
     'curator_revoke_identity',
     'curator_archive_stale_proposals',
+    'curator_escalate_proposal',
     'curator_identity_clusters',
     'curator_reverify_anchors',
   ] as const;

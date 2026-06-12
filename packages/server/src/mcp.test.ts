@@ -72,6 +72,7 @@ describe('mcp transport', () => {
     'curator_defer_sub_topic',
     'curator_revoke_identity',
     'curator_archive_stale_proposals',
+    'curator_escalate_proposal',
     'curator_identity_clusters',
     'curator_reverify_anchors',
   ] as const;
@@ -428,6 +429,7 @@ describe('curator tool surface', () => {
         'curator_accept_proposal',
         'curator_archive_stale_proposals',
         'curator_defer_sub_topic',
+        'curator_escalate_proposal',
         'curator_identity_clusters',
         'curator_reject_proposal',
         'curator_reverify_anchors',

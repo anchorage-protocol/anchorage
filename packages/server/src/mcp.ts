@@ -8,6 +8,8 @@ import {
   CuratorArchiveStaleProposalsOutput,
   CuratorDeferSubTopicInput,
   CuratorDeferSubTopicOutput,
+  CuratorEscalateProposalInput,
+  CuratorEscalateProposalOutput,
   CuratorIdentityClustersInput,
   CuratorIdentityClustersOutput,
   CuratorRejectProposalInput,
@@ -519,6 +521,19 @@ export function buildMcpServer(server: Server, options: McpBuildOptions): McpSer
         const ids = server.curator.archiveStaleProposals(opts);
         return { proposal_ids: ids };
       }),
+    );
+
+    mcp.registerTool(
+      'curator_escalate_proposal',
+      {
+        description:
+          'Resolve a stuck staged proposal by the server escalation tiebreak (v1/v2/v3 closure-stack knobs over its vote tally); accepts or rejects and returns the decision + 3-way tally. Curator role required.',
+        inputSchema: CuratorEscalateProposalInput.shape,
+        outputSchema: CuratorEscalateProposalOutput.shape,
+      },
+      wrapCurator((_caller, input: CuratorEscalateProposalInput) =>
+        server.curator.escalateProposal(input.proposal_id),
+      ),
     );
 
     mcp.registerTool(

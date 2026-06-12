@@ -3786,6 +3786,74 @@ export class Server {
       });
     },
 
+    // Curator escalation tiebreak (PRD §Reviewer assignment step 4).
+    // Resolve a staged proposal the review loop could not converge by
+    // applying the server's escalation rule — the v1/v2/v3 closure-
+    // stack knobs (`escalation_revise_counts_as_reject`,
+    // `escalation_requires_votes_to_accept`, `contested_votes_to_accept`)
+    // to the proposal's accumulated vote tally — and accepting or
+    // rejecting accordingly. This is the production-drivable home of
+    // the rule the testbed validates: previously the rule lived only
+    // in the harness orchestration loop (`escalateStuckProposals` in
+    // population-loop.ts), so the policy measured in the cube was not
+    // the policy a production curator could apply. Now both the
+    // harness pass and the `curator_escalate_proposal` MCP tool route
+    // through this one method — same rule on both ends (the sim≡prod
+    // invariant, applied to governance policy and not just mechanism).
+    // The caller decides *which* stuck proposals to escalate (the
+    // harness uses round/vote-progress detection; a curator picks from
+    // the moderation queue); this method owns the *decision* given the
+    // tally.
+    escalateProposal: (
+      proposalId: ProposalId,
+    ): {
+      proposal_id: ProposalId;
+      decision: 'accept' | 'reject';
+      accepts: number;
+      rejects: number;
+      revises: number;
+    } => {
+      const proposal = this.store.proposals.get(proposalId);
+      if (!proposal) {
+        throw new ServerError('not_found', `proposal not found: ${proposalId}`);
+      }
+      if (proposal.status !== 'staged') {
+        throw new ServerError(
+          'invalid_state',
+          `cannot escalate proposal in status ${proposal.status}`,
+        );
+      }
+      let accepts = 0;
+      let rejects = 0;
+      let revises = 0;
+      for (const v of this.store.reviewVotes.values()) {
+        if (v.proposal_id !== proposalId) continue;
+        if (v.decision === 'accept') accepts += 1;
+        else if (v.decision === 'reject') rejects += 1;
+        else if (v.decision === 'revise') revises += 1;
+      }
+      // The composed v1/v2/v3 rule (PRD §Reviewer assignment step 4):
+      //   accept iff (reject_side <= accepts)
+      //          AND (v2 off OR accepts >= votes_to_accept)
+      //          AND (v3 inert OR no dissent OR accepts >= contested_votes_to_accept)
+      // with reject_side = v1 ? rejects + revises : rejects.
+      const rejectSide = this.review.escalation_revise_counts_as_reject
+        ? rejects + revises
+        : rejects;
+      const acceptsBeatRejects = rejectSide <= accepts;
+      const acceptsMeetFloor =
+        !this.review.escalation_requires_votes_to_accept || accepts >= this.review.votes_to_accept;
+      const hasDissent = rejects > 0 || revises > 0;
+      const contestedFloor = this.review.contested_votes_to_accept;
+      const acceptsMeetContestedFloor =
+        contestedFloor <= 0 || !hasDissent || accepts >= contestedFloor;
+      const decision: 'accept' | 'reject' =
+        acceptsBeatRejects && acceptsMeetFloor && acceptsMeetContestedFloor ? 'accept' : 'reject';
+      if (decision === 'accept') this.acceptStaged(proposal);
+      else this.curator.rejectProposal(proposalId);
+      return { proposal_id: proposalId, decision, accepts, rejects, revises };
+    },
+
     // Cross-cause identity-clustering projection (PRD §Identity
     // bullet 4) — the fourth of the four sybil-resistance layers.
     // Surfaces identity pairs whose behavioral fingerprint *across

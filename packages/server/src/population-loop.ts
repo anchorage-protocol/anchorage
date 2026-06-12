@@ -210,49 +210,32 @@ export function escalateStuckProposals(
   preRoundCounts: Map<string, number>,
   round: number,
 ): EscalationOutcome[] {
-  const accepts = new Map<string, number>();
-  const rejects = new Map<string, number>();
-  const revises = new Map<string, number>();
+  // Total vote count per proposal, used only to decide *which*
+  // proposals are stuck this round (staged last round, no new votes
+  // since). The escalation *decision* — the v1/v2/v3 tiebreak rule —
+  // lives on the server (`server.curator.escalateProposal`), so the
+  // policy the testbed exercises here is byte-for-byte the policy a
+  // production curator drives through the `curator_escalate_proposal`
+  // MCP tool. This loop owns stuck-detection; the server owns the
+  // rule.
   const total = new Map<string, number>();
   for (const v of server.store.reviewVotes.values()) {
     total.set(v.proposal_id, (total.get(v.proposal_id) ?? 0) + 1);
-    if (v.decision === 'accept') accepts.set(v.proposal_id, (accepts.get(v.proposal_id) ?? 0) + 1);
-    else if (v.decision === 'reject')
-      rejects.set(v.proposal_id, (rejects.get(v.proposal_id) ?? 0) + 1);
-    else if (v.decision === 'revise')
-      revises.set(v.proposal_id, (revises.get(v.proposal_id) ?? 0) + 1);
   }
-  const reviseCountsAsReject = server.review.escalation_revise_counts_as_reject;
-  const requiresVotesToAccept = server.review.escalation_requires_votes_to_accept;
-  const acceptFloor = server.review.votes_to_accept;
-  // v3 closure-stack knob (see ReviewConfig.contested_votes_to_accept):
-  // when > 0 and the proposal has any reject or revise vote in its
-  // tally, escalation-to-accept additionally requires a >=
-  // contested_votes_to_accept. Self-contained — composes with v1/v2 but
-  // does not require them. Closes the escalation-side mirror of the
-  // auto-close-accept failure the cube's `borderline-contested-v2`
-  // cell recorded: held by v3 on the auto-close path, then rejected
-  // here on the escalation path when the contested floor isn't met.
-  const contestedAcceptFloor = server.review.contested_votes_to_accept;
   const escalated: EscalationOutcome[] = [];
   for (const p of server.store.proposals.values()) {
     if (p.status !== 'staged') continue;
     if (!preRoundCounts.has(p.id)) continue; // staged this round — give it another
     if ((total.get(p.id) ?? 0) !== preRoundCounts.get(p.id)) continue; // still progressing
-    const a = accepts.get(p.id) ?? 0;
-    const r = rejects.get(p.id) ?? 0;
-    const v = revises.get(p.id) ?? 0;
-    const rejectSide = reviseCountsAsReject ? r + v : r;
-    const acceptsBeatRejects = rejectSide <= a;
-    const acceptsMeetFloor = !requiresVotesToAccept || a >= acceptFloor;
-    const hasDissent = r > 0 || v > 0;
-    const acceptsMeetContestedFloor =
-      contestedAcceptFloor <= 0 || !hasDissent || a >= contestedAcceptFloor;
-    const decision: 'accept' | 'reject' =
-      acceptsBeatRejects && acceptsMeetFloor && acceptsMeetContestedFloor ? 'accept' : 'reject';
-    if (decision === 'accept') server.curator.acceptProposal(p.id);
-    else server.curator.rejectProposal(p.id);
-    escalated.push({ round, proposal_id: p.id, decision, accepts: a, rejects: r, revises: v });
+    const outcome = server.curator.escalateProposal(p.id);
+    escalated.push({
+      round,
+      proposal_id: p.id,
+      decision: outcome.decision,
+      accepts: outcome.accepts,
+      rejects: outcome.rejects,
+      revises: outcome.revises,
+    });
   }
   return escalated;
 }

@@ -384,6 +384,31 @@ export const CuratorArchiveStaleProposalsOutput = z
   .strict();
 export type CuratorArchiveStaleProposalsOutput = z.infer<typeof CuratorArchiveStaleProposalsOutput>;
 
+// Curator escalation tiebreak (PRD §Reviewer assignment step 4). A
+// staged proposal the review loop could not converge is resolved by
+// the server's escalation rule — the v1/v2/v3 closure-stack knobs on
+// ReviewConfig (`escalation_revise_counts_as_reject`,
+// `escalation_requires_votes_to_accept`, `contested_votes_to_accept`)
+// applied to the proposal's accumulated vote tally. The decision and
+// the full 3-way tally are returned so the caller (a production
+// curator, or the testbed escalation pass) reads the outcome as a
+// knob delta. This is the production-drivable surface for the rule
+// the testbed validates — the same code path on both ends, closing
+// the sim≢prod gap of a rule that previously lived only in harness
+// orchestration.
+export const CuratorEscalateProposalInput = z.object({ proposal_id: ProposalId }).strict();
+export type CuratorEscalateProposalInput = z.infer<typeof CuratorEscalateProposalInput>;
+export const CuratorEscalateProposalOutput = z
+  .object({
+    proposal_id: ProposalId,
+    decision: z.enum(['accept', 'reject']),
+    accepts: z.number().int().nonnegative(),
+    rejects: z.number().int().nonnegative(),
+    revises: z.number().int().nonnegative(),
+  })
+  .strict();
+export type CuratorEscalateProposalOutput = z.infer<typeof CuratorEscalateProposalOutput>;
+
 // `identityClusters` projection (PRD §Identity bullet 4, cross-cause
 // identity clustering): identity pairs whose behavioral fingerprint
 // across causes suggests coordination. Two metrics ride along
@@ -480,6 +505,7 @@ export const ToolName = z.enum([
   'curator_defer_sub_topic',
   'curator_revoke_identity',
   'curator_archive_stale_proposals',
+  'curator_escalate_proposal',
   'curator_identity_clusters',
   'curator_reverify_anchors',
 ]);

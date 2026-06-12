@@ -491,6 +491,88 @@ describe('curator.rejectProposal', () => {
   });
 });
 
+describe('curator.escalateProposal (server-side escalation tiebreak)', () => {
+  // The v1/v2/v3 closure-stack rule now lives on the server, so the
+  // policy the testbed validates is the policy a production curator
+  // drives. These pin the rule per knob combination on a 1-accept-
+  // 1-reject contested tally.
+  async function contestedProposal(review: Record<string, unknown>) {
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('esc'),
+      verifier: new FakeVerifier(),
+      review: review as never,
+    });
+    const alice = server.bootstrap.mintIdentity({ display_name: 'alice' });
+    const bob = server.bootstrap.mintIdentity({ display_name: 'bob' });
+    const carol = server.bootstrap.mintIdentity({ display_name: 'carol' });
+    const dave = server.bootstrap.mintIdentity({ display_name: 'dave' });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
+    const st = server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'mrd',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const { proposal_id } = await server.tools.proposeAnchor(
+      { identity_id: alice.id },
+      {
+        cause_id: cause.id,
+        home_sub_topic_id: st.id,
+        content: 'contested claim',
+        external_ref: { kind: 'pmid', value: '1' },
+      },
+    );
+    // 1 accept (bob), 2 revise (carol, dave) — a contested tally the
+    // auto-close path leaves staged, chosen so each knob flips it: v0
+    // accepts (reject_side 0 ≤ 1), v1 rejects (reject_side 2 > 1), v3
+    // rejects (dissent present, accepts 1 < floor 2).
+    await server.tools.castReviewVote(
+      { identity_id: bob.id },
+      { proposal_id, decision: 'accept', rationale: 'r' },
+    );
+    await server.tools.castReviewVote(
+      { identity_id: carol.id },
+      { proposal_id, decision: 'revise', rationale: 'r' },
+    );
+    await server.tools.castReviewVote(
+      { identity_id: dave.id },
+      { proposal_id, decision: 'revise', rationale: 'r' },
+    );
+    expect(server.store.proposals.get(proposal_id)?.status).toBe('staged');
+    return { server, proposal_id };
+  }
+
+  it('v0 (all knobs inert): a 1-accept-2-revise tally escalates to accept', async () => {
+    const { server, proposal_id } = await contestedProposal({});
+    const out = server.curator.escalateProposal(proposal_id);
+    expect(out).toMatchObject({ decision: 'accept', accepts: 1, rejects: 0, revises: 2 });
+    expect(server.store.proposals.get(proposal_id)?.status).toBe('accepted');
+  });
+
+  it('v1 (revise counts as reject): the same tally escalates to reject', async () => {
+    const { server, proposal_id } = await contestedProposal({
+      escalation_revise_counts_as_reject: true,
+    });
+    const out = server.curator.escalateProposal(proposal_id);
+    expect(out.decision).toBe('reject');
+    expect(server.store.proposals.get(proposal_id)?.status).toBe('rejected');
+  });
+
+  it('v3 (contested floor): a contested tally below the floor escalates to reject', async () => {
+    const { server, proposal_id } = await contestedProposal({ contested_votes_to_accept: 2 });
+    const out = server.curator.escalateProposal(proposal_id);
+    expect(out.decision).toBe('reject');
+    expect(server.store.proposals.get(proposal_id)?.status).toBe('rejected');
+  });
+
+  it('refuses to escalate a non-staged proposal', async () => {
+    const { server, proposal_id } = await contestedProposal({});
+    server.curator.escalateProposal(proposal_id); // now accepted
+    expect(() => server.curator.escalateProposal(proposal_id)).toThrow(ServerError);
+  });
+});
+
 // Slice 7b — curator-side read projections on `server.resources.*`.
 // These wrap the same in-process `server.curator.*` namespace the
 // MCP curator tools wrap, with one added concern: a role check.
