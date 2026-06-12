@@ -17,7 +17,7 @@ import {
   QueryReputationOutput,
   RequestAssignmentOutput,
   type ReviewDecision,
-  type ServerErrorCode,
+  ServerErrorCode,
   type SubTopicId,
   type ToolName,
   type WorkKind,
@@ -42,12 +42,16 @@ export class AnchorageClientError extends Error {
   }
 }
 
-// Type guards for parsing the server's tool error payload back into
-// a typed code without smuggling `any` through.
+// Type guard for parsing the server's tool error payload back into a
+// typed code. Delegates to the contract enum's own parser rather than
+// a hand-rolled list — the hand-rolled version knew only the original
+// four codes and silently collapsed `rate_limited`, `issuance_cap`,
+// and `permission_denied` into the `invalid_state` fallback, which is
+// exactly the conflation the enum's comments warn against and would
+// misclassify any archetype probing the rate-limit / issuance / role
+// gates.
 function isServerErrorCode(s: unknown): s is ServerErrorCode {
-  return (
-    s === 'not_found' || s === 'invalid_state' || s === 'invalid_input' || s === 'unauthorized'
-  );
+  return ServerErrorCode.safeParse(s).success;
 }
 
 // The server returns its typed `{ code, message }` error payload as

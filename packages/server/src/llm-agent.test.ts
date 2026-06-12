@@ -438,3 +438,76 @@ describe('testbed: llm-agent role configs against the wired surface', () => {
     },
   );
 });
+
+describe('cassette-byte stability: the Anthropic request body is a closed function of (model, max_tokens, system, tools, messages)', () => {
+  // The replay cassettes key on sha256(url + request-body). The
+  // operating belief — pinned here, not just assumed — is that editing
+  // the MCP server `instructions` string does NOT move request bytes
+  // (only tool-list / tool-description changes do), because
+  // `runLlmAgent` builds its request from listTools() + config and
+  // never reads the MCP `instructions` (which live in the initialize
+  // response, not tools/list). Two guards:
+  //   1. The first-turn request body has EXACTLY the keys
+  //      {model, max_tokens, system, tools, messages} — a future
+  //      llm-agent.ts change adding a dynamic field to the body would
+  //      fail here, naming the cassette-invalidating change instead of
+  //      surfacing as a confusing replay miss.
+  //   2. The server's instructions text appears nowhere in the body.
+  it('captures a stable, instructions-free first-turn request body', async () => {
+    const server = new Server({
+      clock: new FakeClock('2026-01-01T00:00:00.000Z', 1000),
+      idGen: new SeededIdGen('cassette-inv'),
+      verifier: new FakeVerifier(),
+    });
+    const cause = server.bootstrap.createCause({ name: 'CRC', description: 'x' });
+    server.bootstrap.seedSubTopic({
+      cause_id: cause.id,
+      name: 'mrd',
+      description: 'x',
+      scope_query: 'x',
+    });
+    const agent = server.bootstrap.mintIdentity({ display_name: 'agent' });
+    const mcpClient = await wireMcpClient(server, agent.id);
+
+    let capturedBody: string | undefined;
+    const capturingFetch: FetchLike = async (_url, init) => {
+      capturedBody ??= init.body;
+      // Return a no-tool-use end_turn so the loop stops after one turn.
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            content: [{ type: 'text', text: 'done' }],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+      };
+    };
+
+    const system = 'You are a contributor.';
+    const task = 'Begin.';
+    await runLlmAgent(mcpClient, {
+      apiKey: 'unused',
+      model: 'claude-haiku-4-5-20251001',
+      system,
+      task,
+      max_turns: 1,
+      fetch: capturingFetch,
+    });
+
+    expect(capturedBody).toBeDefined();
+    const parsed = JSON.parse(capturedBody as string) as Record<string, unknown>;
+    expect(Object.keys(parsed).sort()).toEqual(
+      ['max_tokens', 'messages', 'model', 'system', 'tools'].sort(),
+    );
+    expect(parsed['system']).toBe(system);
+    expect(parsed['model']).toBe('claude-haiku-4-5-20251001');
+    // The MCP instructions string must not leak into the request bytes
+    // — a distinctive phrase from it appears nowhere in the body.
+    expect(capturedBody).not.toContain('cooperative open research with auditable lineage');
+    // The tool surface DOES drive the bytes (changing it is what
+    // legitimately invalidates a cassette).
+    expect(capturedBody).toContain('request_assignment');
+  });
+});
