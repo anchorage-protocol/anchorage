@@ -1309,7 +1309,7 @@ export class Server {
   // posture as the TTL-shadow duplicate rule).
   private reconfirmAssignmentAfterAwait(assignment: Assignment): Assignment {
     const live = this.store.assignments.get(assignment.id);
-    if (!live || live.status !== 'accepted') {
+    if (live?.status !== 'accepted') {
       throw new ServerError(
         'invalid_state',
         `assignment ${assignment.id} resolved while the source fetch was in flight (now ${live?.status ?? 'missing'}); nothing was staged`,
@@ -1429,9 +1429,9 @@ export class Server {
 
   private scopeOpen(causeId: CauseId, subTopicId: SubTopicId): boolean {
     const cause = this.store.causes.get(causeId);
-    if (!cause || cause.status !== 'active') return false;
+    if (cause?.status !== 'active') return false;
     const subTopic = this.store.subTopics.get(subTopicId);
-    if (!subTopic || subTopic.status !== 'active') return false;
+    if (subTopic?.status !== 'active') return false;
     return true;
   }
 
@@ -4182,7 +4182,7 @@ export class Server {
       // typed refusal (caught and logged by the scheduler tick) is the
       // right surface.
       const live = this.store.nodes.get(node.id);
-      if (!live || live.kind !== 'anchor' || live.status !== 'active') {
+      if (live?.kind !== 'anchor' || live.status !== 'active') {
         throw new ServerError(
           'invalid_state',
           `anchor ${node.id} left 'active' while the re-verification fetch was in flight`,
@@ -4297,7 +4297,7 @@ export class Server {
         // been superseded or flipped. Skip it silently — it left the
         // re-verification loop, which is not an error.
         const live = this.store.nodes.get(anchor.id);
-        if (!live || live.kind !== 'anchor' || live.status !== 'active') continue;
+        if (live?.kind !== 'anchor' || live.status !== 'active') continue;
         const result = await this.curator.reverifyAnchor(anchor.id);
         anchors.push({ anchor_id: result.anchor_id, outcome: result.outcome });
         if (result.outcome === 'unchanged') unchanged += 1;
@@ -4360,7 +4360,7 @@ export class Server {
   // proposal's status.
   private resolveByConvergence(proposalId: ProposalId): void {
     const proposal = this.store.proposals.get(proposalId);
-    if (!proposal || proposal.status !== 'staged') return;
+    if (proposal?.status !== 'staged') return;
     if (proposal.payload.kind === 'sub_topic' || proposal.payload.kind === 'change_of_home') {
       return;
     }
@@ -5008,7 +5008,7 @@ export class Server {
       // time — re-check, because nothing prevents the parent from
       // being superseded between propose and accept.
       const parent = this.store.nodes.get(proposal.payload.parent_anchor_id);
-      if (!parent || parent.status !== 'active') {
+      if (parent?.status !== 'active') {
         throw new ServerError(
           'invalid_state',
           `parent anchor ${proposal.payload.parent_anchor_id} is not active at acceptance`,
@@ -5045,7 +5045,7 @@ export class Server {
       const parents: Node[] = [];
       for (const pid of proposal.payload.parent_ids) {
         const p = this.store.nodes.get(pid);
-        if (!p || p.status !== 'active') {
+        if (p?.status !== 'active') {
           throw new ServerError('invalid_state', `parent ${pid} is not active at acceptance`);
         }
         parents.push(p);
@@ -5095,7 +5095,7 @@ export class Server {
         );
       }
       const toNode = this.store.nodes.get(proposal.payload.to_node_id);
-      if (!toNode || toNode.status !== 'active') {
+      if (toNode?.status !== 'active') {
         throw new ServerError(
           'invalid_state',
           `to node ${proposal.payload.to_node_id} is not active at acceptance`,
@@ -5146,14 +5146,14 @@ export class Server {
       // be a no-op but the duplicate-membership invariant still has
       // to hold.
       const node = this.store.nodes.get(proposal.payload.node_id);
-      if (!node || node.status !== 'active') {
+      if (node?.status !== 'active') {
         throw new ServerError(
           'invalid_state',
           `node ${proposal.payload.node_id} is not active at acceptance`,
         );
       }
       const target = this.store.subTopics.get(proposal.payload.sub_topic_id);
-      if (!target || target.status !== 'active') {
+      if (target?.status !== 'active') {
         throw new ServerError(
           'invalid_state',
           `target sub-topic ${proposal.payload.sub_topic_id} is not active at acceptance`,
@@ -5186,14 +5186,14 @@ export class Server {
     }
     if (proposal.payload.kind === 'change_of_home') {
       const node = this.store.nodes.get(proposal.payload.node_id);
-      if (!node || node.status !== 'active') {
+      if (node?.status !== 'active') {
         throw new ServerError(
           'invalid_state',
           `node ${proposal.payload.node_id} is not active at acceptance`,
         );
       }
       const target = this.store.subTopics.get(proposal.payload.new_home_sub_topic_id);
-      if (!target || target.status !== 'active') {
+      if (target?.status !== 'active') {
         throw new ServerError(
           'invalid_state',
           `new home sub-topic ${proposal.payload.new_home_sub_topic_id} is not active at acceptance`,
@@ -5231,7 +5231,7 @@ export class Server {
       // only hard prerequisite — name/description/scope_query are free
       // text and don't need re-validation.
       const cause = this.store.causes.get(proposal.payload.cause_id);
-      if (!cause || cause.status !== 'active') {
+      if (cause?.status !== 'active') {
         throw new ServerError(
           'invalid_state',
           `cause ${proposal.payload.cause_id} is not active at acceptance`,
