@@ -23,7 +23,7 @@
     "deep-loop": "tsx --env-file-if-exists=../../.env --env-file-if-exists=.env src/run-deep-loop.ts",
     "deep-loop-cube": "tsx --env-file-if-exists=../../.env --env-file-if-exists=.env src/run-deep-loop-cube.ts",
     "admin": "tsx src/admin-cli.ts",
-    "prod": "tsx --env-file-if-exists=../../.env --env-file-if-exists=.env src/run-prod.ts"
+    "prod": "tsx src/run-prod.ts"
   },
   "dependencies": {
     "@anchorage/contracts": "workspace:*",

@@ -33,7 +33,11 @@ COPY packages/web/package.json packages/web/
 RUN pnpm install --frozen-lockfile
 
 # Copy the workspace sources after install so source edits don't
-# bust the install layer.
+# bust the install layer. What this pulls in is bounded by
+# `.dockerignore` — notably `.env` (a developer's ANTHROPIC_API_KEY
+# must never reach an image layer), the host's `node_modules` (the
+# image installs its own; an alpine container inheriting a darwin
+# esbuild binary crash-loops), and the checked-in test cassettes.
 COPY . .
 
 # Catch type errors at image-build time rather than at container

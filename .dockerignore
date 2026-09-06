@@ -1,0 +1,67 @@
+# Build-context exclusions for the production image.
+#
+# The Dockerfile does `COPY . .` after the manifest-only install layer,
+# so *everything* not listed here rides into the image. Two classes of
+# thing must never make that trip:
+#
+#   1. Secrets. A repo-root `.env` holding an ANTHROPIC_API_KEY (the
+#      testbed's deep-loop runners read one) would otherwise be baked
+#      into an image layer — readable by anyone who can pull it, and
+#      recoverable from the layer history even if a later step deleted
+#      it. The production entrypoint no longer autoloads `.env` either
+#      (see `packages/server/package.json`, the `prod` script): env in
+#      production comes from the host (`fly secrets`, `docker run -e`,
+#      systemd), never from a file in the build context.
+#
+#   2. Host-shaped or bulky state that the image must not inherit:
+#      `node_modules/` built against the developer's platform (the
+#      image runs its own `pnpm install --frozen-lockfile`, and an
+#      alpine container inheriting a darwin esbuild binary crash-loops
+#      exactly the way the dev-minor esbuild bump did), stale `dist/`
+#      output that would shadow a fresh `pnpm -r build`, the `.git`
+#      history, and the ~11 MB of checked-in model cassettes that only
+#      the testbed replays.
+#
+# CI builds from a clean checkout and so never carried the secret; a
+# `docker build` or `fly deploy` from a working tree does. This file is
+# what makes the two contexts equivalent.
+
+# Secrets and local env
+.env
+.env.*
+*.local
+
+# VCS and tooling state
+.git
+.gitignore
+.github
+.claude
+.vscode
+.idea
+
+# Build output and dependency trees (the image builds its own)
+node_modules
+**/node_modules
+dist
+**/dist
+*.tsbuildinfo
+**/*.tsbuildinfo
+coverage
+**/coverage
+.vite
+
+# Test fixtures — model cassettes the testbed replays; not runtime input
+packages/*/test/fixtures
+
+# Docs and repo furniture that no runtime code path reads
+docs
+*.md
+!README.md
+LICENSE
+LICENSE-DATA
+fly.toml
+
+# OS noise
+.DS_Store
+Thumbs.db
+*.swp

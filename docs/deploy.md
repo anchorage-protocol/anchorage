@@ -51,6 +51,8 @@ Three things, in order:
 
 The runtime refuses to start on any malformed value — bad ports, negative tunables, missing `ANCHORAGE_DB_PATH`. This is loud-failure on purpose; silent fallbacks would mask a misconfigured production launch.
 
+**Where the values come from.** The production entrypoint (`pnpm --filter @anchorage/server run prod`) reads environment variables from the process environment only — it does *not* load a `.env` file. Set them through the host: `fly secrets set` / `[env]` in `fly.toml`, `docker run -e`, a systemd unit's `Environment=`, or your secrets manager. The testbed runners (`live`, `population`, `deep-loop`, `deep-loop-cube`) do still autoload a repo-root `.env`, because a developer running them wants their `ANTHROPIC_API_KEY` picked up without ceremony — but that convenience has no place on the production path, where a dotfile in the working directory is a way for a developer's credentials to end up loaded into a public instance. The same reasoning is why `.dockerignore` excludes `.env` from the build context: a `docker build` or `fly deploy` run from a working tree must not bake a local key into an image layer, where it would survive in the layer history even if a later step deleted the file. CI already built from a clean checkout and never carried one; the exclusion makes a laptop build equivalent.
+
 ## Standing it up — Docker
 
 The repo ships a `Dockerfile` that builds the runtime on `node:24-alpine`.
