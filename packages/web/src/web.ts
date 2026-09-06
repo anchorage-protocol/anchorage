@@ -377,12 +377,29 @@ function sendHtml(
 // directive outright (also neutralizing `javascript:` navigation as a
 // second layer under refs.ts's scheme allowlist); inline styles are
 // the one allowance because the stylesheet ships in a <style> block.
+//
+// `frame-ancestors 'none'` is separate from the `default-src 'none'`
+// above it, not covered by it: `default-src` does not fall back for
+// `frame-ancestors`, so without the explicit directive any site could
+// frame these pages. Nothing here is clickjackable today (the read-UI
+// has no forms and no state-changing links), but the curator console
+// renders on the same handler and the directive costs nothing.
+//
+// HSTS is emitted unconditionally. Browsers ignore the header on plain
+// HTTP, so a local `http://127.0.0.1` boot is unaffected, and the
+// production posture is TLS at the edge with the origin on plain HTTP
+// behind it (docs/deploy.md) — which means the edge is exactly where a
+// downgrade would otherwise be available. `preload` is deliberately
+// omitted: submitting a domain to the browser preload list is an
+// operator decision with a slow reversal, not something a library
+// should make on their behalf.
 function securityHeaders(): Record<string, string> {
   return {
     'Content-Security-Policy':
-      "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'",
+      "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
   };
 }
 

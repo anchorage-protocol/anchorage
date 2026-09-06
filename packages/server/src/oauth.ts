@@ -79,6 +79,14 @@ interface AuthSession {
 
 interface AuthCode {
   secret: string;
+  // The client the code was issued to. OAuth 2.1 §4.1.3 requires the
+  // token endpoint to verify that a public client's `client_id` matches
+  // the one the code was issued to. PKCE already carries the security
+  // weight here — a code stolen in transit is useless without the
+  // verifier — so this is defence in depth against a second registered
+  // client redeeming another's code, and conformance with the grant the
+  // metadata advertises.
+  client_id: string;
   code_challenge: string;
   redirect_uri: string;
   resource: string;
@@ -310,6 +318,7 @@ export class OAuthProvider {
     const code = randomToken();
     this.codes.set(code, {
       secret: minted.secret,
+      client_id: session.client_id,
       code_challenge: session.code_challenge,
       redirect_uri: session.redirect_uri,
       resource: session.resource,
@@ -352,6 +361,14 @@ export class OAuthProvider {
     const rec = this.codes.get(code);
     if (!rec || rec.used || this.nowMs() > rec.expires_ms) {
       return oauthError(400, 'invalid_grant', 'authorization code is invalid, used, or expired');
+    }
+    // OAuth 2.1 §4.1.3: for a public client, the token endpoint must
+    // verify the `client_id` the code was issued to. `client_id` is
+    // required on the request for the same reason — a token request
+    // that omits it cannot be checked against the code.
+    const clientId = params['client_id'];
+    if (!clientId || clientId !== rec.client_id) {
+      return oauthError(400, 'invalid_grant', 'client_id does not match the authorization code');
     }
     if (rec.redirect_uri !== redirectUri) {
       return oauthError(400, 'invalid_grant', 'redirect_uri mismatch');

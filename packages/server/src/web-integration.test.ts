@@ -774,7 +774,7 @@ describe('curator console (slice 7b)', () => {
     f.server.curator.acceptProposal(f.stagedProposalId as ProposalId);
     const nodes = [...f.server.store.nodes.values()].filter((n) => n.kind === 'anchor');
     const anchor = nodes[0];
-    if (!anchor || anchor.kind !== 'anchor') throw new Error('expected anchor');
+    if (anchor?.kind !== 'anchor') throw new Error('expected anchor');
     // Directly stamp the anchor as unresolvable to exercise the
     // page's render path against a populated projection — the
     // re-verification primitive's own behavior is covered in
@@ -816,14 +816,20 @@ describe('curator console (slice 7b)', () => {
 });
 
 describe('response headers (security + caching)', () => {
-  it('public pages carry CSP/nosniff/referrer headers and a short shared-cache TTL', async () => {
+  it('public pages carry CSP/nosniff/referrer/HSTS headers and a short shared-cache TTL', async () => {
     const f = await fixture();
     webServer = f.webServer;
     const res = await fetch(`${f.webUrl}/`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
+    // frame-ancestors does not inherit from default-src; assert it
+    // explicitly so a CSP edit cannot silently drop framing protection.
+    expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('strict-transport-security')).toBe(
+      'max-age=31536000; includeSubDomains',
+    );
     expect(res.headers.get('cache-control')).toBe('public, max-age=60');
   });
 

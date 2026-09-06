@@ -276,6 +276,7 @@ describe('OAuthProvider — full bridge and token exchange', () => {
 
     const tok = oauth.token({
       grant_type: 'authorization_code',
+      client_id: id,
       code,
       code_verifier: verifier,
       redirect_uri: redirect,
@@ -300,6 +301,7 @@ describe('OAuthProvider — full bridge and token exchange', () => {
     const t1 = await authorizeThroughGithub(oauth, id, redirect, pkce(v1));
     const tok1 = oauth.token({
       grant_type: 'authorization_code',
+      client_id: id,
       code: t1.code,
       code_verifier: v1,
       redirect_uri: redirect,
@@ -309,6 +311,7 @@ describe('OAuthProvider — full bridge and token exchange', () => {
     const t2 = await authorizeThroughGithub(oauth, id, redirect, pkce(v2));
     const tok2 = oauth.token({
       grant_type: 'authorization_code',
+      client_id: id,
       code: t2.code,
       code_verifier: v2,
       redirect_uri: redirect,
@@ -329,13 +332,14 @@ describe('OAuthProvider — token failure modes', () => {
     const verifier = 'verifier'.repeat(9);
     const id = registerClient(ctx.oauth, redirect);
     const { code } = await authorizeThroughGithub(ctx.oauth, id, redirect, pkce(verifier));
-    return { ...ctx, redirect, verifier, code };
+    return { ...ctx, redirect, verifier, code, clientId: id };
   }
 
   it('rejects a mismatched PKCE verifier', async () => {
-    const { oauth, redirect, code } = await freshCode();
+    const { oauth, redirect, code, clientId } = await freshCode();
     const r = oauth.token({
       grant_type: 'authorization_code',
+      client_id: clientId,
       code,
       code_verifier: 'wrong-verifier',
       redirect_uri: redirect,
@@ -345,9 +349,10 @@ describe('OAuthProvider — token failure modes', () => {
   });
 
   it('rejects a replayed authorization code', async () => {
-    const { oauth, redirect, verifier, code } = await freshCode();
+    const { oauth, redirect, verifier, code, clientId } = await freshCode();
     const ok = oauth.token({
       grant_type: 'authorization_code',
+      client_id: clientId,
       code,
       code_verifier: verifier,
       redirect_uri: redirect,
@@ -356,6 +361,7 @@ describe('OAuthProvider — token failure modes', () => {
     expect(ok.status).toBe(200);
     const replay = oauth.token({
       grant_type: 'authorization_code',
+      client_id: clientId,
       code,
       code_verifier: verifier,
       redirect_uri: redirect,
@@ -374,6 +380,7 @@ describe('OAuthProvider — token failure modes', () => {
     clock.advance(120_000); // > 60s code TTL
     const r = ctx.oauth.token({
       grant_type: 'authorization_code',
+      client_id: id,
       code,
       code_verifier: verifier,
       redirect_uri: redirect,
@@ -382,12 +389,58 @@ describe('OAuthProvider — token failure modes', () => {
     expect(jsonBody(r)['error']).toBe('invalid_grant');
   });
 
+  it('rejects a token request whose client_id is absent or belongs to another client', async () => {
+    // OAuth 2.1 §4.1.3: a public client's token request must carry the
+    // client_id, and it must be the one the code was issued to. PKCE
+    // already blocks a stolen code, so this is defence in depth — but
+    // without it a second registered client could redeem a code issued
+    // to the first, and the metadata advertises a grant we would not
+    // actually be enforcing.
+    const { oauth, redirect, verifier, code, clientId } = await freshCode();
+    const other = registerClient(oauth, redirect);
+    expect(other).not.toBe(clientId);
+
+    const omitted = oauth.token({
+      grant_type: 'authorization_code',
+      code,
+      code_verifier: verifier,
+      redirect_uri: redirect,
+      resource: `${BASE}/mcp`,
+    });
+    expect(jsonBody(omitted)['error']).toBe('invalid_grant');
+
+    const wrong = oauth.token({
+      grant_type: 'authorization_code',
+      client_id: other,
+      code,
+      code_verifier: verifier,
+      redirect_uri: redirect,
+      resource: `${BASE}/mcp`,
+    });
+    expect(jsonBody(wrong)['error']).toBe('invalid_grant');
+
+    // Neither refusal consumed the code: the legitimate client still
+    // redeems it. A failed check must not become a denial-of-service on
+    // the client the code actually belongs to.
+    const ok = oauth.token({
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      code,
+      code_verifier: verifier,
+      redirect_uri: redirect,
+      resource: `${BASE}/mcp`,
+    });
+    expect(ok.status).toBe(200);
+    expect(jsonBody(ok)['access_token']).toBeTruthy();
+  });
+
   it('rejects redirect_uri / resource mismatch and wrong grant_type', async () => {
-    const { oauth, redirect, verifier, code } = await freshCode();
+    const { oauth, redirect, verifier, code, clientId } = await freshCode();
     expect(
       jsonBody(
         oauth.token({
           grant_type: 'authorization_code',
+          client_id: clientId,
           code,
           code_verifier: verifier,
           redirect_uri: 'https://client.test/other',
@@ -399,6 +452,7 @@ describe('OAuthProvider — token failure modes', () => {
       jsonBody(
         oauth.token({
           grant_type: 'authorization_code',
+          client_id: clientId,
           code,
           code_verifier: verifier,
           redirect_uri: redirect,
@@ -410,6 +464,7 @@ describe('OAuthProvider — token failure modes', () => {
       jsonBody(
         oauth.token({
           grant_type: 'client_credentials',
+          client_id: clientId,
           code,
           code_verifier: verifier,
           redirect_uri: redirect,

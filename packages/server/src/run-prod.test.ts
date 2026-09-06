@@ -379,6 +379,12 @@ describe('runProdServer (end-to-end against an on-disk SQLite file)', () => {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           grant_type: 'authorization_code',
+          // Public clients send `client_id` in the token request body
+          // (OAuth 2.1 §4.1.3; the MCP SDK's `token_endpoint_auth_
+          // method: none` path does exactly this), and `/token` binds
+          // the code to it. Sent here so this hand-rolled client stays
+          // a faithful stand-in for a real one.
+          client_id: clientId,
           code,
           code_verifier: verifier,
           redirect_uri: redirect,
