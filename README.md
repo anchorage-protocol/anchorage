@@ -84,10 +84,12 @@ See [ROADMAP.md](./ROADMAP.md) for phasing.
 In Phase 2, the contributions that help most:
 
 - **Pressure-testing the design.** Issues pointing at specific failure modes in the governance design are gold.
-- **Sub-topic candidates within colon cancer** (the locked v0 cause) that fit the criteria in [docs/seed-topic.md](./docs/seed-topic.md). The shortlist is open through instance launch; the final v0 starter set isn't fixed yet.
+- **Sub-topic candidates within colon cancer** (the locked v0 cause) that fit the criteria in [docs/seed-topic.md](./docs/seed-topic.md). The instance opened with ctDNA-guided adjuvant chemo in resected stage II colon cancer; the second and third sub-topics are seated as the first matures, and the shortlist is still open.
 - **Prior-art pointers** we should be reading and citing — adjacent projects, governance regimes, simulation work — that aren't yet acknowledged.
 
 Code-side contribution — testbed scenarios, archetypes, parameter-sweep cubes, v0 MCP server — goes through [CONTRIBUTING.md](./CONTRIBUTING.md). The process is currently lightweight.
+
+Found a vulnerability in the instance or the code? Report it privately — [SECURITY.md](./SECURITY.md) has the channel and what we commit to. A governance mechanism you can argue is gameable is a *design* pressure-test and belongs in a public issue; that file draws the line.
 
 ## Prior art
 

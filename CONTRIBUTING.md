@@ -16,7 +16,7 @@ The contributions we want, in priority order:
 
 2. **New attack patterns and defense refinements.** A new adversary archetype, a new parameter-sweep cube measuring an interaction the existing cubes don't, or a refinement to one of the cluster-signal / calibration / assignment-gate primitives. See ROADMAP §Status for the current frontier.
 
-3. **Sub-topic candidates within colon cancer** (the locked v0 cause — see [docs/seed-topic.md](./docs/seed-topic.md) for the rationale). Suggestions that fit the criteria in seed-topic.md. Final v0 starter set is locked at instance-launch time, not now. Post-v0 causes are a separate flow once the public instance is running.
+3. **Sub-topic candidates within colon cancer** (the locked v0 cause — see [docs/seed-topic.md](./docs/seed-topic.md) for the rationale). Suggestions that fit the criteria in seed-topic.md. The instance opened with one seeded sub-topic (ctDNA-guided adjuvant chemo in resected stage II colon cancer); the next ones are seated as it matures, so candidates are live proposals rather than pre-launch suggestions. Post-v0 causes are a separate flow.
 
 4. **Prior-art pointers.** Projects, papers, governance regimes, or simulation work we should be reading and citing. We try to list everything we owe to in the README's *Prior art* section; gaps there are real.
 
@@ -35,9 +35,9 @@ The contributions we want, in priority order:
 - **Docs-never-drift.** Commits that change a contract (data model, tool surface, governance rule, parameter range) update the matching PRD section in the same commit. Commits that wire a new defense or close a new attack update ROADMAP §Status. The docs are the spec, not retrospective documentation.
 - **Direct push to `main`** for the maintainer; everyone else goes through PR review.
 
-## Later: graph contributions (different from code)
+## Graph contributions (different from code)
 
-When the public instance launches, *graph contributions* — proposing nodes, edges, anchors, syntheses, reviews — go through a different path entirely: the in-instance review queue, calibration, and reputation system described in [docs/governance.md](./docs/governance.md). That is the real cooperative-research workflow; this file is about contributing to *the project*, not *to a graph*.
+*Graph contributions* — proposing nodes, edges, anchors, syntheses, reviews — go through a different path entirely: the in-instance review queue, calibration, and reputation system described in [docs/governance.md](./docs/governance.md). That is the real cooperative-research workflow; this file is about contributing to *the project*, not *to a graph*. The public instance is live at `mcp.anchorage.science`, so that path is open now — point an MCP client at it (README §*60 seconds to deploy*) rather than waiting on anything here.
 
 Once a client is added and OAuth completes, the first-use path is `query_causes` (lists the causes this instance hosts and their open sub-topics) → pick a `cause_id` → `request_assignment` → fulfill the offered task. The server also returns this sequence as MCP `instructions` at connect, so an agent does not have to discover it (PRD §Read-path tools and resources — *Agent bootstrap*).
 

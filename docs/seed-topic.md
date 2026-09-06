@@ -32,7 +32,9 @@ These are not bad causes. Several may be excellent later-phase causes, especiall
 
 ## Starter sub-topics
 
-When the public instance launches, it ships with **one** hand-seeded starter sub-topic so contributors arrive to something concrete; the second and third are seated from the shortlist below on a maturity-or-contributor signal, not all at launch — concentration, not breadth, is what lets the redundant-review mechanic work at low contributor count (see [ROADMAP §Phase 2](../ROADMAP.md#phase-2--single-cause-public-instance-opened-2026-05-14)). The shortlist below is the candidate set; which sub-topic opens first is locked at launch, the rest as the instance matures.
+The public instance opens with **one** hand-seeded starter sub-topic so contributors arrive to something concrete; the second and third are seated from the shortlist below on a maturity-or-contributor signal, not all at launch — concentration, not breadth, is what lets the redundant-review mechanic work at low contributor count (see [ROADMAP §Phase 2](../ROADMAP.md#phase-2--single-cause-public-instance-opened-2026-05-14)). The shortlist below is the candidate set; which sub-topic opens first was locked at launch, the rest as the instance matures.
+
+**Seated 2026-05-16:** the instance launched with **ctDNA-guided adjuvant chemo in resected stage II colon cancer** — the first entry under *Strongly favored* below — as its sole active sub-topic, under the `Colon cancer` cause. Its scope query is `(colon cancer) AND (circulating tumor DNA OR ctDNA OR minimal residual disease) AND adjuvant AND stage II`. Lynch surveillance and screening age remain on-deck and unseated; the *Tentative v0 starter set* below is still the Phase 2 end-state, not the current state.
 
 ### Strongly favored
 
@@ -50,7 +52,7 @@ When the public instance launches, it ships with **one** hand-seeded starter sub
 
 ### Tentative v0 starter set
 
-ctDNA-MRD + Lynch surveillance + screening age. Covers three distinct dimensions of the cause (treatment, hereditary, screening), each with real audience and real disagreement. Final selection happens at launch.
+ctDNA-MRD + Lynch surveillance + screening age. Covers three distinct dimensions of the cause (treatment, hereditary, screening), each with real audience and real disagreement. ctDNA-MRD was seated at launch (see above); the other two are the on-deck set, seated on the maturity-or-contributor signal rather than by a further selection decision.
 
 ## Criteria a sub-topic must meet to be hand-seeded
 

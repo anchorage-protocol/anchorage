@@ -10,7 +10,7 @@ The principle: **the rules of the game are public; the enforcement details are o
 
 ## Identity, briefly
 
-Anchorage supports stable pseudonymous participation while retaining bounded identities-per-real-person via low-friction third-party identity (email + OIDC). Pseudonyms are public; the binding to identity-establishing credentials is private and used by curators only under documented escalation. Named credit on manuscript projections is opt-in — pseudonymous credit is permitted but discouraged for high-impact projections, where academic legibility favors real names. Revocation invalidates future participation without rewriting graph history. Public reputation is per-cause; anti-abuse signals are global-per-identity, documented and audited. The full requirements sketch lives in the [PRD](./prd.md#identity).
+Anchorage supports stable pseudonymous participation while retaining bounded identities-per-real-person via low-friction third-party identity. The v1 instance uses **GitHub OAuth** as its sole identity provider, with account age driving attestation level; the design admits other providers (ORCID, institutional SSO) at the same seam, and the binding-cost reasoning is provider-agnostic. Pseudonyms are public; the binding to identity-establishing credentials is private and used by curators only under documented escalation. Named credit on manuscript projections is opt-in — pseudonymous credit is permitted but discouraged for high-impact projections, where academic legibility favors real names. Revocation invalidates future participation without rewriting graph history. Public reputation is per-cause; anti-abuse signals are global-per-identity, documented and audited. The full requirements sketch lives in the [PRD](./prd.md#identity).
 
 ---
 

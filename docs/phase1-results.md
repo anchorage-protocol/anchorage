@@ -101,7 +101,7 @@ A new behaviour worth flagging on the model-backed tier this snapshot: **the ass
 - **`borderline-surrogate` and `borderline-subgroup` through v1/v3 closure stacks** — confirms the closure-stack rules generalize across drift kinds.
 - **A `lazyRole` / `honestWeakRole`** for the model-backed tier — covered in scripted form against their named defenses today; the deep-loop addition would be cosmetic completeness, not new closure information.
 - **Scheduled CI cadence** for the deep-loop cube (a `schedule:` trigger on the `deep-loop.yml` workflow) — deferred to Phase 2 by the maintainer; the deep-loop cube runs on workflow_dispatch today.
-- **Live-fetch verification** (PMID/DOI/URL resolution + source caching) — landed 2026-05-14 as Phase 2 slice 1 (`LiveFetchVerifier` in `packages/server/src/live-fetch-verifier.ts`; see [ROADMAP §Status](../ROADMAP.md#status)). The production-runtime wiring (slice 4) is still ahead; testbed cassettes continue to use `FakeVerifier` so the testbed itself doesn't take a dependency on PubMed availability.
+- **Live-fetch verification** (PMID/DOI/URL resolution + source caching) — landed 2026-05-14 as Phase 2 slice 1 (`LiveFetchVerifier` in `packages/server/src/live-fetch-verifier.ts`; see [ROADMAP §Status](../ROADMAP.md#status)), and wired as the production-runtime verifier by slice 4c the same day — the live instance has been resolving PMIDs against NCBI and DOIs against Crossref since it opened. Testbed cassettes continue to use `FakeVerifier` so the testbed itself doesn't take a dependency on PubMed availability.
 
 None of these gate Phase 1 closure: they extend the sweep at the same testbed, which is exactly what "incremental coverage" means.
 
